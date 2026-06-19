@@ -4,8 +4,8 @@
 
 ## 当前版本
 
-- 当前代码版本：`0.5.3`
-- 当前发布状态：`0.5.3` 已完成本地验证，推送到 GitHub（tag `v0.5.3`，Codex CLI StdIO 非交互权限修复）
+- 当前代码版本：`1.0.0`
+- 当前发布状态：`1.0.0` 准备发布到 GitHub（tag `v1.0.0`，Windows NSIS 安装包）
 - 版本来源：以 `package.json` 的 `version` 与 `build.buildVersion` 为准；两者必须同步
 
 ## 升版规则
@@ -172,8 +172,18 @@
   - 联机冒烟：真实 Codex CLI 0.134 用 `--sandbox danger-full-access -C .` 可在 `C:\Users\Admin\Desktop\测试` 执行 PowerShell 并定位 `D:\AgentHub开发版本`。
 - 本机安装验证：已安装并启动 `AgentHub 0.5.3`（`C:\Users\Admin\AppData\Local\Programs\AgentHub\AgentHub.exe`）。
 
+### 1.0.0
+
+- 状态：准备发布到 GitHub（tag `v1.0.0`）。
+- 摘要：重构 AgentHub 工作台和 Composer；新增可用 Agent 切换、API 厂商直连、智能五角色调度、审批卡片、Git 工作台、MCP 配置管理、ECC 指令与 Skill、使用统计、外观设置、写作台、长期记忆、快捷键和上下文容量展示；修复 provider 误走本地 Agent、编排内容混入回答、深色主题、历史滚动、运行等待、Git 弹层遮挡和设置页溢出等问题。
+- 验证：
+  - `npm.cmd run typecheck`
+  - `npm.cmd run test`
+  - `npm.cmd run build`
+  - `npm.cmd run build:win`
+
 ### 下一个候选版本
 
-- 默认候选：`0.5.4`（小修复/小增强）；下一个较大功能版本 `0.6.0`。
+- 当前稳定版本：`1.0.0`；后续小修复使用 `1.0.x`，较大功能版本使用 `1.1.0`。
 - 适用范围：ACP 增强（terminal handler / server 复用）、session/prompt 联机验证、后续 agentic / 工作区 / 技能流程修复与小增强。
 - 登记要求：完成后补充改动摘要、验证命令、提交哈希或发布 tag。
