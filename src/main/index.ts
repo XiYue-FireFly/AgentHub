@@ -34,6 +34,7 @@ import { configureLocalAgent, detectLocalAgentStatuses, getCachedLocalAgentStatu
 import { readLocalModelConfig, scanLocalModels } from "./runtime/local-models"
 import { getRunTimeoutMs, setRunTimeoutMs, RUN_TIMEOUT_DEFAULTS } from "./runtime/run-preferences"
 import { explicitGuardVerdictFromText, guardShouldBlockExecutor, riskVerdictForText as sharedRiskVerdictForText } from "./runtime/guards"
+import { evaluateGuardVerdict, emitGuardVerdict, executorVerdictNeedsApproval, requestGuardApproval, resolveGuardApproval, cancelGuardApprovalsForTurn, clearAllGuardApprovals, type GuardDecision, type GuardResolution } from "./runtime/guard-approval-service"
 import { clearWorkbenchGoal, getWorkbenchGoal, promptWithGoalContext, setWorkbenchGoal } from "./runtime/goals"
 import { buildAgentOptions } from "./runtime/agent-options"
 import { listWorkbenchCommands, runWorkbenchCommand } from "./runtime/commands"
@@ -340,79 +341,9 @@ function routeDecisionForTurn(turnId: string): any[] {
     .map(event => event.payload)
 }
 
-type GuardResolution = "approved" | "denied" | "timeout"
-interface GuardDecision {
-  requestId: string
-  decision: GuardResolution
-}
-
-const pendingGuardApprovals = new Map<string, {
-  turnId: string
-  resolve: (value: GuardDecision) => void
-  timer: ReturnType<typeof setTimeout>
-}>()
-
-function evaluateGuardVerdict(reviewText: string, role: string) {
-  return explicitGuardVerdictFromText(reviewText) || sharedRiskVerdictForText(reviewText, role)
-}
-
-function emitGuardVerdict(threadId: string, turnId: string, agentId: string, role: string, reviewText: string, extra: Record<string, any> = {}) {
-  const verdict = evaluateGuardVerdict(reviewText, role)
-  runtimeStore.appendSystemEvent(threadId, turnId, "guard:verdict", agentId, {
-    role,
-    ...verdict,
-    ...extra,
-    checkedAt: Date.now()
-  })
-  return verdict
-}
-
-function executorVerdictNeedsApproval(verdict: ReturnType<typeof evaluateGuardVerdict>, role: string): boolean {
-  return role === "executor" && (verdict.level === "high" || verdict.status === "block")
-}
-
-function resolveGuardApproval(requestId: string, approved: boolean): boolean {
-  const pending = pendingGuardApprovals.get(requestId)
-  if (!pending) return false
-  clearTimeout(pending.timer)
-  pendingGuardApprovals.delete(requestId)
-  pending.resolve({ requestId, decision: approved ? "approved" : "denied" })
-  return true
-}
-
-function cancelGuardApprovalsForTurn(turnId: string): void {
-  for (const [requestId, pending] of pendingGuardApprovals.entries()) {
-    if (pending.turnId !== turnId) continue
-    clearTimeout(pending.timer)
-    pendingGuardApprovals.delete(requestId)
-    pending.resolve({ requestId, decision: "denied" })
-  }
-}
-
-function requestGuardApproval(input: {
-  threadId: string
-  turnId: string
-  agentId: string
-  role: string
-  verdict: ReturnType<typeof evaluateGuardVerdict>
-}): Promise<GuardDecision> {
-  const requestId = `guard-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
-  runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", input.agentId, {
-    role: input.role,
-    ...input.verdict,
-    status: "needs-confirmation",
-    requestId,
-    requiresUserDecision: true,
-    checkedAt: Date.now()
-  })
-  return new Promise(resolve => {
-    const timer = setTimeout(() => {
-      if (!pendingGuardApprovals.delete(requestId)) return
-      resolve({ requestId, decision: "timeout" })
-    }, 5 * 60 * 1000)
-    pendingGuardApprovals.set(requestId, { turnId: input.turnId, resolve, timer })
-  })
-}
+// Guard-verdict lifecycle is now in runtime/guard-approval-service.ts.
+// Thin wrappers pass runtimeStore as the event store dependency.
+const guardStore = { appendSystemEvent: (tId: string, trId: string, kind: string, aId: string, p: Record<string, any>) => runtimeStore.appendSystemEvent(tId, trId, kind as any, aId, p) }
 
 function emitMemoryCandidates(threadId: string, turnId: string, prompt: string, content: string) {
   const candidates = memory().importConversation(`turn:${turnId}`, [`User: ${prompt}`, content ? `Assistant: ${content}` : ""].filter(Boolean).join("\n\n"), { includeRaw: false })
@@ -617,7 +548,7 @@ async function runCustomScheduleTurn(input: {
         if (guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role)) {
           const reason = verdict.reasons.join("; ")
           if (verdict.level === "high" || verdict.status === "block") {
-            const guardDecision = await requestGuardApproval({
+            const guardDecision = await requestGuardApproval(guardStore, {
               threadId: input.threadId,
               turnId: input.turnId,
               agentId: step.agentId,
@@ -651,11 +582,11 @@ async function runCustomScheduleTurn(input: {
               blockedByGuard = deniedByGuard
             }
           } else {
-            emitGuardVerdict(input.threadId, input.turnId, step.agentId, step.role, content)
+            emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
             blockedByGuard = reason
           }
         } else {
-          emitGuardVerdict(input.threadId, input.turnId, step.agentId, step.role, content)
+          emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
         }
       }
       return { step, content, error, status: task.status }

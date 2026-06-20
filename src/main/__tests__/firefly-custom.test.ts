@@ -71,20 +71,24 @@ describe("smart five-role custom schedule integration", () => {
 
   it("scores guard verdicts from agent output instead of guard prompt instructions", () => {
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const guardService = readFileSync(join(process.cwd(), "src/main/runtime/guard-approval-service.ts"), "utf8")
 
-    expect(source).toContain("explicitGuardVerdictFromText(reviewText) || sharedRiskVerdictForText(reviewText, role)")
-    expect(source).toContain("emitGuardVerdict(input.threadId, input.turnId, step.agentId, step.role, content)")
+    // evaluateGuardVerdict now lives in guard-approval-service.ts
+    expect(guardService).toContain("explicitGuardVerdictFromText(reviewText) || riskVerdictForText(reviewText, role)")
+    expect(source).toContain("emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)")
     expect(source).not.toContain("[stepContext, content].join")
   })
 
   it("asks before continuing through high-risk guard verdicts", () => {
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const guardService = readFileSync(join(process.cwd(), "src/main/runtime/guard-approval-service.ts"), "utf8")
 
     expect(source).toContain("requestGuardApproval")
     expect(source).toContain("executorVerdictNeedsApproval")
     expect(source).toContain("guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role)")
-    expect(source).toContain('status: "needs-confirmation"')
-    expect(source).toContain("requiresUserDecision: true")
+    // Guard service now lives in guard-approval-service.ts
+    expect(guardService).toContain("needs-confirmation")
+    expect(guardService).toContain("requiresUserDecision")
     expect(source).toContain('ipcMain.handle("turns:resolveGuard"')
     expect(source).toContain('decision === "approved"')
   })
