@@ -17,6 +17,8 @@ export interface AgentBinaryCandidate {
   path: string
   verification?: 'version' | 'manual'
   note?: string
+  /** Detection kind: helps Composer filter truly usable agents from GUI-only binaries */
+  kind?: 'path-detected' | 'desktop-candidate' | 'stdio-headless' | 'acp' | 'needs-login' | 'needs-args'
 }
 
 function fromPath(cmd: string): string | null {
@@ -54,17 +56,17 @@ function dedupe(cands: Array<AgentBinaryCandidate | null>): AgentBinaryCandidate
 
 function envCandidate(envVar: string): AgentBinaryCandidate | null {
   const p = process.env[envVar]
-  return p ? { source: 'terminal', label: '环境变量 ' + envVar, path: p } : null
+  return p ? { source: 'terminal', label: '环境变量 ' + envVar, path: p, kind: 'path-detected' } : null
 }
 
 function npmCandidate(name: string): AgentBinaryCandidate | null {
   const p = process.env.APPDATA ? join(process.env.APPDATA, 'npm', name + '.cmd') : ''
-  return p ? { source: 'terminal', label: '终端版 (npm)', path: p } : null
+  return p ? { source: 'terminal', label: '终端版 (npm)', path: p, kind: 'path-detected' } : null
 }
 
 function pathCandidate(name: string): AgentBinaryCandidate | null {
   const p = fromPath(name)
-  return p ? { source: 'terminal', label: '终端版 (PATH)', path: p } : null
+  return p ? { source: 'terminal', label: '终端版 (PATH)', path: p, kind: 'path-detected' } : null
 }
 
 function exeName(name: string): string {
@@ -241,10 +243,13 @@ export function locateOpenclawBinary(): string | null {
 export function minimaxCodeCandidates(): AgentBinaryCandidate[] {
   return dedupe([
     envCandidate('MINIMAX_CODE_PATH'),
-    { source: 'desktop', label: '桌面版内置 (opencode)', path: 'D:\\minimax\\MiniMax Code\\resources\\resources\\opencode\\opencode.exe' },
+    // Desktop GUI bundles — marked as manual/desktop-candidate because opencode.exe
+    // inside MiniMax Code is the GUI binary, not a standalone non-interactive CLI.
+    { source: 'desktop', label: '桌面版内置 (opencode)', path: 'D:\\minimax\\MiniMax Code\\resources\\resources\\opencode\\opencode.exe', verification: 'manual', kind: 'desktop-candidate' },
     {
       source: 'desktop', label: '桌面版内置 (opencode)',
-      path: join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'Programs', 'MiniMax Code', 'resources', 'resources', 'opencode', 'opencode.exe')
+      path: join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'Programs', 'MiniMax Code', 'resources', 'resources', 'opencode', 'opencode.exe'),
+      verification: 'manual', kind: 'desktop-candidate'
     },
     pathCandidate('opencode')
   ])
