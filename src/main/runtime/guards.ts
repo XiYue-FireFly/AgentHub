@@ -7,7 +7,55 @@ export interface GuardVerdict {
   reasons: string[]
 }
 
+const VALID_STATUSES: ReadonlySet<string> = new Set(["pass", "warn", "revise", "block"])
+const VALID_LEVELS: ReadonlySet<string> = new Set(["low", "medium", "high"])
+
+/**
+ * Try to extract a structured JSON verdict from model output.
+ * Models should output: {"guard":{"status":"pass|warn|revise|block","level":"low|medium|high","reasons":["..."]}}
+ * This is the most reliable extraction path; regex/heuristic are fallbacks.
+ */
+export function structuredVerdictFromText(text: string): GuardVerdict | null {
+  const value = String(text || "")
+  // Look for {"guard":{...}} or {"verdict":{...}} JSON blocks
+  const jsonMatch = value.match(/\{[^{}]*"(?:guard|verdict)"\s*:\s*(\{[^{}]+\})\s*\}/)
+  if (!jsonMatch) {
+    // Also try standalone {"status":"...","level":"...","reasons":[...]}
+    const standalone = value.match(/\{\s*"status"\s*:\s*"(?:pass|warn|revise|block)"[^}]*\}/)
+    if (!standalone) return null
+    try {
+      const obj = JSON.parse(standalone[0])
+      return validateVerdictShape(obj)
+    } catch { return null }
+  }
+  try {
+    const inner = JSON.parse(jsonMatch[1])
+    return validateVerdictShape(inner)
+  } catch { return null }
+}
+
+function validateVerdictShape(obj: any): GuardVerdict | null {
+  if (!obj || typeof obj !== "object") return null
+  const status = typeof obj.status === "string" ? obj.status.toLowerCase() : null
+  const level = typeof obj.level === "string" ? obj.level.toLowerCase() : null
+  if (!status || !VALID_STATUSES.has(status)) return null
+  const validLevel = level && VALID_LEVELS.has(level) ? level as GuardLevel
+    : status === "block" ? "high" as GuardLevel
+    : status === "revise" ? "medium" as GuardLevel
+    : "low" as GuardLevel
+  const reasons = Array.isArray(obj.reasons) ? obj.reasons.filter((r: any) => typeof r === "string").slice(0, 10) : []
+  return { level: validLevel, status: status as GuardStatus, reasons: reasons.length ? reasons : [`structured ${status} verdict`] }
+}
+
+/**
+ * Extract a guard verdict from model output.
+ * Priority: structured JSON > explicit regex PASS/WARN/REVISE/BLOCK > keyword heuristic.
+ */
 export function explicitGuardVerdictFromText(text: string): GuardVerdict | null {
+  // 1. Try structured JSON first (most reliable)
+  const structured = structuredVerdictFromText(text)
+  if (structured) return structured
+  // 2. Fallback: regex first-line match
   const value = String(text || "")
   const firstLine = value.split(/\r?\n/).map(line => line.trim()).find(Boolean)
   const match = firstLine?.match(/^(PASS|WARN|REVISE|BLOCK)\b/i)
