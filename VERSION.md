@@ -191,11 +191,12 @@
 ### 1.0.1（待验证）
 
 - 状态：待验证，暂不发版。
-- 摘要：稳定化迭代第一轮 — 修复 MCP 测试误报、长期记忆中文召回、mojibake 静态守卫。
+- 摘要：稳定化迭代第一轮 — 修复 MCP 测试误报、长期记忆中文召回、mojibake 静态守卫、审批系统增强。
 - 主要改动：
   - **P0-1 mojibake 体检**：全仓扫描确认无真实乱码，新增 `mojibake-guard.test.ts`（4 tests）静态回归守卫。
   - **P0-2 MCP 测试误报修复**：`src/main/runtime/mcp.ts` probeStdioServer 重写 — 提取 `validateInitializeResult` 纯函数（JSON 解析 + result vs error 校验）；stderr 不再作为成功条件；`clientInfo.version` 从 `package.json` 读取（不再硬编码/不用 cwd）；发送合法 JSON-RPC initialize 请求。新增 `mcp-validate.test.ts`（10 tests）。原有 7 个 MCP 测试全绿。
   - **P0-3 长期记忆修复**：`src/main/memory-library.ts` — CJK 检索改为 bigram（滑动窗口 2-char），解决整段 CJK 子串匹配导致的零召回；噪声过滤从白名单门控改为黑名单 + 价值信号加权，允许无关键词的自由事实进入记忆；迭代噪声剥离 + 角色前缀清除防止多词噪声绕过。`memory-library.test.ts` 新增 5 个 P0-3 测试。
+  - **P0-4 审批系统增强**：`src/main/agentic/approval.ts` — `ApprovalRequest` 新增结构化字段 `action`/`target`/`risk`/`reason`/`preview`（借鉴 codex `ExecApprovalRequestEvent` + `GuardianRiskLevel`）；新增 `assessApprovalRisk` 纯函数（critical/high/medium/low 四级风险评估）+ `approvalReason` 人类可读原因生成；新增 `PersistedPendingApproval` 类型与持久化（save/load/remove/resolve/expireStale），跨重启可恢复待审批请求。`executor.ts` 创建审批请求时填充全部结构化字段。`dispatcher.ts` 事件携带新字段、持久化落盘、启动时过期遗留 pending。新增 `approval-risk.test.ts`（12 tests）。
 - 主要文件：`src/main/runtime/mcp.ts`、`src/main/memory-library.ts`、`src/main/runtime/__tests__/mcp-validate.test.ts`（新）、`src/main/__tests__/mojibake-guard.test.ts`（新）、`src/main/memory-library.test.ts`（补 5 测试）、`src/main/runtime/mcp.ts.bak`（备份，可删）。
 - 验证：
   - `npm.cmd run typecheck`（exit 0）
@@ -203,7 +204,7 @@
   - `npm.cmd run build`（exit 0）
   - `git diff --check`（exit 0）
 - 未覆盖（记入后续）：
-  - P0-4 审批系统增强（请求持久化 + 结构化 action/risk/preview）
+  - P0-4 审批系统增强（请求持久化 + 结构化 action/risk/preview，已实现）
   - P0-5 Usage 统计持久化（append-only ledger）
   - P1-6 拆分 index.ts
   - P1-7 五角色调度 verdict 结构化

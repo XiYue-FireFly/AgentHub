@@ -12,7 +12,7 @@
 import { buildProviderClient, ResolvedCall } from '../providers/client'
 import { ChatCompletionMessage, ThinkingConfig } from '../providers/types'
 import { AGENTIC_TOOLS, executeTool, ToolContext } from './tools'
-import { ApprovalPolicy, ApprovalRequest, GuardedTool, guardedToolFor } from './approval'
+import { ApprovalPolicy, ApprovalRequest, GuardedTool, guardedToolFor, assessApprovalRisk, approvalReason, type ApprovalRisk } from './approval'
 
 export interface AgenticActivityStep {
   id: string
@@ -144,8 +144,16 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
           if (policy === 'ask') {
             // 先发 awaiting 态供步骤卡标注「等待审批」，再 await 用户决策
             p.emit.activity({ id: stepId, kind: 'tool', tool: name, label, detail, status: 'awaiting' })
+            const risk = assessApprovalRisk(name, parsed)
+            const target = name === 'exec' ? String((parsed as any)?.command ?? '') : String((parsed as any)?.path ?? '')
+            const action: 'write_file' | 'run_command' = name === 'exec' ? 'run_command' : 'write_file'
+            const preview = name === 'fs_write' ? String((parsed as any)?.content ?? '').slice(0, 2000) : target
+            const reason = approvalReason(name, risk, target)
             const approved = p.requestApproval
-              ? await p.requestApproval({ stepId, agentId: p.agentId || 'agent', tool: guarded, toolName: name, label, detail })
+              ? await p.requestApproval({
+                  stepId, agentId: p.agentId || 'agent', tool: guarded, toolName: name,
+                  label, detail, action, target, risk, reason, preview
+                })
               : false
             if (p.isCancelled()) break
             if (!approved) {

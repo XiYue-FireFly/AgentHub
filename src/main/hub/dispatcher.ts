@@ -17,7 +17,7 @@ import { getSkillManager } from "../skills/manager"
 import { buildSkillBlock } from "../skills/inject"
 import { runAgenticHttp } from "../agentic/executor"
 import { isHttpAgenticEnabled } from "../agentic/capabilities"
-import { getApprovalConfig, ApprovalRequest, GuardedTool } from "../agentic/approval"
+import { getApprovalConfig, ApprovalRequest, GuardedTool, savePendingApproval, removePendingApproval, resolvePendingApproval, expireStalePendingApprovals, assessApprovalRisk, approvalReason, type PersistedPendingApproval } from "../agentic/approval"
 import { getRunTimeoutMs } from "../runtime/run-preferences"
 // --- /AgentHub skills + native agentic ---
 
@@ -110,7 +110,12 @@ export type StreamEvent =
   // agentic 活动步骤（stdio stream-json / 未来 HTTP act-observe 解析所得）；UI 按 step.id upsert
   | { kind: "activity"; taskId: string; agentId: string; step: { id: string; kind?: string; tool?: string; label?: string; detail?: string; output?: string; status: string } }
   // 写/执行审批请求（'ask' 策略命中时发出）；渲染层弹窗 → agentic:resolveApproval 回传决策
-  | { kind: "approval"; taskId: string; agentId: string; request: { id: string; tool: GuardedTool; toolName: string; label?: string; detail?: string } }
+  | { kind: "approval"; taskId: string; agentId: string; request: {
+      id: string; tool: GuardedTool; toolName: string;
+      label?: string; detail?: string;
+      action?: 'write_file' | 'run_command'; target?: string;
+      risk?: string; reason?: string; preview?: string
+    } }
   // 编排模式（Orchestrator）
   | { kind: "orchestrate:plan"; taskId: string; leadAgentId?: string; subtasks: Array<{ id: string; title: string; detail?: string; agentId?: string }> }
   | { kind: "orchestrate:subtask"; taskId: string; subtaskId: string; agentId?: string; status: "pending" | "running" | "done" | "error"; content?: string }
@@ -134,6 +139,8 @@ export class Dispatcher extends EventEmitter {
     private memoryProvider: (taskText?: string) => RuntimeMemoryEntry[] = () => []
   ) {
     super()
+    // On startup, mark any leftover pending approvals from previous session as stale
+    try { expireStalePendingApprovals() } catch { /* non-critical */ }
   }
 
   emit(event: string | symbol, ...args: any[]): boolean {
@@ -702,6 +709,7 @@ export class Dispatcher extends EventEmitter {
         if (id.startsWith(`appr-${taskId}-`)) {
           clearTimeout(p.timer)
           this.pendingApprovals.delete(id)
+          resolvePendingApproval(id, 'denied')
           p.resolve(false)
         }
       }
@@ -758,21 +766,39 @@ export class Dispatcher extends EventEmitter {
     if (!p) return false
     clearTimeout(p.timer)
     this.pendingApprovals.delete(requestId)
+    resolvePendingApproval(requestId, approved ? 'approved' : 'denied')
     p.resolve(approved)
     return true
   }
 
-  /** 发起一次写/执行审批：emit approval 事件 + 注册待决 Promise（超时自动拒绝）。 */
+  /** 发起一次写/执行审批：emit approval 事件 + 注册待决 Promise（超时自动拒绝）+ 持久化。 */
   private requestApprovalFor(task: DispatchTask, agentId: string, req: ApprovalRequest): Promise<boolean> {
     const requestId = `appr-${task.id}-${++this.approvalSeq}`
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
-        if (this.pendingApprovals.delete(requestId)) resolve(false)
+        if (this.pendingApprovals.delete(requestId)) {
+          resolvePendingApproval(requestId, 'denied')
+          resolve(false)
+        }
       }, APPROVAL_TIMEOUT_MS)
       this.pendingApprovals.set(requestId, { resolve, timer })
+      // Persist pending approval for cross-restart recovery
+      const persisted: PersistedPendingApproval = {
+        id: requestId,
+        request: req,
+        agentId,
+        createdAt: new Date().toISOString(),
+        status: 'pending'
+      }
+      savePendingApproval(persisted)
       this.emit("stream", {
         kind: "approval", taskId: task.id, agentId,
-        request: { id: requestId, tool: req.tool, toolName: req.toolName, label: req.label, detail: req.detail }
+        request: {
+          id: requestId, tool: req.tool, toolName: req.toolName,
+          label: req.label, detail: req.detail,
+          action: req.action, target: req.target,
+          risk: req.risk, reason: req.reason, preview: req.preview
+        }
       })
     })
   }
@@ -1026,7 +1052,15 @@ export class Dispatcher extends EventEmitter {
       agentId,
       step: { id: stepId, kind: "tool", tool: toolName, label, detail, status: "awaiting" }
     })
-    const approved = await this.requestApprovalFor(task, agentId, { stepId, agentId, tool, toolName, label, detail })
+    const action: 'write_file' | 'run_command' = tool === 'exec' ? 'run_command' : 'write_file'
+    const target = detail || label || toolName
+    const risk = assessApprovalRisk(toolName, req.raw || {})
+    const reason = approvalReason(toolName, risk, target)
+    const preview = detail || ''
+    const approved = await this.requestApprovalFor(task, agentId, {
+      stepId, agentId, tool, toolName, label, detail,
+      action, target, risk, reason, preview
+    })
     if (!approved) {
       this.emit("stream", {
         kind: "activity",
