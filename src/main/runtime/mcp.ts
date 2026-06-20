@@ -488,3 +488,123 @@ function stableId(value: string): string {
   }
   return `mcp-${(h >>> 0).toString(16)}`
 }
+
+/** Result of listing tools from an MCP server. */
+export interface McpToolInfo {
+  name: string
+  description?: string
+  inputSchema?: any
+}
+
+export interface McpServerToolsResult {
+  ok: boolean
+  tools: McpToolInfo[]
+  error?: string
+  resources?: number
+  prompts?: number
+}
+
+/**
+ * Connect to a stdio MCP server, initialize, and list its tools.
+ * Returns structured tool info for the inventory UI.
+ */
+export async function listMcpServerTools(id: string, workspaceId?: string | null): Promise<McpServerToolsResult> {
+  const server = listMcpServers(workspaceId).find(item => item.id === id)
+  if (!server) return { ok: false, tools: [], error: `Server not found: ${id}` }
+  if (server.transport !== 'stdio' || !server.command) {
+    return { ok: false, tools: [], error: 'Only stdio servers are supported for tool listing' }
+  }
+  const appVersion = resolveAppVersion()
+  const appName = resolveAppName()
+  return new Promise(resolve => {
+    const child = spawn(server.command!, server.args || [], {
+      cwd: server.cwd || undefined,
+      env: { ...process.env, ...(server.env || {}) },
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+    let stdout = ''
+    let stderr = ''
+    let initialized = false
+    let requestId = 1
+    const pending = new Map<number, (result: any) => void>()
+    let settled = false
+
+    const finish = (result: McpServerToolsResult) => {
+      if (settled) return
+      settled = true
+      try { child.kill() } catch { /* ignore */ }
+      resolve(result)
+    }
+
+    const timer = setTimeout(() => finish({ ok: false, tools: [], error: `Timout: ${(stderr || stdout).trim().slice(0, 200)}` }), Math.max(5000, Math.min(20000, server.timeoutMs || 10000)))
+
+    function sendRequest(method: string, params?: any): Promise<any> {
+      return new Promise(res => {
+        const id = ++requestId
+        pending.set(id, res)
+        child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id, method, params: params || {} }) + '\n')
+      })
+    }
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += String(chunk)
+      // Try to parse complete JSON responses from the accumulated stdout
+      const lines = stdout.split('\n')
+      stdout = lines.pop() || '' // keep incomplete last line
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed || !trimmed.startsWith('{')) continue
+        try {
+          const msg = JSON.parse(trimmed)
+          if (msg.id && pending.has(msg.id)) {
+            const cb = pending.get(msg.id)
+            pending.delete(msg.id)
+            cb?.(msg)
+          }
+        } catch { /* not valid JSON, skip */ }
+      }
+    })
+
+    child.stderr?.on('data', (chunk: Buffer | string) => { stderr += String(chunk).slice(0, 2048) })
+    child.on('error', (err: Error) => {
+      const msg = (err as any)?.code === 'ENOENT' ? `Command not found: ${server.command}` : err.message
+      finish({ ok: false, tools: [], error: msg })
+    })
+    child.on('exit', (code: number | null) => {
+      if (!settled) finish({ ok: false, tools: [], error: stderr.trim() || `Process exited with code ${code}` })
+    })
+
+    // Step 1: Initialize
+    sendRequest('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: appName, version: appVersion }
+    }).then(initResult => {
+      if (initResult.error) {
+        finish({ ok: false, tools: [], error: `Initialize failed: ${JSON.stringify(initResult.error)}` })
+        return
+      }
+      initialized = true
+      // Step 2: Send initialized notification
+      child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
+      // Step 3: List tools
+      return sendRequest('tools/list')
+    }).then(toolsResult => {
+      if (settled || !toolsResult) return
+      clearTimeout(timer)
+      if (toolsResult.error) {
+        finish({ ok: false, tools: [], error: `tools/list failed: ${JSON.stringify(toolsResult.error)}` })
+        return
+      }
+      const tools: McpToolInfo[] = (toolsResult.result?.tools || []).map((t: any) => ({
+        name: t.name || 'unnamed',
+        description: t.description || undefined,
+        inputSchema: t.inputSchema || undefined
+      }))
+      finish({ ok: true, tools })
+    }).catch(err => {
+      if (!settled) finish({ ok: false, tools: [], error: String(err) })
+    })
+  })
+}

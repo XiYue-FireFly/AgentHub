@@ -216,7 +216,8 @@ const api = {
     upsert: (input: any) => ipcRenderer.invoke('mcp:upsert', input),
     remove: (id: string) => ipcRenderer.invoke('mcp:remove', id),
     setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => ipcRenderer.invoke('mcp:setEnabled', id, enabled, workspaceId),
-    test: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:test', id, workspaceId)
+    test: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:test', id, workspaceId),
+    listTools: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:listTools', id, workspaceId)
   },
   worktrees: {
     list: (parentWorkspaceId?: string | null) => ipcRenderer.invoke('worktrees:list', parentWorkspaceId),

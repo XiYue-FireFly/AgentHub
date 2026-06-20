@@ -65,7 +65,7 @@ import {
   gitUpdateBranch,
   runGitQuery
 } from "./runtime/git"
-import { listMcpServers, removeMcpServer, scanLocalMcpServers, setMcpEnabled, testMcpServer, upsertMcpServer } from "./runtime/mcp"
+import { listMcpServers, listMcpServerTools, removeMcpServer, scanLocalMcpServers, setMcpEnabled, testMcpServer, upsertMcpServer } from "./runtime/mcp"
 import { createWorktree, listWorktrees, openWorktree, removeWorktree, syncWorktree } from "./runtime/worktrees"
 import { clearThreadTodos, deleteThreadTodo, listThreadTodos, setThreadTodos, syncTodosFromMarkdown, upsertThreadTodo } from "./runtime/todos"
 import { checkUpdates, openUpdateDownload, setUpdateChannel, updateStatus } from "./runtime/updates"
@@ -1499,6 +1499,7 @@ ipcMain.handle("mcp:upsert", (_event, input: any) => upsertMcpServer(input))
 ipcMain.handle("mcp:remove", (_event, id: string) => removeMcpServer(id))
 ipcMain.handle("mcp:setEnabled", (_event, id: string, enabled: boolean, workspaceId?: string | null) => setMcpEnabled(id, enabled, workspaceId))
 ipcMain.handle("mcp:test", (_event, id: string, workspaceId?: string | null) => testMcpServer(id, workspaceId))
+ipcMain.handle("mcp:listTools", (_event, id: string, workspaceId?: string | null) => listMcpServerTools(id, workspaceId))
 ipcMain.handle("worktrees:list", (_event, parentWorkspaceId?: string | null) => listWorktrees(parentWorkspaceId))
 ipcMain.handle("worktrees:create", (_event, input: { parentWorkspaceId: string; branch?: string; path?: string }) => createWorktree(input))
 ipcMain.handle("worktrees:remove", (_event, id: string, force?: boolean) => removeWorktree(id, !!force))
