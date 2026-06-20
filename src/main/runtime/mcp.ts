@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+﻿import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
@@ -117,58 +117,128 @@ export async function testMcpServer(id: string, workspaceId?: string | null): Pr
   }
 }
 
+function resolveAppVersion(): string {
+  try {
+    // In Electron main process, __dirname points into the bundled app.
+    // Walk up to find package.json (works in both dev and production).
+    let dir = __dirname
+    for (let i = 0; i < 5; i++) {
+      const candidate = join(dir, 'package.json')
+      if (existsSync(candidate)) {
+        const pkg = JSON.parse(readFileSync(candidate, 'utf-8'))
+        if (pkg.version) return pkg.version
+      }
+      dir = join(dir, '..')
+    }
+  } catch { /* fall through to default */ }
+  return '0.0.0'
+}
+
+function resolveAppName(): string {
+  try {
+    let dir = __dirname
+    for (let i = 0; i < 5; i++) {
+      const candidate = join(dir, 'package.json')
+      if (existsSync(candidate)) {
+        const pkg = JSON.parse(readFileSync(candidate, 'utf-8'))
+        if (pkg.productName) return pkg.productName
+        if (pkg.name) return pkg.name
+      }
+      dir = join(dir, '..')
+    }
+  } catch { /* fall through to default */ }
+  return 'AgentHub'
+}
+
+/**
+ * Validate whether `stdout` contains a successful JSON-RPC initialize result.
+ * Returns the parsed result object on success, or an error message string on failure.
+ */
+export function validateInitializeResult(stdout: string): { ok: true; result: any } | { ok: false; error: string } {
+  const braceStart = stdout.indexOf('{')
+  if (braceStart < 0) return { ok: false, error: 'No JSON object found in stdout' }
+  // Find matching closing brace
+  let depth = 0
+  let end = -1
+  for (let i = braceStart; i < stdout.length && i < braceStart + 65536; i++) {
+    if (stdout[i] === '{') depth++
+    else if (stdout[i] === '}') { depth--; if (depth === 0) { end = i; break } }
+  }
+  if (end < 0) return { ok: false, error: 'Unbalanced braces in JSON-RPC response' }
+  let parsed: any
+  try {
+    parsed = JSON.parse(stdout.slice(braceStart, end + 1))
+  } catch {
+    return { ok: false, error: 'Invalid JSON in response' }
+  }
+  if (parsed.jsonrpc !== '2.0') return { ok: false, error: `Missing or wrong jsonrpc: ${JSON.stringify(parsed.jsonrpc)}` }
+  if (parsed.id !== 1) return { ok: false, error: `Expected id=1, got id=${JSON.stringify(parsed.id)}` }
+  if (parsed.error) return { ok: false, error: `Server returned JSON-RPC error: ${JSON.stringify(parsed.error)}` }
+  if (!parsed.result || typeof parsed.result !== 'object') return { ok: false, error: 'Missing result object in response' }
+  return { ok: true, result: parsed.result }
+}
+
 async function probeStdioServer(server: McpServerConfig): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+  const appVersion = resolveAppVersion()
+  const appName = resolveAppName()
+  return new Promise<void>((resolve, reject) => {
     const child = spawn(server.command!, server.args || [], {
       cwd: server.cwd || undefined,
       env: { ...process.env, ...(server.env || {}) },
       windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ['pipe', 'pipe', 'pipe']
     })
-    let stderr = ""
-    let stdout = ""
+    let stderr = ''
+    let stdout = ''
     let settled = false
     const finish = (error?: Error) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      child.kill()
+      try { child.kill() } catch { /* ignore */ }
       if (error) reject(error)
       else resolve()
     }
     const timer = setTimeout(() => {
-      const detail = (stderr || stdout).trim()
-      finish(new Error(detail ? `MCP initialize timed out: ${detail}` : "MCP initialize timed out; no JSON-RPC initialize response was received."))
+      const diag = stderr || stdout
+      finish(new Error(diag.trim()
+        ? `MCP initialize timed out: ${diag.trim().slice(0, 200)}`
+        : 'MCP initialize timed out; no JSON-RPC initialize response was received.'))
     }, Math.max(2500, Math.min(15000, server.timeoutMs || 5000)))
-    child.stdout?.on("data", chunk => {
-      stdout += String(chunk).slice(0, 2048)
-      if (/"jsonrpc"\s*:\s*"2\.0"/.test(stdout) && /"id"\s*:\s*1/.test(stdout)) finish()
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += String(chunk).slice(0, 65536)
+      // Only succeed when stdout contains a parsed JSON-RPC initialize result
+      const result = validateInitializeResult(stdout)
+      if (result.ok) finish()
     })
-    child.stderr?.on("data", chunk => {
+    child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr += String(chunk).slice(0, 2048)
-      if (/mcp|json-rpc|server|listening|ready/i.test(stderr)) finish()
+      // stderr is diagnostic only — never treated as success
     })
-    child.on("error", error => {
-      const message = (error as any)?.code === "ENOENT"
+    child.on('error', (error: Error) => {
+      const message = (error as any)?.code === 'ENOENT'
         ? `MCP command not found: ${server.command}`
         : error.message
       finish(new Error(message))
     })
-    child.on("exit", code => {
+    child.on('exit', (code: number | null) => {
       if (settled) return
-      if (stdout && /"jsonrpc"\s*:\s*"2\.0"/.test(stdout)) finish()
+      // On exit, check if stdout has a valid initialize result
+      const result = validateInitializeResult(stdout)
+      if (result.ok) finish()
       else finish(new Error((stderr || `MCP process exited with code ${code}`).trim()))
     })
-    child.stdin?.write(JSON.stringify({
-      jsonrpc: "2.0",
+    const initRequest = JSON.stringify({
+      jsonrpc: '2.0',
       id: 1,
-      method: "initialize",
+      method: 'initialize',
       params: {
-        protocolVersion: "2024-11-05",
+        protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: "AgentHub", version: "0.5.4" }
+        clientInfo: { name: appName, version: appVersion }
       }
-    }) + "\n")
+    }) + '\n'
+    child.stdin?.write(initRequest)
   })
 }
 

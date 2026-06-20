@@ -507,17 +507,29 @@ function isMemoryWorthLine(line: string): boolean {
 }
 
 function isMemoryWorthText(value: string): boolean {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  const raw = String(value || '')
+  // Strip role prefixes before whitespace normalization (importConversation passes multi-line raw content)
+  const stripped = raw.replace(/(?:^|\n)\s*(?:user|human|me|我|用户|assistant|bot|ai)\s*[:：-]\s*/gim, ' ')
+  const text = stripped.replace(/\s+/g, ' ').trim()
   if (text.length < 12) return false
   const compact = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
   const noise = ['hi', 'hello', 'test', 'testing', 'ok', 'okay', '你好', '您好', '测试', '随便', '哈哈', '在吗', '收到', '分析项目', '继续', 'dailysessionsnapshot', 'latestsessionsnapshot']
   if (noise.includes(compact)) return false
+  // Check if the entire text consists only of noise words (iterative stripping)
+  let remainder = compact
+  for (let pass = 0; pass < 3; pass++) {
+    let reduced = remainder
+    for (const word of noise) reduced = reduced.replaceAll(word, '')
+    if (reduced === remainder) break
+    remainder = reduced
+  }
+  if (remainder.length < 4) return false
   if (/^\[agenthub custom schedule\]/i.test(text)) return false
   if (/^(completed|cancelled|failed|running)\s+via\s+/i.test(text)) return false
-  return [
-    /(prefer|preference|always|usually|default|style|format|decision|correction|instead|project|workspace|repo)/i,
-    /(偏好|希望|以后|默认|总是|优先|保持|格式|风格|语气|项目|仓库|决定|确认|修正|纠正|不要|应该|改成|去除|发布|打包|验证)/
-  ].some(pattern => pattern.test(text))
+  // Noise blacklist passed — accept the line as a valid memory candidate.
+  // Value-signal keywords (preference/decision/style) are handled by the
+  // scoring layer in scoreMemoryEntry, not as a hard gate here.
+  return true
 }
 
 function cleanMemoryTitle(value: string): string {
@@ -540,11 +552,24 @@ function distillMemorySummary(body: string, category: MemoryCategory): string {
   return clipText(`${prefix[category] || 'Memory'}: ${lines.join('; ')}`, 260)
 }
 
+/**
+ * Tokenize a memory search query for matching.
+ * - ASCII tokens: words of 2+ alphanumeric/underscore/hyphen characters
+ * - CJK tokens: bigrams (sliding window of size 2) from contiguous CJK runs,
+ *   inspired by Kun's memory-store ngrams() \u2014 this fixes the previous whole-run
+ *   extraction which caused zero recall for partial CJK overlap queries.
+ */
 function tokenizeMemoryQuery(query: string): string[] {
   const text = String(query || '').toLowerCase()
   const ascii = text.match(/[a-z0-9_-]{2,}/g) || []
-  const cjk = text.match(/[\u4e00-\u9fff]{2,}/g) || []
-  return Array.from(new Set([...ascii, ...cjk]))
+  const cjkRuns = text.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+/g) || []
+  const cjkBigrams: string[] = []
+  for (const run of cjkRuns) {
+    for (let i = 0; i < run.length - 1; i++) {
+      cjkBigrams.push(run.slice(i, i + 2))
+    }
+  }
+  return Array.from(new Set([...ascii, ...cjkBigrams]))
 }
 
 function scoreMemoryEntry(entry: MemoryEntry, terms: string[]): number {
@@ -563,6 +588,11 @@ function scoreMemoryEntry(entry: MemoryEntry, terms: string[]): number {
   if (typeof entry.confidence === 'number') score += Math.max(0, Math.min(1, entry.confidence)) * 3
   if (entry.category === 'preference' || entry.category === 'correction') score += 2
   if (entry.category === 'project' || entry.category === 'style' || entry.category === 'decision') score += 1
+  // Value-signal keyword bonus (formerly in isMemoryWorthText as a hard gate)
+  const valueSignals = /(prefer|preference|always|usually|default|style|format|decision|correction|instead|project|workspace|repo)/i
+  const valueSignalsZh = /(偏好|希望|以后|默认|总是|优先|保持|格式|风格|语气|项目|仓库|决定|确认|修正|纠正|不要|应该|改成|去除|发布|打包|验证)/
+  const allText = [title, tags, summary, content].join(' ')
+  if (valueSignals.test(allText) || valueSignalsZh.test(allText)) score += 2
   if (!terms.length) score += Math.max(0, Date.parse(entry.updatedAt) || 0) / 1_000_000_000_000
   return Number(score.toFixed(4))
 }

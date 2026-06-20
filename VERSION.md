@@ -187,3 +187,26 @@
 - 当前稳定版本：`1.0.0`；后续小修复使用 `1.0.x`，较大功能版本使用 `1.1.0`。
 - 适用范围：ACP 增强（terminal handler / server 复用）、session/prompt 联机验证、后续 agentic / 工作区 / 技能流程修复与小增强。
 - 登记要求：完成后补充改动摘要、验证命令、提交哈希或发布 tag。
+
+### 1.0.1（待验证）
+
+- 状态：待验证，暂不发版。
+- 摘要：稳定化迭代第一轮 — 修复 MCP 测试误报、长期记忆中文召回、mojibake 静态守卫。
+- 主要改动：
+  - **P0-1 mojibake 体检**：全仓扫描确认无真实乱码，新增 `mojibake-guard.test.ts`（4 tests）静态回归守卫。
+  - **P0-2 MCP 测试误报修复**：`src/main/runtime/mcp.ts` probeStdioServer 重写 — 提取 `validateInitializeResult` 纯函数（JSON 解析 + result vs error 校验）；stderr 不再作为成功条件；`clientInfo.version` 从 `package.json` 读取（不再硬编码/不用 cwd）；发送合法 JSON-RPC initialize 请求。新增 `mcp-validate.test.ts`（10 tests）。原有 7 个 MCP 测试全绿。
+  - **P0-3 长期记忆修复**：`src/main/memory-library.ts` — CJK 检索改为 bigram（滑动窗口 2-char），解决整段 CJK 子串匹配导致的零召回；噪声过滤从白名单门控改为黑名单 + 价值信号加权，允许无关键词的自由事实进入记忆；迭代噪声剥离 + 角色前缀清除防止多词噪声绕过。`memory-library.test.ts` 新增 5 个 P0-3 测试。
+- 主要文件：`src/main/runtime/mcp.ts`、`src/main/memory-library.ts`、`src/main/runtime/__tests__/mcp-validate.test.ts`（新）、`src/main/__tests__/mojibake-guard.test.ts`（新）、`src/main/memory-library.test.ts`（补 5 测试）、`src/main/runtime/mcp.ts.bak`（备份，可删）。
+- 验证：
+  - `npm.cmd run typecheck`（exit 0）
+  - `npm.cmd run test`（353 passed / 70 files，exit 0）
+  - `npm.cmd run build`（exit 0）
+  - `git diff --check`（exit 0）
+- 未覆盖（记入后续）：
+  - P0-4 审批系统增强（请求持久化 + 结构化 action/risk/preview）
+  - P0-5 Usage 统计持久化（append-only ledger）
+  - P1-6 拆分 index.ts
+  - P1-7 五角色调度 verdict 结构化
+  - P1-8 Provider direct 隔离测试
+  - P1-9 本地 CLI 能力检测
+  - P2-10~13 Skills inventory / MCP inventory / UI 优化 / 文件编辑器
