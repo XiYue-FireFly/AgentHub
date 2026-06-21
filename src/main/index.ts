@@ -98,6 +98,7 @@ import { runReleaseChecks } from "./runtime/release-workspace"
 import { buildProjectMap, searchProjectFiles } from "./runtime/project-map"
 import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from "./runtime/terminal-ai"
 import { registerAllIpcHandlers } from "./ipc"
+import { hub as hubLog, window_ as windowLog, pipeline as pipelineLog, proxy as proxyLog, store as storeLog } from "./logger"
 import { summarizePageSnapshot, extractReadableText, buildPageAnalysisPrompt } from "./runtime/browser-workspace"
 import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from "./runtime/inline-edit"
 import { installAppMenu } from "./menu"
@@ -982,7 +983,7 @@ function showWindowsNotification(title: string, body: string): void {
 function createWindow(): void {
   const isDevRenderer = Boolean(process.env.ELECTRON_RENDERER_URL)
   const iconPath = appAssetPath(process.platform === "win32" ? "icon.ico" : "icon.png")
-  console.log(`[Window] create renderer=${process.env.ELECTRON_RENDERER_URL || "file"} dev=${isDevRenderer}`)
+  windowLog.info(`create renderer=${process.env.ELECTRON_RENDERER_URL || "file"} dev=${isDevRenderer}`)
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -1012,23 +1013,23 @@ function createWindow(): void {
     mainWindow.show()
     mainWindow.focus()
     hasShownMainWindow = true
-    console.log(`[Window] reveal visible=${mainWindow.isVisible()} focused=${mainWindow.isFocused()} minimized=${mainWindow.isMinimized()}`)
+    windowLog.info(`reveal visible=${mainWindow.isVisible()} focused=${mainWindow.isFocused()} minimized=${mainWindow.isMinimized()}`)
   }
   mainWindow.on("ready-to-show", () => {
-    console.log("[Window] ready-to-show")
+    windowLog.info("ready-to-show")
     revealMainWindow()
   })
   mainWindow.webContents.once("did-finish-load", () => {
-    console.log("[Window] did-finish-load")
+    windowLog.info("did-finish-load")
     if (!hasShownMainWindow) revealMainWindow()
   })
   mainWindow.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
     if (!isMainFrame) return
-    console.error(`[Window] Failed to load renderer ${url}: ${code} ${description}`)
+    windowLog.error(`Failed to load renderer ${url}: ${code} ${description}`)
     revealMainWindow()
   })
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
-    console.error("[Window] Renderer process gone:", details)
+    windowLog.error("Renderer process gone:", details)
     revealMainWindow()
   })
   mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
@@ -1098,7 +1099,7 @@ async function initHub(): Promise<void> {
     name: "logger",
     type: "observe",
     handle: async (event) => {
-      console.log("[Pipeline] " + event.source + " -> " + event.target)
+      pipelineLog.debug(event.source + " -> " + event.target)
       return event
     }
   })
@@ -1159,16 +1160,16 @@ async function initHub(): Promise<void> {
 
   try {
     await detectAgentsAsync()
-    console.log("[Hub] Initial agent detection complete")
+    hubLog.info("Initial agent detection complete")
   } catch (e) {
-    console.error("[Hub] Initial detection failed:", e)
+    hubLog.error("Initial detection failed:", e)
   }
 
   try {
     await proxy.start()
-    console.log("[Proxy] Local Chat Completions:", proxy.getUrl())
+    proxyLog.info("Local Chat Completions:", proxy.getUrl())
   } catch (e) {
-    console.error("[Proxy] Failed to start:", e)
+    proxyLog.error("Failed to start:", e)
   }
 
   hub.start()
@@ -1605,14 +1606,14 @@ function isStoreKeyAllowed(key: unknown): boolean {
 
 ipcMain.handle("store:get", async (_event, key: string) => {
   if (!isStoreKeyAllowed(key)) {
-    console.warn('[IPC] store:get denied for key:', key)
+    storeLog.warn('store:get denied for key: ' + key)
     return undefined
   }
   return store.get(key)
 })
 ipcMain.handle("store:set", async (_event, key: string, value: any) => {
   if (!isStoreKeyAllowed(key)) {
-    console.warn('[IPC] store:set denied for key:', key)
+    storeLog.warn('store:set denied for key: ' + key)
     return false
   }
   store.set(key, value)
