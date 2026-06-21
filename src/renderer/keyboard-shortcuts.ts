@@ -113,6 +113,14 @@ export const KEYBOARD_SHORTCUT_COMMANDS = [
     descriptionZh: '\u5c06\u7126\u70b9\u79fb\u5230\u5e95\u90e8\u8f93\u5165\u6846',
     descriptionEn: 'Move focus to the bottom composer input.',
     defaultBindings: ['Ctrl+L']
+  },
+  {
+    id: 'open-workflows',
+    labelZh: '\u6253\u5f00\u5de5\u4f5c\u6d41',
+    labelEn: 'Open workflows',
+    descriptionZh: '\u6253\u5f00\u5de5\u4f5c\u6d41\u7ba1\u7406\u9762\u677f',
+    descriptionEn: 'Open the workflows panel.',
+    defaultBindings: ['Ctrl+Shift+W']
   }
 ] as const
 

@@ -26,8 +26,8 @@ export function SessionSidebar({
   setSearch,
   proxyHost
 }: {
-  view: 'chat' | 'write' | 'tasks' | 'settings'
-  setView: (view: 'chat' | 'write' | 'tasks' | 'settings') => void
+  view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
+  setView: (view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows') => void
   workspaces: WorkspaceItem[]
   workspaceId: string | null
   selectWorkspace: (id: string | null) => void

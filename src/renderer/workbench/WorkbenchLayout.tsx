@@ -3,6 +3,7 @@ import { Icon, IC, AgentMark } from '../glass/ui'
 import { BindingDef, ProviderDef, TaskItem } from '../glass/meta'
 import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
 import { SettingsScreen, MotionLevel } from '../screens/Settings'
+import { WorkflowsPanel } from './WorkflowsPanel'
 import { TasksScreen } from '../screens/Tasks'
 import { SetupTab, summarizeAgentConnections } from '../glass/connection-status'
 import { tr } from '../glass/i18n'
@@ -29,7 +30,7 @@ import {
   shortcutDisplay
 } from '../keyboard-shortcuts'
 
-type ViewMode = 'chat' | 'write' | 'tasks' | 'settings'
+type ViewMode = 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
 type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models'
 type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | null
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
@@ -540,6 +541,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     else if (commandId === 'panel-browser') setRightPanel('browser')
     else if (commandId === 'settings-shortcuts') openSetup('shortcuts')
     else if (commandId === 'settings-mcp') openSetup('mcp')
+    else if (commandId === 'open-workflows') setView('workflows')
   }, [createThread, openCreateProject, setView, openSetup])
 
   const paletteCommands: PaletteCommand[] = useMemo(() => {
@@ -1134,6 +1136,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}
                 openSetup={openSetup}
               />
+            </div>
+          )}
+          {view === 'workflows' && (
+            <div className="wb-scroll-surface wb-settings-surface">
+              <WorkflowsPanel onClose={() => setView('chat')} />
             </div>
           )}
         </main>
