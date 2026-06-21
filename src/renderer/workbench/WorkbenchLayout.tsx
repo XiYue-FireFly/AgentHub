@@ -17,6 +17,7 @@ import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
 import { CommandPalette, PaletteCommand } from './CommandPalette'
 import { ErrorBoundary } from '../ErrorBoundary'
+import { GitBranchControl } from './GitBranchControl'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
@@ -1676,6 +1677,10 @@ function WorkbenchInspector({
   children: React.ReactNode
 }) {
   const drag = useRef<{ startX: number; startWidth: number } | null>(null)
+  // P2-11: Keep width in a ref so the drag effect doesn't re-bind listeners
+  // on every width change (which happens every mousemove during drag).
+  const widthRef = useRef(width)
+  widthRef.current = width
 
   useEffect(() => {
     const move = (event: MouseEvent) => {
@@ -1683,7 +1688,7 @@ function WorkbenchInspector({
       setWidth(drag.current.startWidth + (drag.current.startX - event.clientX))
     }
     const up = () => {
-      if (drag.current) commitWidth(width)
+      if (drag.current) commitWidth(widthRef.current)
       drag.current = null
     }
     window.addEventListener('mousemove', move)
@@ -1692,7 +1697,7 @@ function WorkbenchInspector({
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
-  }, [setWidth, commitWidth, width])
+  }, [setWidth, commitWidth])
 
   return (
     <aside className="wb-right wb-inspector" style={viewportWidth > 820 ? { width: clampInspectorWidth(width, viewportWidth) } : undefined}>
@@ -1835,176 +1840,7 @@ function TitlebarMenu({
   )
 }
 
-function GitBranchControl({ workspaceId, onOpenGit, compact = false }: { workspaceId: string | null; onOpenGit: () => void; compact?: boolean }) {
-  const [status, setStatus] = useState<GitStatus | null>(null)
-  const [branches, setBranches] = useState<GitBranch[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  const popoverRef = useRef<HTMLDivElement | null>(null)
-  const branchInputRef = useRef<HTMLInputElement | null>(null)
-
-  const refresh = useCallback(async () => {
-    if (!workspaceId) {
-      setStatus(null)
-      setBranches([])
-      setError(null)
-      return
-    }
-    setLoading(true)
-    try {
-      const nextStatus = await window.electronAPI.git.status(workspaceId)
-      setStatus(nextStatus)
-      if (open && nextStatus.isRepo) {
-        const branchResponse = await window.electronAPI.git.branches(workspaceId).catch(() => null)
-        setBranches(branchResponse?.localBranches || [])
-      } else if (!open) {
-        setBranches([])
-      }
-      setError(nextStatus.isRepo ? null : (nextStatus.error || tr('未检测到 Git 仓库。', 'No Git repository detected.')))
-    } catch (e: any) {
-      setError(e?.message || tr('读取 Git 状态失败。', 'Failed to read Git status.'))
-    } finally {
-      setLoading(false)
-    }
-  }, [workspaceId, open])
-
-  useEffect(() => {
-    refresh().catch(() => {})
-  }, [refresh])
-
-  useEffect(() => {
-    if (!open) return
-    window.setTimeout(() => branchInputRef.current?.focus(), 0)
-    const onPointerDown = (event: MouseEvent) => {
-      if (!popoverRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    return () => document.removeEventListener('mousedown', onPointerDown)
-  }, [open])
-
-  if (!workspaceId || !status?.isRepo) {
-    const label = !workspaceId
-      ? tr('未绑定目录', 'No workspace')
-      : tr('不是 Git 仓库', 'Not a Git repo')
-    return (
-      <div className={'wb-git-branch-control empty' + (compact ? ' compact' : '')} title={error || label}>
-        <button type="button" className="wb-git-branch-summary" onClick={onOpenGit}>
-          <Icon d={IC.git} size={13} />
-          <span>{label}</span>
-          <small>Git</small>
-        </button>
-        <button type="button" className="wb-git-branch-add" onClick={onOpenGit} title={tr('打开 Git 面板', 'Open Git panel')}>
-          <Icon d={IC.plus} size={13} />
-        </button>
-      </div>
-    )
-  }
-
-  const dirty = status.files.length > 0
-  const syncLabel = status.ahead || status.behind ? `↑${status.ahead} ↓${status.behind}` : tr('同步', 'synced')
-
-  const checkout = async (branch: string) => {
-    if (!branch || branch === status.branch) return
-    try {
-      setError(null)
-      await window.electronAPI.git.checkoutBranch(workspaceId, branch)
-      await refresh()
-      setOpen(false)
-    } catch (e: any) {
-      setError(e?.message || tr('切换分支失败。', 'Failed to checkout branch.'))
-      onOpenGit()
-    }
-  }
-
-  const create = async (branch = query) => {
-    if (!branch.trim()) return
-    try {
-      setError(null)
-      await window.electronAPI.git.createBranch(workspaceId, branch.trim(), true)
-      await refresh()
-      setQuery('')
-      setOpen(false)
-    } catch (e: any) {
-      setError(e?.message || tr('创建分支失败。', 'Failed to create branch.'))
-      onOpenGit()
-    }
-  }
-
-  const filteredBranches = branches.filter(branch => branch.name.toLowerCase().includes(query.trim().toLowerCase()))
-  const canCreate = !!query.trim() && !branches.some(branch => branch.name.toLowerCase() === query.trim().toLowerCase())
-  const dirtyLabel = dirty ? tr(`未提交：${status.files.length} 个文件`, `Uncommitted: ${status.files.length} files`) : syncLabel
-
-  return (
-    <div className={'wb-git-branch-control' + (compact ? ' compact' : '')} title={error || `${status.branch} · ${syncLabel}`} ref={popoverRef}>
-      <button type="button" className="wb-git-branch-summary" onClick={() => setOpen(value => !value)}>
-        <Icon d={IC.git} size={13} />
-        <span>{status.branch || 'HEAD'}</span>
-        <small>{dirty ? `${status.files.length} ${tr('变更', 'changes')}` : syncLabel}</small>
-      </button>
-      <button
-        type="button"
-        className="wb-git-branch-add"
-        onClick={() => {
-          setOpen(true)
-          window.setTimeout(() => branchInputRef.current?.focus(), 0)
-        }}
-        disabled={loading}
-        title={tr('新建或切换分支', 'Create or switch branch')}
-      >
-        <Icon d={IC.plus} size={13} />
-      </button>
-      {open && (
-        <div className="wb-git-branch-popover">
-          <div className="wb-git-branch-search">
-            <Icon d={IC.search} size={14} />
-            <input
-              ref={branchInputRef}
-              value={query}
-              onChange={event => setQuery(event.target.value)}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  if (canCreate && !dirty) create().catch(() => {})
-                  else if (filteredBranches[0] && !dirty) checkout(filteredBranches[0].name).catch(() => {})
-                }
-              }}
-              placeholder={tr('搜索或输入新分支名', 'Search or type a new branch')}
-              autoFocus
-            />
-          </div>
-          <div className="wb-git-branch-popover-title">{tr('分支', 'Branches')}</div>
-          {dirty && <div className="wb-git-branch-warning">{tr('有未提交变更时暂不切换或创建分支。', 'Commit or save changes before switching or creating branches.')}</div>}
-          <div className="wb-git-branch-list">
-            {filteredBranches.map(branch => (
-              <button
-                key={branch.name}
-                type="button"
-                className={branch.current ? 'active' : ''}
-                onClick={() => checkout(branch.name).catch(() => {})}
-                disabled={loading || dirty || branch.current}
-              >
-                <Icon d={IC.broadcast} size={15} />
-                <span>
-                  <strong>{branch.name}</strong>
-                  {branch.current && <small>{dirtyLabel}</small>}
-                </span>
-                {branch.current && <Icon d={IC.check} size={15} />}
-              </button>
-            ))}
-            {filteredBranches.length === 0 && <div className="wb-muted-box">{tr('没有匹配的分支。', 'No matching branches.')}</div>}
-          </div>
-          <div className="wb-git-branch-footer">
-            <button type="button" onClick={onOpenGit}>{tr('Git 面板', 'Git panel')}</button>
-            <button type="button" onClick={() => create().catch(() => {})} disabled={!canCreate || loading || dirty}>
-              {canCreate ? `${tr('创建并检出', 'Create and checkout')} ${query.trim()}` : tr('创建并检出新分支...', 'Create and checkout new branch...')}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
+// GitBranchControl moved to GitBranchControl.tsx (registered via import)
 
 function WorkbenchToolPanel({
   panel,
@@ -2245,13 +2081,19 @@ function BrowserPanelV2({
           <>
             <button onClick={async () => {
               if (!captured) return
-              const summary = await window.electronAPI.browser.summarize(captured)
+              // Get structured text snapshot, then ask the LLM to summarize it.
+              const snapshotText = await window.electronAPI.browser.summarize(captured)
+              const res = await window.electronAPI.ai.quickComplete({
+                prompt: snapshotText,
+                systemPrompt: 'Summarize the following web page snapshot concisely: key topic, main points, and notable links. Reply in the user\'s language.'
+              })
+              const summary = res.content || snapshotText
               // Add summary to composer or show in panel
               const attachment: WorkbenchAttachment = {
                 id: `browser-summary-${Date.now()}`,
                 kind: 'text',
                 name: `Summary: ${captured.title || captured.url}`,
-                text: summary,
+                text: res.error ? `${snapshotText}\n\n[AI summary failed: ${res.error}]` : summary,
                 createdAt: Date.now()
               }
               onAttach(attachment)
@@ -2260,12 +2102,18 @@ function BrowserPanelV2({
             <button onClick={async () => {
               if (!captured) return
               const prompt = await window.electronAPI.browser.analyzePrompt(captured, tr('分析这个页面的主要内容和结构', 'Analyze the main content and structure of this page'))
-              // Add analysis prompt to composer
+              // Run the analysis prompt through the LLM instead of just attaching the prompt text.
+              const res = await window.electronAPI.ai.quickComplete({
+                prompt,
+                systemPrompt: 'You analyze web pages. Provide a structured analysis: purpose, key sections, content type, and any notable patterns. Reply in the user\'s language.'
+              })
+              const analysis = res.content || prompt
+              // Add analysis to composer
               const attachment: WorkbenchAttachment = {
                 id: `browser-analysis-${Date.now()}`,
                 kind: 'text',
                 name: `Analysis: ${captured.title || captured.url}`,
-                text: prompt,
+                text: res.error ? `${prompt}\n\n[AI analysis failed: ${res.error}]` : analysis,
                 createdAt: Date.now()
               }
               onAttach(attachment)
