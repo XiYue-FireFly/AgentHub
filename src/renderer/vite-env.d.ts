@@ -244,6 +244,33 @@ interface ElectronAPI {
     setApprovalOverride: (agentId: string, tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny' | null) => Promise<any>
     resolveApproval: (requestId: string, approved: boolean) => Promise<boolean>
   }
+  prompts: {
+    list: (category?: string) => Promise<any[]>
+    get: (id: string) => Promise<any | null>
+    upsert: (input: any) => Promise<any>
+    delete: (id: string) => Promise<boolean>
+    search: (query: string) => Promise<any[]>
+    slashCommands: () => Promise<any[]>
+    incrementUse: (id: string) => Promise<void>
+    seedDefaults: () => Promise<void>
+  }
+  shortcuts: {
+    list: (category?: string) => Promise<any[]>
+    get: (id: string) => Promise<any | null>
+    update: (id: string, key: string) => Promise<any | null>
+    reset: (id: string) => Promise<any | null>
+    resetAll: () => Promise<void>
+    conflicts: () => Promise<Array<{ key: string; ids: string[] }>>
+  }
+  diagnostics: {
+    run: () => Promise<{ timestamp: string; results: Array<{ id: string; name: string; status: string; message: string }>; summary: { pass: number; warn: number; fail: number; skip: number; total: number } }>
+  }
+  backup: {
+    create: () => Promise<{ id: string; filename: string; createdAt: string; sizeBytes: number; keys: string[] }>
+    list: () => Promise<Array<{ id: string; filename: string; createdAt: string; sizeBytes: number; keys: string[] }>>
+    restore: (filename: string) => Promise<{ restored: string[]; error?: string }>
+    delete: (filename: string) => Promise<boolean>
+  }
   platform: string
 }
 

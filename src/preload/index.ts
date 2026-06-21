@@ -286,6 +286,37 @@ const api = {
     resolveApproval: (requestId: string, approved: boolean) =>
       ipcRenderer.invoke('agentic:resolveApproval', requestId, approved)
   },
+  // --- Prompt Library ---
+  prompts: {
+    list: (category?: string) => ipcRenderer.invoke('prompts:list', category),
+    get: (id: string) => ipcRenderer.invoke('prompts:get', id),
+    upsert: (input: any) => ipcRenderer.invoke('prompts:upsert', input),
+    delete: (id: string) => ipcRenderer.invoke('prompts:delete', id),
+    search: (query: string) => ipcRenderer.invoke('prompts:search', query),
+    slashCommands: () => ipcRenderer.invoke('prompts:slashCommands'),
+    incrementUse: (id: string) => ipcRenderer.invoke('prompts:incrementUse', id),
+    seedDefaults: () => ipcRenderer.invoke('prompts:seedDefaults')
+  },
+  // --- Keyboard Shortcuts ---
+  shortcuts: {
+    list: (category?: string) => ipcRenderer.invoke('shortcuts:list', category),
+    get: (id: string) => ipcRenderer.invoke('shortcuts:get', id),
+    update: (id: string, key: string) => ipcRenderer.invoke('shortcuts:update', id, key),
+    reset: (id: string) => ipcRenderer.invoke('shortcuts:reset', id),
+    resetAll: () => ipcRenderer.invoke('shortcuts:resetAll'),
+    conflicts: () => ipcRenderer.invoke('shortcuts:conflicts')
+  },
+  // --- Diagnostics ---
+  diagnostics: {
+    run: () => ipcRenderer.invoke('diagnostics:run')
+  },
+  // --- Backup ---
+  backup: {
+    create: () => ipcRenderer.invoke('backup:create'),
+    list: () => ipcRenderer.invoke('backup:list'),
+    restore: (filename: string) => ipcRenderer.invoke('backup:restore', filename),
+    delete: (filename: string) => ipcRenderer.invoke('backup:delete', filename)
+  },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform
 }

@@ -78,7 +78,15 @@ import {
   usageStats
 } from "./runtime/usage-stats"
 import { buildContextProjection } from "./runtime/context-ledger"
+import { listPrompts, getPrompt, upsertPrompt, deletePrompt, searchPrompts, getSlashCommands, incrementUseCount, seedDefaultPrompts } from "./runtime/prompt-library"
+import { listShortcuts, getShortcut, updateShortcut, resetShortcut, resetAllShortcuts, detectConflicts } from "./runtime/keyboard-shortcuts"
+import { runDiagnostics } from "./runtime/diagnostics"
+import { createBackup, listBackups, restoreBackup, deleteBackup } from "./runtime/backup"
 import { installAppMenu } from "./menu"
+
+function resolveAppVersionFromMain(): string {
+  try { return app.getVersion() } catch { return '1.0.0' }
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -1577,6 +1585,44 @@ ipcMain.handle("memory:updateEntry", async (_event, id: string, patch: any) => m
 ipcMain.handle("memory:disableEntry", async (_event, id: string) => memory().disableEntry(id))
 ipcMain.handle("memory:loadState", async () => memory().loadRuntimeState())
 ipcMain.handle("memory:saveState", async (_event, state) => memory().saveRuntimeState(state))
+
+// --- Prompt Library ---
+ipcMain.handle("prompts:list", (_e, category?: string) => listPrompts(category as any))
+ipcMain.handle("prompts:get", (_e, id: string) => getPrompt(id))
+ipcMain.handle("prompts:upsert", (_e, input: any) => upsertPrompt(input))
+ipcMain.handle("prompts:delete", (_e, id: string) => deletePrompt(id))
+ipcMain.handle("prompts:search", (_e, query: string) => searchPrompts(query))
+ipcMain.handle("prompts:slashCommands", () => getSlashCommands())
+ipcMain.handle("prompts:incrementUse", (_e, id: string) => incrementUseCount(id))
+ipcMain.handle("prompts:seedDefaults", () => seedDefaultPrompts())
+
+// --- Keyboard Shortcuts ---
+ipcMain.handle("shortcuts:list", (_e, category?: string) => listShortcuts(category as any))
+ipcMain.handle("shortcuts:get", (_e, id: string) => getShortcut(id))
+ipcMain.handle("shortcuts:update", (_e, id: string, key: string) => updateShortcut(id, key))
+ipcMain.handle("shortcuts:reset", (_e, id: string) => resetShortcut(id))
+ipcMain.handle("shortcuts:resetAll", () => resetAllShortcuts())
+ipcMain.handle("shortcuts:conflicts", () => detectConflicts())
+
+// --- Diagnostics ---
+ipcMain.handle("diagnostics:run", async () => {
+  return runDiagnostics({
+    storeGet: (key: string) => store.get(key),
+    hasProviders: () => providerMgr.getConfig().providers.length > 0,
+    hasAgents: () => registry.getAll().length > 0,
+    hasMcpServers: () => listMcpServers().length > 0,
+    hasMemoryEntries: () => memory().listEntries().length > 0,
+    hasWorkspace: () => !!getWorkspaceManager()?.getActive(),
+    appVersion: resolveAppVersionFromMain()
+  })
+})
+
+// --- Backup ---
+ipcMain.handle("backup:create", () => createBackup(() => store.getAll(), app.getPath("userData"), resolveAppVersionFromMain()))
+ipcMain.handle("backup:list", () => listBackups(app.getPath("userData")))
+ipcMain.handle("backup:restore", (_e, filename: string) => restoreBackup(app.getPath("userData"), filename, (k: string, v: any) => store.set(k, v)))
+ipcMain.handle("backup:delete", (_e, filename: string) => deleteBackup(app.getPath("userData"), filename))
+
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
 
 ipcMain.handle("providers:get", async () => providerMgr.getConfig())
