@@ -94,6 +94,7 @@ import { importConversationFromFile, importConversationFromJson, branchFromCheck
 import { buildMemoryGraph, suggestCleanup } from "./runtime/memory-graph"
 import { scanPlugins, validateManifest, getPluginContributions } from "./runtime/plugin-manager"
 import { runReleaseChecks } from "./runtime/release-workspace"
+import { buildProjectMap, searchProjectFiles } from "./runtime/project-map"
 import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from "./runtime/terminal-ai"
 import { summarizePageSnapshot, extractReadableText, buildPageAnalysisPrompt } from "./runtime/browser-workspace"
 import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from "./runtime/inline-edit"
@@ -1716,6 +1717,10 @@ ipcMain.handle("plugins:validate", (_e, manifest: any) => validateManifest(manif
 ipcMain.handle("plugins:contributions", (_e, plugins: any[]) => getPluginContributions(plugins))
 
 // --- Release Workspace ---
+// --- Project Map ---
+ipcMain.handle("projectMap:build", (_event, rootPath: string, maxDepth?: number) => buildProjectMap(rootPath, maxDepth))
+ipcMain.handle("projectMap:search", (_event, map: any, query: string) => searchProjectFiles(map, query))
+
 ipcMain.handle("release:checks", async () => {
   return runReleaseChecks({
     appVersion: resolveAppVersionFromMain(),

@@ -397,6 +397,11 @@ const api = {
     validate: (manifest: any) => ipcRenderer.invoke('plugins:validate', manifest),
     contributions: (plugins: any[]) => ipcRenderer.invoke('plugins:contributions', plugins)
   },
+  // --- Project Map ---
+  projectMap: {
+    build: (rootPath: string, maxDepth?: number) => ipcRenderer.invoke('projectMap:build', rootPath, maxDepth),
+    search: (map: any, query: string) => ipcRenderer.invoke('projectMap:search', map, query)
+  },
   // --- Release Workspace ---
   release: {
     checks: () => ipcRenderer.invoke('release:checks')

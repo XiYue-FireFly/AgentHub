@@ -336,6 +336,13 @@ interface ElectronAPI {
     validate: (manifest: any) => Promise<{ valid: boolean; errors?: string[] }>
     contributions: (plugins: any[]) => Promise<{ commands: any[]; skills: any[]; prompts: any[] }>
   }
+  projectMap: {
+    build: (rootPath: string, maxDepth?: number) => Promise<any>
+    search: (map: any, query: string) => Promise<any[]>
+  }
+  release: {
+    checks: () => Promise<any>
+  }
   platform: string
 }
 
