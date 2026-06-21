@@ -2,8 +2,10 @@
 import { Icon, IC, AgentMark } from '../glass/ui'
 import { BindingDef, ProviderDef, TaskItem } from '../glass/meta'
 import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
-import { SettingsScreen, MotionLevel } from '../screens/Settings'
-import { WorkflowsPanel } from './WorkflowsPanel'
+// Phase 3.2 lazy loading: heavy views loaded on demand
+const SettingsScreen = React.lazy(() => import('../screens/Settings').then(m => ({ default: m.SettingsScreen })))
+type MotionLevel = 'off' | 'subtle' | 'rich'
+const WorkflowsPanel = React.lazy(() => import('./WorkflowsPanel').then(m => ({ default: m.WorkflowsPanel })))
 import { TerminalPanel } from './TerminalPanel'
 import { TasksScreen } from '../screens/Tasks'
 import { SetupTab, summarizeAgentConnections } from '../glass/connection-status'
@@ -1148,6 +1150,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
           {view === 'settings' && (
             <div className="wb-scroll-surface wb-settings-surface">
+              <React.Suspense fallback={<div className="wb-muted-box">{tr('加载设置...', 'Loading settings...')}</div>}>
               <SettingsScreen
                 providers={props.providers}
                 bindings={props.bindings}
@@ -1167,11 +1170,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                 goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}
                 openSetup={openSetup}
               />
+              </React.Suspense>
             </div>
           )}
           {view === 'workflows' && (
             <div className="wb-scroll-surface wb-settings-surface">
+              <React.Suspense fallback={<div className="wb-muted-box">{tr('加载工作流...', 'Loading workflows...')}</div>}>
               <WorkflowsPanel onClose={() => setView('chat')} />
+              </React.Suspense>
             </div>
           )}
         </main>
