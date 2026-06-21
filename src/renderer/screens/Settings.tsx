@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Icon, IC, AgentMark, Seg, Switch } from '../glass/ui'
 import { AGENT_META, AGENT_IDS, BindingDef, DEFAULT_STDIO_ARGS, ProviderDef } from '../glass/meta'
 import { agentDesc, getLang, setLang, Lang, tr } from '../glass/i18n'
+import { styledConfirm } from '../lib/confirm'
 import { ConnectionSummary, SetupTab } from '../glass/connection-status'
 // Phase 4 lazy loading: SkillsTab loaded on demand
 const SkillsTab = React.lazy(() => import('./Skills').then(m => ({ default: m.SkillsTab })))
@@ -343,7 +344,10 @@ function ProvidersTab({ providers, onSetEnabled, onSetKey, onReload, onUpsert, o
                 <Icon d={IC.refresh} size={13} /> {tr('获取模型', 'Fetch models')}
               </button>
               {!provider.builtIn && (
-                <button className="ah-btn sm danger" onClick={() => window.confirm(tr(`删除供应商「${provider.name}」？`, `Delete provider "${provider.name}"?`)) && onDelete(provider.id)}>
+                <button className="ah-btn sm danger" onClick={async () => {
+                  const ok = await styledConfirm({ message: tr(`删除供应商「${provider.name}」？`, `Delete provider "${provider.name}"?`), danger: true })
+                  if (ok) onDelete(provider.id)
+                }}>
                   {tr('删除', 'Delete')}
                 </button>
               )}
@@ -977,7 +981,8 @@ function WorkspacesTab() {
             {activeId !== item.id && <button className="ah-btn sm" onClick={async () => { await window.electronAPI.workspaces.setActive(item.id); await refresh() }}>{tr('设为当前', 'Set active')}</button>}
             <button className="ah-btn sm" onClick={() => setEditing({ id: item.id, name: item.name, rootPath: item.rootPath })}>{tr('编辑', 'Edit')}</button>
             <button className="ah-btn sm danger" onClick={async () => {
-              if (!window.confirm(tr(`移除工作目录「${item.name}」？磁盘文件不会被删除。`, `Remove workspace "${item.name}"? Files on disk will not be deleted.`))) return
+              const ok = await styledConfirm({ message: tr(`移除工作目录「${item.name}」？磁盘文件不会被删除。`, `Remove workspace "${item.name}"? Files on disk will not be deleted.`), danger: true })
+              if (!ok) return
               await window.electronAPI.workspaces.remove(item.id)
               await refresh()
             }}>{tr('移除', 'Remove')}</button>
@@ -1322,7 +1327,12 @@ function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
                 <button className="ah-btn sm" onClick={async () => { await window.electronAPI.mcp.test(server.id, workspaceId); await refresh() }}>{tr('测试', 'Test')}</button>
                 {server.transport === 'stdio' && <button className="ah-btn sm" onClick={() => listTools(server.id)}>{toolsForServer === server.id ? tr('收起工具', 'Hide tools') : tr('工具列表', 'Tools')}</button>}
                 <button className="ah-btn sm" onClick={() => copyCommand(server)}>{tr('复制命令', 'Copy')}</button>
-                {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => { if (!window.confirm(tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`))) return; await window.electronAPI.mcp.remove(server.id); await refresh() }}>{tr('删除', 'Delete')}</button>}
+                {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => {
+                  const ok = await styledConfirm({ message: tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`), danger: true })
+                  if (!ok) return
+                  await window.electronAPI.mcp.remove(server.id)
+                  await refresh()
+                }}>{tr('删除', 'Delete')}</button>}
               </span>
               {server.error && <small className="wb-mcp-clean-error">{server.error}</small>}
               {toolsForServer === server.id && (
@@ -1533,7 +1543,8 @@ function MemorySettingsTab() {
   }
 
   const deleteMemory = async (id: string) => {
-    if (!window.confirm(tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'))) return
+    const ok = await styledConfirm({ message: tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'), danger: true })
+    if (!ok) return
     await window.electronAPI.memory.delete(id)
     if (editing?.id === id) closeEditor()
     await refresh()
@@ -1784,7 +1795,8 @@ function LegacyMemorySettingsTab() {
   }
 
   const deleteMemory = async (id: string) => {
-    if (!window.confirm(tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'))) return
+    const ok = await styledConfirm({ message: tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'), danger: true })
+    if (!ok) return
     await window.electronAPI.memory.delete(id)
     if (editing?.id === id) setEditing(null)
     await refresh()

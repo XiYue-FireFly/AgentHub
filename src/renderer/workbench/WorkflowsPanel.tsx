@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { styledConfirm } from '../lib/confirm'
 
 interface WorkflowStep {
   id: string
@@ -68,6 +69,13 @@ function WorkflowCard({ wf, onEdit, onDelete }: {
         <strong style={{ flex: 1, fontSize: 14 }}>{wf.name}</strong>
         <span className="ah-chip" style={{ fontSize: 10 }}>{cat.zh}</span>
         {wf.pinned && <span style={{ fontSize: 12 }}>📌</span>}
+        {/* 删除按钮：停在 onClick 编辑之外，避免冒泡触发编辑 */}
+        <button
+          className="ah-btn sm danger"
+          title={tr('删除', 'Delete')}
+          onClick={(e) => { e.stopPropagation(); onDelete(wf.id) }}
+          style={{ padding: '0 6px', fontSize: 12 }}
+        >×</button>
       </div>
       {wf.description && (
         <div style={{ fontSize: 12, color: 'var(--tx-2)', lineHeight: 1.4 }}>
@@ -250,7 +258,8 @@ export function WorkflowsPanel({ onClose }: { onClose?: () => void }) {
   }
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm(tr('确定删除此工作流？', 'Delete this workflow?'))) return
+    const ok = await styledConfirm({ message: tr('确定删除此工作流？', 'Delete this workflow?'), danger: true })
+    if (!ok) return
     try {
       await window.electronAPI.workflows.delete(id)
       await refresh()

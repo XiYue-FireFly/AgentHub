@@ -5,7 +5,7 @@
              providers:* / routing:setBinding / proxy:info
    ============================================================ */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   AGENT_IDS, AgentUIStatus, BindingDef, ProviderDef, TaskItem, ChatMessage,
   DispatchMode
@@ -17,9 +17,12 @@ import { upsertStep } from './glass/chat-transcript'
 import { ApprovalItem } from './glass/approval-dialog'
 import { WorkbenchLayout } from './workbench/WorkbenchLayout'
 import { applyAppearance, loadAppearance, readAppearanceLocal, subscribeSystemTheme } from './appearance'
+import { styledConfirm } from './lib/confirm'
 
 type AgentMap = Record<string, { status: AgentUIStatus }>
 
+// P1-3: Wrapper that guards electronAPI availability before mounting AppInner,
+// so all hooks in AppInner are unconditional (Rules of Hooks compliant).
 export default function App() {
   if (!window.electronAPI) {
     return (
@@ -31,7 +34,10 @@ export default function App() {
       </div>
     )
   }
+  return <AppInner />
+}
 
+function AppInner() {
   const [hubRunning, setHubRunning] = useState(false)
   const [proxyHost, setProxyHost] = useState('127.0.0.1:9528')
   const [hubAgents, setHubAgents] = useState<Record<string, string>>({})   // 注册表原始状态
@@ -184,8 +190,15 @@ export default function App() {
   }, [refreshStatus])
 
   /* ---------- 流式事件 ---------- */
+  // P2-13: Guard against hub.onStream not being ready at mount time;
+  // without this, `off` is undefined and stream events are silently lost.
   useEffect(() => {
-    const off = window.electronAPI?.hub?.onStream?.((e: any) => {
+    const hubApi = window.electronAPI?.hub
+    if (!hubApi?.onStream) {
+      console.warn('[App] hub.onStream not available — stream events will not be received')
+      return
+    }
+    const off = hubApi.onStream((e: any) => {
       const tid: string = e.taskId
       if (!tid || ignoredTasks.current.has(tid)) return
 
@@ -300,7 +313,8 @@ export default function App() {
   }, [])
 
   const onDeleteTask = useCallback(async (id: string) => {
-    if (!window.confirm('删除这条任务历史？对应的运行详情也会从当前会话记录中移除。')) return
+    const ok = await styledConfirm({ message: '删除这条任务历史？对应的运行详情也会从当前会话记录中移除。', danger: true })
+    if (!ok) return
     try { await window.electronAPI.tasks.delete(id) } catch { /* noop */ }
     setTasks(ts => ts.filter(t => t.id !== id))
     setRuntimeRefreshNonce(n => n + 1)
@@ -308,7 +322,8 @@ export default function App() {
   }, [refreshStatus])
 
   const onClearCompletedTasks = useCallback(async () => {
-    if (!window.confirm('清理所有已结束的任务历史？对应的运行详情也会从当前会话记录中移除。')) return
+    const ok = await styledConfirm({ message: '清理所有已结束的任务历史？对应的运行详情也会从当前会话记录中移除。', danger: true })
+    if (!ok) return
     try { await window.electronAPI.tasks.clearCompleted() } catch { /* noop */ }
     setTasks(ts => ts.filter(t => t.status === 'running'))
     setRuntimeRefreshNonce(n => n + 1)
@@ -352,24 +367,29 @@ export default function App() {
 
   /* ---------- Agent 展示状态 ----------
      off：HTTP 绑定的提供商未启用或无 Key（如 hermes/gemini）；stdio 绑定不受影响 */
-  const agents: AgentMap = {}
-  for (const id of AGENT_IDS) {
-    const b = bindings.find(x => x.agentId === id)
-    const prov = providers.find(p => p.id === b?.providerId)
-    const isStdio = b?.protocol === 'stdio-plain' || b?.protocol === 'acp'
-    const local = localAgents.find(agent => agent.agentId === id)
-    const providerUsable = !!prov && prov.enabled && !!prov.apiKey
-    let st: AgentUIStatus
-    if (isStdio && !local?.configured) st = 'off'
-    else if (!isStdio && b && !providerUsable) st = 'off'
-    else {
-      const hub = hubAgents[id]
-      st = hub === 'busy' ? 'busy' : hub === 'error' ? 'error' : hub === 'offline' ? 'off' : 'idle'
+  // P1-6: useMemo prevents WorkbenchLayout (112KB subtree) from re-rendering
+  // on every parent render when agents identity hasn't actually changed.
+  const agents: AgentMap = useMemo(() => {
+    const map: AgentMap = {}
+    for (const id of AGENT_IDS) {
+      const b = bindings.find(x => x.agentId === id)
+      const prov = providers.find(p => p.id === b?.providerId)
+      const isStdio = b?.protocol === 'stdio-plain' || b?.protocol === 'acp'
+      const local = localAgents.find(agent => agent.agentId === id)
+      const providerUsable = !!prov && prov.enabled && !!prov.apiKey
+      let st: AgentUIStatus
+      if (isStdio && !local?.configured) st = 'off'
+      else if (!isStdio && b && !providerUsable) st = 'off'
+      else {
+        const hub = hubAgents[id]
+        st = hub === 'busy' ? 'busy' : hub === 'error' ? 'error' : hub === 'offline' ? 'off' : 'idle'
+      }
+      const ov = busyOverride[id]
+      if (ov && st !== 'off') st = ov
+      map[id] = { status: st }
     }
-    const ov = busyOverride[id]
-    if (ov && st !== 'off') st = ov
-    agents[id] = { status: st }
-  }
+    return map
+  }, [bindings, providers, localAgents, hubAgents, busyOverride])
 
 
   const lang = useLang() // 语言切换时整树重挂载（key），组件内 tr() 直接生效

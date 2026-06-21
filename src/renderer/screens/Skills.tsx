@@ -8,6 +8,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { Icon, IC, Enter, AgentMark, Switch, Seg } from '../glass/ui'
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
+import { styledConfirm } from '../lib/confirm'
 
 type Pol = 'allow' | 'ask' | 'deny'
 interface ApprovalCfg {
@@ -181,7 +182,8 @@ export function SkillsTab() {
     } catch (e: any) { setErr(e?.message || 'failed') }
   }
   const removeSkill = async (id: string, name: string) => {
-    if (!window.confirm(tr(`删除技能「${name}」？已安装的 agent 会一并卸载。`, `Delete skill "${name}"? It will be uninstalled from all agents.`))) return
+    const ok = await styledConfirm({ message: tr(`删除技能「${name}」？已安装的 agent 会一并卸载。`, `Delete skill "${name}"? It will be uninstalled from all agents.`), danger: true })
+    if (!ok) return
     try { await api()?.skills?.remove?.(id); await refresh() } catch (e: any) { setErr(e?.message || 'failed') }
   }
 

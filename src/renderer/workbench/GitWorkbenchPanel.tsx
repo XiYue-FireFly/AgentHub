@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
+import { styledConfirm } from '../lib/confirm'
 
 type GitViewMode = 'changes' | 'branches' | 'commits'
 type GitDiffMode = 'working' | 'commit'
@@ -192,8 +193,9 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
       setRenameDraft('')
     })
   }
-  const deleteBranch = (branch: GitBranch) => {
-    if (!window.confirm(tr(`删除分支 ${branch.name}？未合并分支会被 Git 阻止。`, `Delete branch ${branch.name}? Git will block unmerged branches.`))) return
+  const deleteBranch = async (branch: GitBranch) => {
+    const ok = await styledConfirm({ message: tr(`删除分支 ${branch.name}？未合并分支会被 Git 阻止。`, `Delete branch ${branch.name}? Git will block unmerged branches.`), danger: true })
+    if (!ok) return
     void runAction(`delete:${branch.name}`, () => window.electronAPI.git.deleteBranch(workspaceId, branch.name, false))
   }
 
