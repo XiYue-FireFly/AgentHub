@@ -1,3 +1,6 @@
+@import "tailwindcss";
+@import "./styles/command-palette.css";
+
 /* ============================================================
    AgentHub — 玻璃拟态设计系统
    冷灰蓝基调 · 薄荷绿强调 · frosted glass
@@ -16,7 +19,7 @@
   --glass-bg: rgba(255, 255, 255, 0.055);
   --glass-bg-strong: rgba(255, 255, 255, 0.09);
   --glass-border: rgba(255, 255, 255, 0.09);
-  --glass-border-strong: rgba(255, 255, 255, 0.16);
+  /* --glass-border-strong 在下方语义化区块统一定义 */
   --glass-blur: 24px;
 
   /* 文字 */
@@ -41,6 +44,55 @@
   --ag-openclaw: #a78bfa;
   --ag-marvis: #4f8ef7;
   --ag-mmcode: #6db8f5;
+
+  /* 语义色 */
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #3b82f6;
+
+  /* 间距令牌 */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* 字体令牌 */
+  --font-xs: 0.75rem;
+  --font-sm: 0.875rem;
+  --font-base: 1rem;
+  --font-lg: 1.125rem;
+
+  /* 阴影和遮罩 */
+  --overlay-bg: rgba(8, 10, 14, 0.55);
+  --shadow-sm: 0 18px 50px -12px rgba(0, 0, 0, 0.3);
+  --bg-card-subtle: rgba(0, 0, 0, 0.18);
+  --bg-card-highlight: rgba(255, 255, 255, 0.06);
+  --bg-code: rgba(0, 0, 0, 0.22);
+  --bg-error-subtle: rgba(232, 112, 106, 0.08);
+  --border-error-subtle: rgba(232, 112, 106, 0.2);
+  --bg-selected: rgba(255, 255, 255, 0.1);
+  --bg-agent-light: rgba(235, 239, 245, 0.88);
+  --bg-agent-dark: rgba(210, 218, 229, 0.62);
+
+  /* 玻璃边框 */
+  --glass-border-default: rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.1);
+  --glass-border-strong: rgba(255, 255, 255, 0.18);
+
+  /* 输入和代码 */
+  --bg-input: rgba(255, 255, 255, 0.05);
+  --bg-input-active: rgba(255, 255, 255, 0.09);
+  --bg-code-block: rgba(0, 0, 0, 0.32);
+  --bg-inline-code: rgba(255, 255, 255, 0.09);
+
+  /* 状态背景 */
+  --bg-badge: rgba(0, 0, 0, 0.2);
+  --bg-task-content: rgba(0, 0, 0, 0.18);
+  --border-warning: rgba(232, 179, 77, 0.28);
+  --bg-warning-subtle: rgba(232, 179, 77, 0.12);
 
   --radius-lg: 20px;
   --radius-md: 14px;
@@ -113,9 +165,36 @@
   --st-idle: var(--wb-green);
   --st-busy: var(--wb-warn);
   --st-error: var(--wb-red);
-  --ah-ui-font-size: 14px;
+  --ah-ui-font-size: var(--font-sm);
   --ah-code-font-size: 13px;
   --ah-contrast: 1;
+
+  /* 语义背景 / 边框 / 阴影：与暗根对齐到 light 色板 */
+  --overlay-bg: rgba(15, 23, 42, 0.32);
+  --shadow-sm: 0 18px 50px -12px rgba(15, 23, 42, 0.12);
+  --bg-card-subtle: rgba(15, 23, 42, 0.04);
+  --bg-card-highlight: rgba(47, 111, 235, 0.06);
+  --bg-code: #f4f6fb;
+  --bg-error-subtle: rgba(211, 72, 63, 0.08);
+  --border-error-subtle: rgba(211, 72, 63, 0.22);
+  --bg-selected: rgba(47, 111, 235, 0.1);
+  --bg-agent-light: rgba(235, 239, 245, 0.92);
+  --bg-agent-dark: rgba(210, 218, 229, 0.7);
+  --glass-border-default: rgba(15, 23, 42, 0.1);
+  --glass-border-hover: rgba(15, 23, 42, 0.16);
+  --glass-border-strong: #cfd8e6;
+  --bg-input: #ffffff;
+  --bg-input-active: #f7f9fc;
+  --bg-code-block: #f4f6fb;
+  --bg-inline-code: rgba(15, 23, 42, 0.06);
+  --bg-badge: rgba(15, 23, 42, 0.06);
+  --bg-task-content: rgba(15, 23, 42, 0.03);
+  --border-warning: rgba(201, 138, 23, 0.3);
+  --bg-warning-subtle: rgba(201, 138, 23, 0.1);
+  --color-success: var(--wb-green);
+  --color-warning: var(--wb-warn);
+  --color-error: var(--wb-red);
+  --color-info: var(--wb-accent);
 }
 
 :root[data-theme="dark"] {
@@ -143,6 +222,33 @@
   --tx-3: var(--wb-muted);
   --mint-soft: var(--wb-accent-soft);
   --mint-line: rgba(111, 156, 255, 0.45);
+
+  /* 语义背景 / 边框 / 阴影：暗主题恢复深色基底（覆盖 :root 的浅色默认） */
+  --overlay-bg: rgba(8, 10, 14, 0.62);
+  --shadow-sm: 0 18px 50px -12px rgba(0, 0, 0, 0.5);
+  --bg-card-subtle: rgba(0, 0, 0, 0.22);
+  --bg-card-highlight: rgba(255, 255, 255, 0.06);
+  --bg-code: rgba(0, 0, 0, 0.28);
+  --bg-error-subtle: rgba(255, 116, 109, 0.1);
+  --border-error-subtle: rgba(255, 116, 109, 0.22);
+  --bg-selected: rgba(255, 255, 255, 0.1);
+  --bg-agent-light: rgba(235, 239, 245, 0.88);
+  --bg-agent-dark: rgba(210, 218, 229, 0.62);
+  --glass-border-default: rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.12);
+  --glass-border-strong: #354154;
+  --bg-input: rgba(255, 255, 255, 0.05);
+  --bg-input-active: rgba(255, 255, 255, 0.09);
+  --bg-code-block: rgba(0, 0, 0, 0.4);
+  --bg-inline-code: rgba(255, 255, 255, 0.09);
+  --bg-badge: rgba(0, 0, 0, 0.28);
+  --bg-task-content: rgba(0, 0, 0, 0.2);
+  --border-warning: rgba(227, 173, 79, 0.3);
+  --bg-warning-subtle: rgba(227, 173, 79, 0.12);
+  --color-success: var(--wb-green);
+  --color-warning: var(--wb-warn);
+  --color-error: var(--wb-red);
+  --color-info: var(--wb-accent);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -312,7 +418,7 @@ button, input, textarea, select { letter-spacing: 0; }
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--wb-muted);
 }
 .wb-window-actions { display: flex; gap: 2px; }
@@ -412,7 +518,7 @@ button, input, textarea, select { letter-spacing: 0; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--wb-muted);
   text-transform: uppercase;
   letter-spacing: 0;
@@ -505,7 +611,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 7px;
   padding: 4px 10px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-model-picker-trigger:hover:not(:disabled) {
@@ -532,7 +638,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-model-picker-trigger strong {
   display: block;
   font-weight: 650;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.15;
 }
 .wb-model-picker-trigger small {
@@ -565,7 +671,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 10px;
   padding: 7px 8px 5px;
   color: #334155;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 750;
 }
 .wb-model-group-title small {
@@ -696,7 +802,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 8px;
   padding: 0 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   text-align: left;
   cursor: pointer;
 }
@@ -1003,7 +1109,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-thread-title {
   font-weight: 700;
-  font-size: 16px;
+  font-size: var(--font-base);
   color: var(--wb-text);
   max-width: 520px;
   overflow: hidden;
@@ -1012,7 +1118,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-thread-meta {
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   margin-top: 2px;
   display: flex;
   align-items: center;
@@ -1084,7 +1190,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: #2f3744;
   padding: 4px 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-agent-slot-main span {
@@ -1179,7 +1285,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 6px;
   padding: 0 7px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-git-branch-summary:hover { background: #f3f6fa; color: var(--wb-accent); }
@@ -1204,7 +1310,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: transparent;
   color: #4b5563;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   outline: none;
 }
 .wb-git-branch-control select:disabled { opacity: 0.48; cursor: not-allowed; }
@@ -1274,7 +1380,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: var(--wb-text);
   padding: 0 10px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-git-branch-warning {
   border: 1px solid #fed7aa;
@@ -1305,7 +1411,7 @@ button, input, textarea, select { letter-spacing: 0; }
   text-align: left;
   padding: 0 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-git-branch-list button:hover:not(:disabled),
@@ -1372,7 +1478,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: #485264;
   padding: 0 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-tool-panel-bar {
   display: inline-flex;
@@ -1394,7 +1500,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border-radius: 9px;
   padding: 0 9px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-tool-button:hover,
@@ -1501,7 +1607,7 @@ button, input, textarea, select { letter-spacing: 0; }
   padding: 13px 15px;
 }
 .wb-user-message strong { white-space: pre-wrap; word-break: break-word; font-weight: 600; }
-.wb-user-message small { display: block; color: var(--wb-muted); font-size: 12px; margin-top: 6px; }
+.wb-user-message small { display: block; color: var(--wb-muted); font-size: var(--font-xs); margin-top: 6px; }
 .wb-user-message button {
   width: 30px;
   height: 30px;
@@ -1543,7 +1649,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: var(--wb-muted);
   padding: 0 10px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-agent-process-head svg {
@@ -1603,7 +1709,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-agent-process-row .wb-markdown {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-completion-summary {
   margin-top: 10px;
@@ -1689,7 +1795,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-markdown h1 { font-size: 20px; }
 .wb-markdown h2 { font-size: 17px; }
 .wb-markdown h3 { font-size: 15px; }
-.wb-markdown h4 { font-size: 14px; }
+.wb-markdown h4 { font-size: var(--font-sm); }
 .wb-markdown ul,
 .wb-markdown ol {
   margin: 0 0 10px;
@@ -1699,7 +1805,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-markdown li { margin: 3px 0; }
 .wb-markdown code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-xs);
   border: 1px solid #e3e8f1;
   border-radius: 5px;
   background: #f7f9fc;
@@ -1893,7 +1999,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border-radius: 8px;
   padding: 9px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-output-error button { margin-left: 8px; }
 .wb-orchestrate-compact {
@@ -1901,7 +2007,7 @@ button, input, textarea, select { letter-spacing: 0; }
   flex-direction: column;
   gap: 7px;
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-orchestrate-compact div { display: grid; grid-template-columns: 88px 1fr; gap: 8px; }
 .wb-orchestrate-compact small {
@@ -2020,7 +2126,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 
 .wb-composer-quick-card strong {
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-composer-quick-card small {
@@ -2059,7 +2165,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border-radius: 999px;
   background: transparent;
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 
@@ -2099,7 +2205,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 
 .wb-approval-mode-head strong {
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--tx-2);
 }
 
@@ -2150,7 +2256,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-approval-mode-popover small {
   color: var(--tx-3);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-composer textarea {
@@ -2174,7 +2280,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 8px;
   padding: 6px 9px 0;
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   overflow: hidden;
 }
 .wb-composer-context span {
@@ -2199,7 +2305,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border-radius: 8px;
   padding: 3px 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -2254,7 +2360,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 7px;
   padding: 3px 8px 3px 5px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-attachment-chip:hover { border-color: #c8d5e6; background: #f4f7fb; }
@@ -2348,7 +2454,7 @@ button, input, textarea, select { letter-spacing: 0; }
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-command-palette strong {
   color: #2f3744;
@@ -2403,7 +2509,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border: 1px solid #ffd8d5;
   border-radius: 9px;
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   box-shadow: 0 8px 22px rgba(80, 24, 20, 0.08);
   margin: 0 24px 8px;
 }
@@ -2427,7 +2533,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 8px;
 }
 .wb-goal-strip strong {
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--wb-accent);
   white-space: nowrap;
 }
@@ -2448,7 +2554,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border: 1px solid #ffd8d5;
   border-radius: 8px;
   padding: 6px 9px;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-turn-context-summary {
@@ -2659,7 +2765,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-context-ledger-summary strong {
   display: block;
-  font-size: 16px;
+  font-size: var(--font-base);
   line-height: 1.1;
 }
 .wb-context-ledger-summary span {
@@ -2675,7 +2781,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 6px;
   color: #4f5d70;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-context-ledger-summary button:hover { color: var(--wb-accent); background: #f8fbff; }
@@ -2685,7 +2791,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: #fff9eb;
   color: #8a6414;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-context-blocks {
   display: flex;
@@ -2725,7 +2831,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-context-block p {
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   margin-top: 3px;
   word-break: break-word;
 }
@@ -2800,7 +2906,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-run-summary strong {
   display: block;
-  font-size: 16px;
+  font-size: var(--font-base);
   line-height: 1.1;
 }
 .wb-run-summary span {
@@ -2878,7 +2984,7 @@ button, input, textarea, select { letter-spacing: 0; }
   display: flex;
   flex-direction: column;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--wb-muted);
 }
 .wb-project-modal input {
@@ -2922,7 +3028,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-announcement-head span {
   display: block;
   color: var(--wb-accent);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
   margin-bottom: 4px;
 }
@@ -2972,7 +3078,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-announcement-steps strong {
   display: block;
-  font-size: 14px;
+  font-size: var(--font-sm);
   color: var(--wb-text);
   margin-bottom: 8px;
 }
@@ -3037,7 +3143,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border: 1px solid #ffd5d2;
   border-radius: 9px;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-project-modal-actions {
   display: flex;
@@ -3169,7 +3275,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: var(--wb-text);
   padding: 0 9px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-tool-inline-form button,
 .wb-tool-actions button {
@@ -3180,7 +3286,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: var(--wb-accent);
   padding: 0 10px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 .wb-tool-inline-form button:disabled,
@@ -3237,7 +3343,7 @@ button, input, textarea, select { letter-spacing: 0; }
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: #263143;
 }
 .wb-terminal-run-head span {
@@ -3285,7 +3391,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: var(--wb-text);
   padding: 0 9px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-browser-toolbar button {
   height: 32px;
@@ -3296,7 +3402,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: #536174;
   padding: 0 9px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-browser-toolbar button:disabled {
   opacity: 0.46;
@@ -3327,7 +3433,7 @@ button, input, textarea, select { letter-spacing: 0; }
   font-size: 13px;
 }
 .wb-browser-blank span {
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-settings {
@@ -3366,7 +3472,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-settings-nav-title span {
   display: block;
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   margin-top: 2px;
 }
 .wb-settings-nav button {
@@ -3487,7 +3593,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-schedule-card p {
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.5;
   margin: 5px 0 9px;
 }
@@ -3497,7 +3603,7 @@ button, input, textarea, select { letter-spacing: 0; }
   align-items: center;
   gap: 8px;
   color: #4d5665;
-  font-size: 12px;
+  font-size: var(--font-xs);
   padding: 5px 0;
 }
 .wb-schedule-step em {
@@ -3610,7 +3716,7 @@ button, input, textarea, select { letter-spacing: 0; }
   grid-template-columns: 84px 1fr;
   gap: 7px;
   align-items: center;
-  font-size: 12px;
+  font-size: var(--font-xs);
   padding: 7px 0;
   border-bottom: 1px solid var(--wb-line-soft);
 }
@@ -3633,7 +3739,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border: 1px dashed var(--wb-line);
   border-radius: 10px;
   padding: 14px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.5;
 }
 .wb-scroll-surface {
@@ -3755,7 +3861,7 @@ button, input, textarea, select { letter-spacing: 0; }
   min-height: 34px;
   background: #f6f8fb;
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 .wb-approval-table .agent-cell {
@@ -3827,7 +3933,7 @@ button, input, textarea, select { letter-spacing: 0; }
   outline: none;
   color: var(--wb-text);
   font: inherit;
-  font-size: 18px;
+  font-size: var(--font-lg);
   font-weight: 700;
   background: transparent;
 }
@@ -3836,7 +3942,7 @@ button, input, textarea, select { letter-spacing: 0; }
   align-items: center;
   gap: 6px;
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-write-actions {
   display: flex;
@@ -3961,7 +4067,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-write-assistant label {
   color: #5f6a7a;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-write-agent-row,
 .wb-write-action-grid {
@@ -4036,12 +4142,12 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-write-suggestion strong {
   display: block;
-  font-size: 12px;
+  font-size: var(--font-xs);
   margin-bottom: 4px;
 }
 .wb-write-suggestion p {
   color: #4f5a6b;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.55;
 }
 .wb-write-status {
@@ -4050,7 +4156,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border-top: 1px solid var(--wb-line-soft);
   padding: 0 28px;
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4075,7 +4181,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-write-start strong {
   display: block;
   color: var(--wb-text);
-  font-size: 14px;
+  font-size: var(--font-sm);
 }
 .wb-write-start p {
   margin: 3px 0 0;
@@ -4242,7 +4348,7 @@ button, input, textarea, select { letter-spacing: 0; }
   grid-template-columns: 88px minmax(0, 1fr);
   gap: 10px;
   align-items: start;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .approval-request-row span {
@@ -4405,7 +4511,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 /* 工具提示文本 */
 .ah-hint { font-size: 11.5px; color: var(--tx-3); }
-.ah-label { font-size: 12px; color: var(--tx-2); }
+.ah-label { font-size: var(--font-xs); color: var(--tx-2); }
 
 /* ---------- Chat timeline ---------- */
 .ah-chat-list {
@@ -4495,7 +4601,7 @@ button, input, textarea, select { letter-spacing: 0; }
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--tx-1);
   background: rgba(255,255,255,0.09);
   border: 1px solid var(--glass-border);
@@ -4583,7 +4689,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .ah-act-step { display: flex; flex-direction: column; }
 .ah-act-row {
   display: flex; align-items: center; gap: 7px;
-  font-size: 12px; color: var(--tx-2); padding: 2px 0; min-width: 0;
+  font-size: var(--font-xs); color: var(--tx-2); padding: 2px 0; min-width: 0;
 }
 .ah-act-row.clickable { cursor: pointer; }
 .ah-act-row.clickable:hover { color: var(--tx-1); }
@@ -4821,7 +4927,7 @@ button, input, textarea, select { letter-spacing: 0; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-git-files small {
   grid-column: 3;
@@ -5037,7 +5143,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-usage-card span {
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 650;
 }
 .wb-usage-card strong {
@@ -5136,7 +5242,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 7px;
 }
 .wb-usage-detail strong {
-  font-size: 18px;
+  font-size: var(--font-lg);
 }
 .wb-usage-detail span,
 .wb-usage-detail small {
@@ -5324,7 +5430,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-settings-shell .wb-settings-nav-title span {
   color: #7a8494;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-settings-shell .wb-settings-nav button {
@@ -5444,7 +5550,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-settings-shell .wb-setup-next span {
   color: #6b7586;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.45;
 }
 
@@ -5491,7 +5597,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-settings-shell .wb-workspace-row p,
 .wb-settings-shell .ah-hint {
   color: #737f90;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.5;
 }
 
@@ -5540,7 +5646,7 @@ button, input, textarea, select { letter-spacing: 0; }
   flex-direction: column;
   gap: 7px;
   color: #5d6878;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-settings-shell .wb-field > span {
@@ -5707,7 +5813,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-settings-shell .wb-local-agent-head span {
   display: block;
   color: #737f90;
-  font-size: 12px;
+  font-size: var(--font-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5773,7 +5879,7 @@ button, input, textarea, select { letter-spacing: 0; }
   min-height: 38px;
   background: #f8fafc;
   color: #6f7b8d;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 
@@ -5812,7 +5918,7 @@ button, input, textarea, select { letter-spacing: 0; }
   color: var(--tx-1);
   padding: 0 9px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-settings-shell .wb-memory-settings .ah-textarea {
@@ -5948,7 +6054,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--accent);
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 
@@ -5983,14 +6089,14 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-settings-shell .wb-mcp-clean-stats span {
   margin: 0 0 8px;
   color: var(--tx-3);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-settings-shell .wb-memory-kun-stats strong,
 .wb-settings-shell .wb-mcp-clean-stats strong {
   color: var(--tx-1);
   font-family: var(--font-mono);
-  font-size: 18px;
+  font-size: var(--font-lg);
 }
 
 .wb-settings-shell .wb-memory-kun-record-head,
@@ -6137,13 +6243,13 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-settings-shell .wb-memory-kun-row-main small,
 .wb-settings-shell .wb-memory-kun-row-meta {
   color: var(--tx-3);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-settings-shell .wb-memory-kun-message {
   margin: 0 24px 18px;
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 
@@ -6261,7 +6367,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-settings-shell .wb-skill-browser-title {
   color: var(--tx-1);
-  font-size: 14px;
+  font-size: var(--font-sm);
   font-weight: 760;
 }
 
@@ -6326,7 +6432,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 6px;
   padding: 5px 7px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   text-align: left;
   cursor: pointer;
 }
@@ -6377,7 +6483,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-settings-shell .wb-skill-detail-head h3 {
   margin: 8px 0 4px;
   color: var(--tx-1);
-  font-size: 18px;
+  font-size: var(--font-lg);
 }
 
 .wb-settings-shell .wb-skill-detail-head p {
@@ -6413,7 +6519,7 @@ button, input, textarea, select { letter-spacing: 0; }
   display: block;
   margin-top: 4px;
   color: var(--tx-1);
-  font-size: 12px;
+  font-size: var(--font-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6433,7 +6539,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: color-mix(in srgb, var(--accent) 7%, var(--wb-panel));
   color: var(--tx-2);
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.5;
 }
 
@@ -6463,7 +6569,7 @@ button, input, textarea, select { letter-spacing: 0; }
   gap: 7px;
   padding: 5px 10px 5px 6px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
   cursor: pointer;
 }
@@ -6488,7 +6594,7 @@ button, input, textarea, select { letter-spacing: 0; }
   padding: 14px;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.58;
 }
 
@@ -6559,12 +6665,12 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-settings-shell .wb-empty-state strong {
   color: #202733;
-  font-size: 14px;
+  font-size: var(--font-sm);
 }
 
 .wb-settings-shell .wb-empty-state span {
   max-width: 460px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.55;
 }
 
@@ -6574,7 +6680,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border: 1px solid #ffd5d2;
   border-radius: 10px;
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.5;
 }
 
@@ -6610,7 +6716,7 @@ button, input, textarea, select { letter-spacing: 0; }
   display: block;
   margin-top: 5px;
   color: #737f90;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.45;
 }
 
@@ -6676,7 +6782,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-appearance-hero span {
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.5;
 }
 
@@ -6740,7 +6846,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-appearance-preview-body main strong {
   display: block;
   color: var(--wb-text);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-appearance-preview-body main p {
@@ -6801,7 +6907,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-appearance-row span {
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.45;
 }
 
@@ -6854,7 +6960,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-theme-card > span {
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-theme-swatches {
@@ -6904,7 +7010,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-appearance-stepper strong {
   min-width: 46px;
   color: var(--wb-text);
-  font-size: 12px;
+  font-size: var(--font-xs);
   text-align: center;
 }
 
@@ -6927,7 +7033,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-appearance-range span {
   color: var(--wb-text);
-  font-size: 12px;
+  font-size: var(--font-xs);
   text-align: right;
 }
 
@@ -6945,7 +7051,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-timeout-control span {
   color: var(--wb-text);
-  font-size: 12px;
+  font-size: var(--font-xs);
   text-align: right;
   white-space: nowrap;
 }
@@ -6998,7 +7104,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-shortcut-row span,
 .wb-shortcut-row small {
   color: var(--tx-3);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-shortcut-row.conflict {
@@ -7013,7 +7119,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: var(--wb-line-soft);
   color: var(--tx-1);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 760;
   padding: 6px 10px;
 }
@@ -7061,7 +7167,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-local-model-item span,
 .wb-local-model-item small {
   color: var(--wb-muted);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-local-model-item code {
@@ -7271,7 +7377,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: #f8fbff;
   color: #52617a;
   padding: 0 28px 0 11px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
   outline: none;
   cursor: pointer;
@@ -7681,7 +7787,7 @@ button, input, textarea, select { letter-spacing: 0; }
   padding: 0 9px;
 }
 .wb-composer-row .wb-model-picker-trigger strong {
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.05;
 }
 .wb-composer-row .wb-model-picker-trigger small {
@@ -7693,7 +7799,7 @@ button, input, textarea, select { letter-spacing: 0; }
   padding: 0 9px;
 }
 .wb-composer-row .wb-reasoning-trigger span {
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 650;
 }
 .wb-composer-row .wb-command-chips {
@@ -7844,7 +7950,7 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .wb-minimal-title {
   color: #94a0b6;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 600;
 }
 .wb-minimal-head-actions {
@@ -8227,7 +8333,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-agent-picker-title {
   padding: 4px 6px 9px;
   color: #7180a0;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 750;
 }
 .wb-agent-picker-list {
@@ -8259,7 +8365,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-agent-picker-list button > span:not(.wb-provider-mark) {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 14px;
+  font-size: var(--font-sm);
   font-weight: 700;
   min-width: 0;
 }
@@ -8316,7 +8422,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: transparent;
   color: #52658d;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 750;
   padding: 0 7px;
   margin: -3px 0 7px;
@@ -8393,7 +8499,7 @@ button, input, textarea, select { letter-spacing: 0; }
   right: 12px;
   bottom: 12px;
   color: #7180a0;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 @media (max-width: 720px) {
   .wb-agent-picker.has-models {
@@ -8437,7 +8543,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-model-picker-trigger-minimal small {
   display: inline;
   color: #52658d;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 .wb-model-picker-combined {
@@ -8459,7 +8565,7 @@ button, input, textarea, select { letter-spacing: 0; }
   align-items: center;
   gap: 7px;
   color: #7180a0;
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 750;
   padding: 4px 6px;
 }
@@ -8521,7 +8627,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: #fff;
   color: #334155;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-model-search {
   height: 34px;
@@ -8776,13 +8882,13 @@ button, input, textarea, select { letter-spacing: 0; }
   white-space: nowrap;
 }
 .wb-git-branch-list button strong {
-  font-size: 14px;
+  font-size: var(--font-sm);
   font-weight: 650;
 }
 .wb-git-branch-list button small {
   margin-top: 3px;
   color: #8da0bf;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 .wb-git-branch-list button.active,
 .wb-git-branch-list button:hover:not(:disabled) {
@@ -8938,7 +9044,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: #fff;
   color: #273244;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   cursor: pointer;
 }
 
@@ -9027,7 +9133,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-git-summary-grid strong {
   color: #1f2937;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-git-summary-grid span {
@@ -9086,7 +9192,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-git-file-row > button strong {
   color: #18202f;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-git-file-row > button small {
@@ -9142,7 +9248,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: #fbfcfe;
   color: #1f2937;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
@@ -9184,7 +9290,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border: 0;
   outline: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-git-create-row input,
@@ -9270,7 +9376,7 @@ button, input, textarea, select { letter-spacing: 0; }
 
 .wb-git-commit-timeline strong {
   color: #1f2937;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-git-commit-timeline small {
@@ -9290,7 +9396,7 @@ button, input, textarea, select { letter-spacing: 0; }
   border: 1px solid #d8dee8;
   border-radius: 8px;
   padding: 8px;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-git-commit-box button.primary {
@@ -9308,7 +9414,7 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-git-detail-card p {
   margin: 8px 0;
   color: #465466;
-  font-size: 12px;
+  font-size: var(--font-xs);
   white-space: pre-wrap;
 }
 
@@ -9333,7 +9439,7 @@ button, input, textarea, select { letter-spacing: 0; }
   background: #eff6ff;
   color: #1d4ed8;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 @media (max-width: 980px) {
@@ -9793,7 +9899,7 @@ html[data-motion="off"] .wb-processing-dots i {
   border-radius: 8px;
   background: var(--wb-panel);
   color: var(--tx-1);
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .wb-template-buttons button {
@@ -9822,7 +9928,7 @@ html[data-motion="off"] .wb-processing-dots i {
 }
 
 .wb-role-event strong {
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--tx-1);
 }
 
@@ -9868,7 +9974,7 @@ html[data-motion="off"] .wb-processing-dots i {
   border: 1px solid var(--wb-line);
   background: var(--wb-panel-strong);
   color: var(--tx-1);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 
@@ -9976,7 +10082,7 @@ html[data-motion="off"] .wb-processing-dots i {
 
 .wb-models-summary {
   padding: 8px 0 4px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   opacity: 0.6;
   text-align: right;
 }
@@ -10005,12 +10111,12 @@ html[data-motion="off"] .wb-processing-dots i {
   display: flex;
   gap: 8px;
   align-items: baseline;
-  font-size: 12px;
+  font-size: var(--font-xs);
   padding: 3px 0;
 }
 
 .wb-mcp-tool-item strong {
-  font-size: 12px;
+  font-size: var(--font-xs);
   flex-shrink: 0;
 }
 
@@ -10019,137 +10125,6 @@ html[data-motion="off"] .wb-processing-dots i {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Command Palette */
-.wb-cp-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 15vh;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  animation: wb-cp-fade-in 0.12s ease;
-}
-
-@keyframes wb-cp-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-.wb-cp-container {
-  width: min(560px, 90vw);
-  max-height: min(480px, 60vh);
-  display: flex;
-  flex-direction: column;
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--surface-1, #1e1e1e);
-  border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
-  box-shadow: 0 24px 80px rgba(0,0,0,0.5);
-  animation: wb-cp-slide-in 0.15s ease;
-}
-
-@keyframes wb-cp-slide-in {
-  from { transform: translateY(-8px); opacity: 0.8; }
-  to { transform: translateY(0); opacity: 1; }
-}
-
-.wb-cp-input-wrap {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
-}
-
-.wb-cp-icon {
-  flex-shrink: 0;
-  opacity: 0.5;
-}
-
-.wb-cp-input {
-  flex: 1;
-  background: none;
-  border: none;
-  outline: none;
-  color: inherit;
-  font-size: 15px;
-  font-family: inherit;
-}
-
-.wb-cp-input::placeholder {
-  opacity: 0.4;
-}
-
-.wb-cp-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 6px;
-}
-
-.wb-cp-empty {
-  padding: 24px 16px;
-  text-align: center;
-  opacity: 0.4;
-  font-size: 13px;
-}
-
-.wb-cp-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  border-radius: 6px;
-  text-align: left;
-  transition: background 0.08s;
-}
-
-.wb-cp-item.active,
-.wb-cp-item:hover {
-  background: var(--surface-2, rgba(255,255,255,0.06));
-}
-
-.wb-cp-item-label {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.wb-cp-item-cat {
-  font-size: 11px;
-  opacity: 0.4;
-  flex-shrink: 0;
-}
-
-.wb-cp-item-shortcut {
-  font-size: 11px;
-  font-family: var(--font-mono, monospace);
-  opacity: 0.4;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--surface-2, rgba(255,255,255,0.04));
-  flex-shrink: 0;
-}
-
-.wb-cp-footer {
-  padding: 6px 16px;
-  border-top: 1px solid var(--border-subtle, rgba(255,255,255,0.04));
-  font-size: 11px;
-  opacity: 0.3;
-  text-align: center;
 }
 
 /* Error Boundary */
@@ -10176,7 +10151,7 @@ html[data-motion="off"] .wb-processing-dots i {
 }
 
 .wb-error-boundary-msg {
-  font-size: 12px;
+  font-size: var(--font-xs);
   opacity: 0.6;
   margin: 8px 0 16px;
   word-break: break-word;
