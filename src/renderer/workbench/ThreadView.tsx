@@ -5,6 +5,7 @@ import { ToolCallStream } from '../glass/ToolCallStream'
 import { ExecutionReport } from '../glass/ExecutionReport'
 import { InlineEditAffordance } from './InlineEditAffordance'
 import { ForkButton } from './ForkButton'
+import { ContextLedger } from './ContextLedger'
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
 import { SetupTab, firstRunActionForError } from '../glass/connection-status'
@@ -144,6 +145,10 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
               </div>
             )}
             {status !== 'running' && <CompletionSummary agentId={agentId} events={agentEvents} summary={summary} status={status} workspaceRoot={workspaceRoot} />}
+            {/* Context Ledger for completed turns */}
+            {status === 'completed' && threadId && (
+              <ContextLedger threadId={threadId} turnId={turn.id} compact />
+            )}
             {/* Fork button for completed turns */}
             {status === 'completed' && (
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
