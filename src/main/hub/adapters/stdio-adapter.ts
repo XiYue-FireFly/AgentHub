@@ -2,6 +2,9 @@ import { BaseAgentAdapter } from './agent-adapter'
 import { spawn, exec, execSync, ChildProcess } from 'child_process'
 import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
+import { createLogger } from '../../logger'
+
+const log = createLogger('StdioAdapter')
 
 function quoteForCommandShell(value: string): string {
   if (/^[A-Za-z0-9_./:\\=@%+-]+$/.test(value)) return value
@@ -112,9 +115,9 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
       try {
         const st = statSync(requested)
         if (st.isDirectory()) cwd = requested
-        else console.warn('[StdioAgentAdapter] cwd 存在但不是目录，已回退 home:', requested)
+        else log.warn(' cwd 存在但不是目录，已回退 home:', requested)
       } catch {
-        console.warn('[StdioAgentAdapter] cwd 不可访问，已回退 home:', requested)
+        log.warn(' cwd 不可访问，已回退 home:', requested)
       }
     }
 
@@ -161,8 +164,11 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
         this.lineBuf = ''
       }
       const failed = code !== 0 && code !== null
+      // 关键顺序：失败时必须先标 error 再清 proc。否则 dispatcher 的 poll 会在
+      // procGone（!proc）窗口里看到 status='idle'，误判为正常退出而 resolveP()，
+      // 吞掉非零退出码错误（如 "Claude Code 退出码 1" 被当成功）。
+      this.status = failed ? 'error' : 'idle'
       this.proc = null
-      this.status = 'idle'
       if (failed) {
         const detail = this.decodeStderr().trim().slice(-500)
         this.handleError(new Error(this.formatExitError(code, detail)))

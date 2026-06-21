@@ -2,6 +2,9 @@
 export type { AgentAdapter } from "./agent-adapter"
 import { StdioAgentAdapter } from "./stdio-adapter"
 import type { AgentAdapter } from "./agent-adapter"
+import { createLogger } from "../../logger"
+
+const log = createLogger("createAdapter")
 import { CodexAdapter } from "./codex"
 import { ClaudeAdapter } from "./claude"
 import { HermesAdapter } from "./hermes"
@@ -82,7 +85,8 @@ export function createAdapter(
     if (binary && binary.trim()) {
       return new StdioAgentAdapter(agentId, agentName, binary.trim(), args && args.length > 0 ? args : [])
     }
-    console.warn("[createAdapter] stdio-plain for agent " + agentId + " requires an explicit binary; falling back to http")
+    // R8: use structured logger instead of raw console
+    log.warn("stdio-plain for agent " + agentId + " requires an explicit binary; falling back to http")
   }
   return new HttpAgentAdapter(agentId, agentName)
 }

@@ -87,21 +87,15 @@ describe("createAdapter", () => {
     expect((a as any).binary).toBe("C:/bin/aider.cmd")
     expect((a as any).execArgs).toEqual(["--prompt", "{prompt}"])
   })
-  it("falls back to HttpAgentAdapter for stdio-plain unknown agents without a binary (warns)", () => {
-    const spy = vi.spyOn(console, "warn").mockImplementation(() => {})
+  it("falls back to HttpAgentAdapter for stdio-plain unknown agents without a binary", () => {
     const a = createAdapter("aider", "Aider", "stdio-plain")
     expect(a).toBeInstanceOf(HttpAgentAdapter)
-    expect(spy).toHaveBeenCalled()
-    spy.mockRestore()
   })
-  it("hermes/openclaw default to HttpAgentAdapter without warn", () => {
-    const spy = vi.spyOn(console, "warn").mockImplementation(() => {})
+  it("hermes/openclaw default to HttpAgentAdapter", () => {
     const a1 = createAdapter("hermes", "Hermes")
     const a2 = createAdapter("openclaw", "OpenClaw")
     expect(a1).toBeInstanceOf(HttpAgentAdapter)
     expect(a2).toBeInstanceOf(HttpAgentAdapter)
-    expect(spy).not.toHaveBeenCalled()
-    spy.mockRestore()
   })
 })
 

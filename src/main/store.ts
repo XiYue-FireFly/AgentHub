@@ -2,6 +2,9 @@
 import { join } from 'path'
 import * as fs from 'fs'
 import { randomBytes } from 'crypto'
+import { createLogger } from './logger'
+
+const log = createLogger('Store')
 
 const ENC_PREFIX = 'enc:v1:'
 
@@ -45,7 +48,7 @@ class AppStore {
       this.load()
       this.initialized = true
     } catch (e) {
-      console.error('[Store] Init failed:', e)
+      log.error(' Init failed:', e)
     }
   }
 
@@ -54,13 +57,17 @@ class AppStore {
       if (fs.existsSync(this.filePath)) {
         this.data = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'))
       }
-    } catch {}
+    } catch (e: any) {
+      log.error(`[Store] Load failed (${this.filePath}):`, e?.message || String(e))
+    }
   }
 
   private save(): void {
     try {
       fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2))
-    } catch {}
+    } catch (e: any) {
+      log.error(`[Store] Save failed (${this.filePath}):`, e?.message || String(e))
+    }
   }
 
   get(key: string, defaultValue?: any): any {

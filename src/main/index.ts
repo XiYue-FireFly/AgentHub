@@ -1714,11 +1714,12 @@ ipcMain.handle("projectMap:build", (_event, rootPath: string, maxDepth?: number)
 ipcMain.handle("projectMap:search", (_event, map: any, query: string) => searchProjectFiles(map, query))
 
 ipcMain.handle("release:checks", async () => {
+  // R7 fix: no more placeholder — use null for "not run" status
   return runReleaseChecks({
     appVersion: resolveAppVersionFromMain(),
-    typecheckPass: true, // placeholder — real check would run tsc
-    testPass: true,
-    buildPass: true,
+    typecheckPass: null as any, // null = not run yet
+    testPass: null as any,
+    buildPass: null as any,
     hasChangelog: false,
     hasGitTag: false,
     gitClean: true

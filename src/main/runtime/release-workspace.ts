@@ -44,28 +44,29 @@ export async function runReleaseChecks(context: {
     message: `v${context.appVersion}`
   })
 
+  // R7 fix: support null/undefined for "not run" status
   checks.push({
     id: 'typecheck',
     name: 'TypeScript',
     nameZh: '类型检查',
-    status: context.typecheckPass ? 'pass' : 'fail',
-    message: context.typecheckPass ? 'Clean' : 'Type errors found'
+    status: context.typecheckPass === null || context.typecheckPass === undefined ? 'skip' : context.typecheckPass ? 'pass' : 'fail',
+    message: context.typecheckPass === null || context.typecheckPass === undefined ? 'Not run — click to verify' : context.typecheckPass ? 'Clean' : 'Type errors found'
   })
 
   checks.push({
     id: 'tests',
     name: 'Tests',
     nameZh: '测试',
-    status: context.testPass ? 'pass' : 'fail',
-    message: context.testPass ? 'All passing' : 'Test failures detected'
+    status: context.testPass === null || context.testPass === undefined ? 'skip' : context.testPass ? 'pass' : 'fail',
+    message: context.testPass === null || context.testPass === undefined ? 'Not run — click to verify' : context.testPass ? 'All passing' : 'Test failures detected'
   })
 
   checks.push({
     id: 'build',
     name: 'Build',
     nameZh: '构建',
-    status: context.buildPass ? 'pass' : 'fail',
-    message: context.buildPass ? 'Build succeeded' : 'Build failed'
+    status: context.buildPass === null || context.buildPass === undefined ? 'skip' : context.buildPass ? 'pass' : 'fail',
+    message: context.buildPass === null || context.buildPass === undefined ? 'Not run — click to verify' : context.buildPass ? 'Build succeeded' : 'Build failed'
   })
 
   checks.push({

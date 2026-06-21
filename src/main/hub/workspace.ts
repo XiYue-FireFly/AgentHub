@@ -13,6 +13,9 @@
 import { statSync, readFileSync } from 'fs'
 import { resolve as resolvePath, join as joinPath, relative as relativePath, isAbsolute } from 'path'
 import { store } from '../store'
+import { createLogger } from '../logger'
+
+const log = createLogger('Workspace')
 
 /** bootstrap 项目上下文注入上限（字符数），与 skills inject 的上限思路一致，防 token 爆炸。 */
 export const BOOTSTRAP_CONTEXT_MAX_CHARS = 16000
@@ -81,7 +84,7 @@ class WorkspaceManager {
     try { store.set(STORAGE_KEY, this._state) } catch (e) {
       // 落盘失败（如磁盘满、权限拒绝）不阻断 UX：内存态已生效，下次 store 写时会覆盖。
       // 注意：进程退出时未落盘的更改会丢失，但能避免一次写失败导致整个 dispatch 链路炸掉。
-      console.warn('[WorkspaceManager] save failed:', e)
+      log.warn('save failed:', e)
     }
   }
 

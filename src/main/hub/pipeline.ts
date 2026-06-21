@@ -1,4 +1,8 @@
-﻿export interface Mod {
+﻿import { createLogger } from '../logger'
+
+const log = createLogger('Pipeline')
+
+export interface Mod {
   name: string
   type: 'guard' | 'transform' | 'observe'
   handle(event: PipelineEvent): Promise<PipelineEvent | null>
@@ -35,7 +39,7 @@ export class EventPipeline {
     for (const mod of this.mods.filter(m => m.type === 'guard')) {
       const result = await mod.handle(event)
       if (result === null) {
-        console.log('[Pipeline] Guard mod ' + mod.name + ' blocked event')
+        log.debug(' Guard mod ' + mod.name + ' blocked event')
         return
       }
       event = result

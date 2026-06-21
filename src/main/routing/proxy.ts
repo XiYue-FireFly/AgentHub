@@ -24,6 +24,9 @@ import type { AddressInfo } from "net"
 import { getProviderManager } from "../providers/manager"
 import { buildProviderClient, ProviderClient } from "../providers/client"
 import { ChatCompletionMessage, ChatCompletionRequest, ProviderDefinition, ModelDefinition, ThinkingConfig } from "../providers/types"
+import { createLogger } from '../logger'
+
+const log = createLogger('Proxy')
 
 interface Candidate {
   provider: ProviderDefinition
@@ -70,7 +73,7 @@ export class LocalProxy extends EventEmitter {
           this.external = true
           this.running = false
           this.server = null
-          console.warn("[Proxy] Port " + this.port + " is already in use; reusing existing local proxy endpoint.")
+          log.warn(" Port " + this.port + " is already in use; reusing existing local proxy endpoint.")
           resolve()
           return
         }
@@ -81,7 +84,7 @@ export class LocalProxy extends EventEmitter {
         if (address && typeof address !== "string") this.port = (address as AddressInfo).port
         this.running = true
         this.external = false
-        console.log("[Proxy] OpenAI 兼容: http://127.0.0.1:" + this.port + "/v1 · Anthropic 兼容: http://127.0.0.1:" + this.port)
+        log.info(" OpenAI 兼容: http://127.0.0.1:" + this.port + "/v1 · Anthropic 兼容: http://127.0.0.1:" + this.port)
         resolve()
       })
     })

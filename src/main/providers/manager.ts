@@ -16,7 +16,9 @@ import {
   ThinkingConfig
 } from './types'
 import { BUILTIN_PROVIDERS, THINKING_BUDGET_TOKENS } from './presets'
+import { createLogger } from '../logger'
 
+const log = createLogger('Providers')
 const STORAGE_KEY = 'providers.config.v1'
 
 const CONFIG_VERSION = 1
@@ -148,6 +150,19 @@ export class ProviderManager extends EventEmitter {
   private cfg: ProvidersConfig
   private secretsUnlocked = false
 
+  /** 已知的兼容子路径后缀（参照 cc-switch model_fetch.rs:39-49） */
+  private static readonly COMPAT_SUFFIXES = [
+    "/api/claudecode",
+    "/api/anthropic",
+    "/apps/anthropic",
+    "/api/coding",
+    "/claudecode",
+    "/anthropic",
+    "/step_plan",
+    "/coding",
+    "/claude"
+  ] as const
+
   constructor() {
     super()
     this.cfg = this.load()
@@ -164,7 +179,7 @@ export class ProviderManager extends EventEmitter {
         return this.mergeWithBuiltins(sane)
       }
     } catch (e) {
-      console.warn('[Providers] load failed, fallback to defaults:', e)
+      log.warn('load failed, fallback to defaults:', e)
     }
     return defaultConfig()
   }
@@ -427,69 +442,116 @@ export class ProviderManager extends EventEmitter {
    * gemini:     GET /models?pageSize=200 → models[].{name,displayName,inputTokenLimit}
    * 与现有列表按 id 合并（保留人工配置的能力标记），其余字段用启发式默认。
    */
+  /**
+   * 参照 cc-switch model_fetch.rs:135-199 构建模型列表 URL 候选。
+   * 返回按优先级排列的 URL 列表，fetchModels 会逐一尝试，404/405 时 fallback 到下一个。
+   */
+  private buildModelsUrlCandidates(p: ProviderDefinition): string[] {
+    const base = p.baseUrl.replace(/\/$/, "")
+    const candidates: string[] = []
+
+    // 主候选：按 provider kind 选择标准端点
+    if (p.kind === "gemini") {
+      candidates.push(`${base}/models?key=${encodeURIComponent(p.apiKey)}&pageSize=200`)
+    } else if (p.kind === "anthropic") {
+      candidates.push(`${base}/models?limit=200`)
+    } else {
+      candidates.push(`${base}/models`)
+      // OpenAI 兼容：base 以 /vN 结尾时直接拼 /models（不再补 /v1）
+      const versionMatch = base.match(/\/v(\d+)(?:\/|$)/)
+      if (versionMatch && versionMatch[1] !== "1") {
+        candidates.push(`${base}/v1/models`) // 非 /v1 时保留 /v1/models 兜底
+      } else if (!versionMatch) {
+        candidates.push(`${base}/v1/models`) // 无版本段时补 /v1
+      }
+    }
+
+    // 兼容子路径剥离兜底（参照 cc-switch KNOWN_COMPAT_SUFFIXES）
+    if (p.kind !== "gemini" && p.kind !== "anthropic") {
+      for (const suffix of ProviderManager.COMPAT_SUFFIXES) {
+        if (base.endsWith(suffix)) {
+          const root = base.slice(0, -suffix.length).replace(/\/$/, "")
+          if (root.includes("://")) {
+            candidates.push(`${root}/v1/models`)
+            candidates.push(`${root}/models`)
+          }
+          break // 只匹配最长的后缀
+        }
+      }
+    }
+
+    // 去重并保持顺序
+    return [...new Set(candidates)]
+  }
+
   async fetchModels(id: string): Promise<{ ok: boolean; count?: number; error?: string }> {
     const p = this.getProvider(id)
     if (!p) return { ok: false, error: 'Provider not found' }
     if (!p.apiKey) return this.recordModelFetchFailure(p, '未配置 API Key')
     try {
-      const base = p.baseUrl.replace(/\/$/, '')
-      const url = p.kind === 'gemini'
-        ? `${base}/models?key=${encodeURIComponent(p.apiKey)}&pageSize=200`
-        : p.kind === 'anthropic'
-          ? `${base}/models?limit=200`
-          : `${base}/models`
-      const res = await fetch(url, { method: 'GET', headers: this.buildHeaders(p), signal: AbortSignal.timeout(10000) })
-      if (res.status >= 400) return this.recordModelFetchFailure(p, `HTTP ${res.status}`)
-      const j: any = await res.json()
-
-      let raw: Array<{ id: string; label?: string; contextWindow?: number }> = []
-      if (p.kind === 'gemini') {
-        raw = (j.models || [])
-          .filter((m: any) => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes('generateContent'))
-          .map((m: any) => ({
-            id: String(m.name || '').replace(/^models\//, ''),
-            label: m.displayName,
-            contextWindow: m.inputTokenLimit
-          }))
-      } else {
-        raw = (j.data || []).map((m: any) => ({ id: m.id, label: m.display_name }))
-      }
-      raw = raw.filter(m => m.id).slice(0, 300)
-      if (raw.length === 0) return this.recordModelFetchFailure(p, '接口未返回模型')
-
-      const old = new Map(p.models.map(m => [m.id, m]))
-      const pinnedModelIds = new Set(
-        this.cfg.routing.bindings
-          .filter(binding => binding.providerId === p.id)
-          .map(binding => binding.modelId)
-      )
-      const thinkRe = /think|reason|r1|o[134](-|$)|gpt-5|claude-(opus|sonnet)-4|gemini-2\.5/i
-      const nextModels = raw.map(m => {
-        const prev = old.get(m.id)
-        if (prev) return { ...prev, label: prev.label || m.label || m.id, contextWindow: m.contextWindow || prev.contextWindow }
-        return {
-          id: m.id,
-          label: m.label || m.id,
-          contextWindow: m.contextWindow || 128000,
-          supportsTools: true,
-          supportsVision: /vision|4o|omni|gemini|claude/i.test(m.id),
-          supportsThinking: thinkRe.test(m.id)
+      const candidates = this.buildModelsUrlCandidates(p)
+      let lastError = ""
+      for (const url of candidates) {
+        const res = await fetch(url, { method: 'GET', headers: this.buildHeaders(p), signal: AbortSignal.timeout(10000) })
+        // 404/405 → 尝试下一个候选（参照 cc-switch model_fetch.rs:109-113）
+        if (res.status === 404 || res.status === 405) {
+          lastError = `HTTP ${res.status} from ${url.replace(p.apiKey || "", "REDACTED")}`
+          continue
         }
-      })
-      for (const modelId of pinnedModelIds) {
-        if (nextModels.some(model => model.id === modelId)) continue
-        const previous = old.get(modelId)
-        if (previous) nextModels.push({ ...previous, description: previous.description || 'Kept because it is used by an agent route binding.' })
-      }
-      p.models = nextModels
-      p.modelFetch = {
-        status: 'ok',
-        lastAttemptAt: Date.now(),
-        lastSuccessAt: Date.now(),
-        lastSuccessCount: p.models.length
-      }
-      this.save()
-      return { ok: true, count: p.models.length }
+        if (res.status >= 400) return this.recordModelFetchFailure(p, `HTTP ${res.status}`)
+        const j: any = await res.json()
+
+        let raw: Array<{ id: string; label?: string; contextWindow?: number }> = []
+        if (p.kind === "gemini") {
+          raw = (j.models || [])
+            .filter((m: any) => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes("generateContent"))
+            .map((m: any) => ({
+              id: String(m.name || "").replace(/^models\//, ""),
+              label: m.displayName,
+              contextWindow: m.inputTokenLimit
+            }))
+        } else {
+          raw = (j.data || []).map((m: any) => ({ id: m.id, label: m.display_name }))
+        }
+        raw = raw.filter(m => m.id).slice(0, 300)
+        if (raw.length === 0) return this.recordModelFetchFailure(p, "接口未返回模型")
+
+        const old = new Map(p.models.map(m => [m.id, m]))
+        const pinnedModelIds = new Set(
+          this.cfg.routing.bindings
+            .filter(binding => binding.providerId === p.id)
+            .map(binding => binding.modelId)
+        )
+        const thinkRe = /think|reason|r1|o[134](-|$)|gpt-5|claude-(opus|sonnet)-4|gemini-2\.5/i
+        const nextModels = raw.map(m => {
+          const prev = old.get(m.id)
+          if (prev) return { ...prev, label: prev.label || m.label || m.id, contextWindow: m.contextWindow || prev.contextWindow }
+          return {
+            id: m.id,
+            label: m.label || m.id,
+            contextWindow: m.contextWindow || 128000,
+            supportsTools: true,
+            supportsVision: /vision|4o|omni|gemini|claude/i.test(m.id),
+            supportsThinking: thinkRe.test(m.id)
+          }
+        })
+        for (const modelId of pinnedModelIds) {
+          if (nextModels.some(model => model.id === modelId)) continue
+          const previous = old.get(modelId)
+          if (previous) nextModels.push({ ...previous, description: previous.description || "Kept because it is used by an agent route binding." })
+        }
+        p.models = nextModels
+        p.modelFetch = {
+          status: "ok",
+          lastAttemptAt: Date.now(),
+          lastSuccessAt: Date.now(),
+          lastSuccessCount: p.models.length
+        }
+        this.save()
+        return { ok: true, count: p.models.length }
+      } // end for — 所有候选 URL 均返回 404/405
+      if (lastError) return this.recordModelFetchFailure(p, lastError)
+      return this.recordModelFetchFailure(p, "所有候选端点均无响应")
     } catch (e: any) {
       return this.recordModelFetchFailure(p, e?.message || String(e))
     }

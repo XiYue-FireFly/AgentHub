@@ -1,6 +1,9 @@
 ﻿import { EventEmitter } from 'events'
 import { AgentRegistry } from './registry'
 import { getLocalToken } from '../store'
+import { createLogger } from '../logger'
+
+const log = createLogger('Hub')
 
 // @ts-ignore - Electron main process has require
 const WebSocket = require('ws')
@@ -35,7 +38,10 @@ export class HubServer extends EventEmitter {
       }
     })
     this.wss.on('connection', (ws: any) => this.handleConnection(ws))
-    console.log('[Hub] WebSocket server started on ws://127.0.0.1:' + this.port)
+    // P2-6: Handle WS server errors (e.g. port already in use) to prevent
+    // uncaughtException from crashing the main process.
+    this.wss.on('error', (e: Error) => log.error('WS server error: ' + e.message))
+    log.info('WebSocket server started on ws://127.0.0.1:' + this.port)
   }
 
   stop(): void {
