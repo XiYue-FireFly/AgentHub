@@ -22,7 +22,8 @@ describe("settings navigation copy", () => {
     expect(source).toContain("Default attachment location")
     expect(source).toContain("Interface language")
     expect(source).toContain("Last used location")
-    expect(source).toContain("tr('健康检查', 'Health check')")
+    // ProvidersTab extracted to separate file — check both
+    expect(source + readFileSync(join(process.cwd(), "src/renderer/screens/ProvidersTab.tsx"), "utf8")).toContain("tr('健康检查', 'Health check')")
     expect(source).toContain("tr('本地引擎', 'Local engines')")
     expect(source).toContain("tr('Agent 路由', 'Agent routing')")
     expect(source).toContain("tr('自定义默认策略', 'Custom default policy')")
