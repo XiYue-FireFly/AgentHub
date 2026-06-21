@@ -44,7 +44,7 @@ const api = {
   },
   providers: {
     get: () => ipcRenderer.invoke('providers:get'),
-    upsert: (p: any) => ipcRenderer.invoke('providers:upsert', p),
+    upsert: (p: Record<string, unknown>) => ipcRenderer.invoke('providers:upsert', p),
     delete: (id: string) => ipcRenderer.invoke('providers:delete', id),
     setEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('providers:setEnabled', id, enabled),
     setKey: (id: string, key: string) => ipcRenderer.invoke('providers:setKey', id, key),
@@ -78,14 +78,14 @@ const api = {
   memory: {
     catalog: () => ipcRenderer.invoke('memory:catalog'),
     getSettings: () => ipcRenderer.invoke('memory:getSettings'),
-    updateSettings: (patch: any) => ipcRenderer.invoke('memory:updateSettings', patch),
+    updateSettings: (patch: Record<string, unknown>) => ipcRenderer.invoke('memory:updateSettings', patch),
     list: (category?: string) => ipcRenderer.invoke('memory:list', category),
     search: (query: string, category?: string) => ipcRenderer.invoke('memory:search', query, category),
-    addEntry: (entry: any) => ipcRenderer.invoke('memory:addEntry', entry),
+    addEntry: (entry: Record<string, unknown>) => ipcRenderer.invoke('memory:addEntry', entry),
     importConversation: (source: string, content: string) => ipcRenderer.invoke('memory:importConversation', source, content),
     listCandidates: () => ipcRenderer.invoke('memory:listCandidates'),
     approveCandidate: (id: string) => ipcRenderer.invoke('memory:approveCandidate', id),
-    updateEntry: (id: string, patch: any) => ipcRenderer.invoke('memory:updateEntry', id, patch),
+    updateEntry: (id: string, patch: Record<string, unknown>) => ipcRenderer.invoke('memory:updateEntry', id, patch),
     disableEntry: (id: string) => ipcRenderer.invoke('memory:disableEntry', id),
     delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
     loadState: () => ipcRenderer.invoke('memory:loadState'),
@@ -176,7 +176,7 @@ const api = {
   workflows: {
     list: (category?: string) => ipcRenderer.invoke('workflows:list', category),
     get: (id: string) => ipcRenderer.invoke('workflows:get', id),
-    upsert: (input: any) => ipcRenderer.invoke('workflows:upsert', input),
+    upsert: (input: Record<string, unknown>) => ipcRenderer.invoke('workflows:upsert', input),
     delete: (id: string) => ipcRenderer.invoke('workflows:delete', id),
     search: (query: string) => ipcRenderer.invoke('workflows:search', query),
     seed: () => ipcRenderer.invoke('workflows:seed')
@@ -222,7 +222,7 @@ const api = {
   mcp: {
     list: (workspaceId?: string | null) => ipcRenderer.invoke('mcp:list', workspaceId),
     scanLocal: (workspaceId?: string | null) => ipcRenderer.invoke('mcp:scanLocal', workspaceId),
-    upsert: (input: any) => ipcRenderer.invoke('mcp:upsert', input),
+    upsert: (input: Record<string, unknown>) => ipcRenderer.invoke('mcp:upsert', input),
     remove: (id: string) => ipcRenderer.invoke('mcp:remove', id),
     setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => ipcRenderer.invoke('mcp:setEnabled', id, enabled, workspaceId),
     test: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:test', id, workspaceId),
@@ -417,6 +417,11 @@ const api = {
     buildPrompt: (request: any) => ipcRenderer.invoke('inlineEdit:buildPrompt', request),
     validate: (original: string, replacement: string) => ipcRenderer.invoke('inlineEdit:validate', original, replacement),
     apply: (content: string, startLine: number, endLine: number, replacement: string) => ipcRenderer.invoke('inlineEdit:apply', content, startLine, endLine, replacement)
+  },
+  // --- AI Quick Complete (lightweight standalone LLM call) ---
+  ai: {
+    quickComplete: (input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) =>
+      ipcRenderer.invoke('ai:quickComplete', input)
   },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform
