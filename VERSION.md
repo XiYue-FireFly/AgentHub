@@ -218,3 +218,17 @@
   - model-capabilities.ts：统一模型能力查询（context window / tools / vision / thinking），15 tests
   - MCP tool listing：`mcp:listTools` IPC，连接 MCP server 并列出工具，4 tests
   - open-target.ts：编辑器检测与文件打开（VS Code / Cursor / Windsurf / Zed / Antigravity / 系统默认 / 文件管理器），9 tests
+  - Models tab：Settings 页面新增模型能力网格（搜索、context window、tools/vision/thinking badge）
+
+#### 新功能（claude-goal.md 第二批基础设施）
+
+  - prompt-library.ts：可复用提示词库（CRUD / 搜索 / 分类 / slash 命令 / 使用计数 / 默认种子），7 tests
+  - agent-capability-profile.ts：Agent 能力画像（协议 / 状态 / 工具/文件/执行支持 / 审批风险等级），6 tests
+  - workflows.ts：工作流定义（多步骤 prompt/agent/skill/review/gate / 分类 / 搜索 / 默认种子），5 tests
+  - diagnostics.ts：系统健康检查（store / version / platform / providers / agents / MCP / memory / workspace），2 tests
+  - backup.ts：配置备份/恢复（时间戳 JSON / 选择性 key / 列表/恢复/删除），1 test
+
+#### 新功能（claude-goal.md 第三~四批基础设施）
+
+  - project-knowledge.ts：项目知识库（架构决策 / 约定 / 构建命令，工作区作用域 + 全局回退），4 tests
+  - keyboard-shortcuts.ts：快捷键系统（14 个默认快捷键 / 自定义绑定 / 冲突检测 / 重置默认），5 tests
