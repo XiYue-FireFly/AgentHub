@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./styles/command-palette.css";
+@import "./styles/context-ledger.css";
 
 /* ============================================================
    AgentHub — 玻璃拟态设计系统
@@ -2743,48 +2744,7 @@ button, input, textarea, select { letter-spacing: 0; }
   overflow: auto;
 }
 
-.wb-context-ledger {
-  padding: 16px 14px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.wb-context-ledger-summary {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  gap: 8px;
-  align-items: stretch;
-}
-.wb-context-ledger-summary > div,
-.wb-context-ledger-summary > button {
-  min-width: 0;
-  border: 1px solid var(--wb-line-soft);
-  border-radius: 9px;
-  background: #fff;
-  padding: 9px;
-}
-.wb-context-ledger-summary strong {
-  display: block;
-  font-size: var(--font-base);
-  line-height: 1.1;
-}
-.wb-context-ledger-summary span {
-  display: block;
-  margin-top: 3px;
-  color: var(--wb-muted);
-  font-size: 11px;
-}
-.wb-context-ledger-summary button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: #4f5d70;
-  font: inherit;
-  font-size: var(--font-xs);
-  cursor: pointer;
-}
-.wb-context-ledger-summary button:hover { color: var(--wb-accent); background: #f8fbff; }
+/* Context Ledger styles moved to styles/context-ledger.css */
 .wb-context-notice {
   border: 1px solid #f0d79b;
   border-radius: 9px;
