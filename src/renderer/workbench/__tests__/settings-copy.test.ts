@@ -22,11 +22,15 @@ describe("settings navigation copy", () => {
     expect(source).toContain("Default attachment location")
     expect(source).toContain("Interface language")
     expect(source).toContain("Last used location")
-    // ProvidersTab extracted to separate file — check both
-    expect(source + readFileSync(join(process.cwd(), "src/renderer/screens/ProvidersTab.tsx"), "utf8")).toContain("tr('健康检查', 'Health check')")
-    expect(source).toContain("tr('本地引擎', 'Local engines')")
-    expect(source).toContain("tr('Agent 路由', 'Agent routing')")
-    expect(source).toContain("tr('自定义默认策略', 'Custom default policy')")
+    // Sub-tabs extracted to separate files — check all
+    const allSources = source
+      + readFileSync(join(process.cwd(), "src/renderer/screens/ProvidersTab.tsx"), "utf8")
+      + readFileSync(join(process.cwd(), "src/renderer/screens/RoutingTab.tsx"), "utf8")
+      + readFileSync(join(process.cwd(), "src/renderer/screens/ApprovalsTab.tsx"), "utf8")
+    expect(allSources).toContain("tr('健康检查', 'Health check')")
+    expect(allSources).toContain("tr('本地引擎', 'Local engines')")
+    expect(allSources).toContain("tr('Agent 路由', 'Agent routing')")
+    expect(allSources).toContain("tr('自定义默认策略', 'Custom default policy')")
     expect(source).toContain("tr('MCP 服务', 'MCP services')")
     expect(source).toContain("tr('版本与更新', 'Version & Updates')")
     expect(source).toContain("tr('动效强度', 'Motion level')")

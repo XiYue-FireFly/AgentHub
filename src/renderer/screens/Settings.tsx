@@ -4,6 +4,8 @@ import { AGENT_META, AGENT_IDS, BindingDef, DEFAULT_STDIO_ARGS, ProviderDef } fr
 import { agentDesc, getLang, setLang, Lang, tr } from '../glass/i18n'
 import { styledConfirm } from '../lib/confirm'
 import { ProvidersTab } from './ProvidersTab'
+import { RoutingTab } from './RoutingTab'
+import { ApprovalsTab } from './ApprovalsTab'
 import { ConnectionSummary, SetupTab } from '../glass/connection-status'
 // Phase 4 lazy loading: SkillsTab loaded on demand
 const SkillsTab = React.lazy(() => import('./Skills').then(m => ({ default: m.SkillsTab })))
@@ -180,7 +182,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
             fallbackChain={props.fallbackChain}
             onSetBinding={props.onSetBinding}
             onSetFallback={props.onSetFallback}
-            onTab={setTab}
+            onTab={(tab: string) => setTab(tab as TabKey)}
           />
         )}
         {visibleTab === 'approvals' && <ApprovalsTab />}
@@ -440,311 +442,6 @@ function stdioArgsHint(agentId: string): string {
     reasonix: 'Candidate only; confirm CLI args manually'
   }
   return englishHints[agentId] || DEFAULT_STDIO_ARGS[agentId] || 'Leave blank to use defaults'
-}
-
-function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, onSetFallback, onTab }: {
-  providers: ProviderDef[]
-  bindings: BindingDef[]
-  fallbackChain: string[]
-  onSetBinding: (binding: BindingDef) => void
-  onSetFallback: (chain: string[]) => void
-  onTab: (tab: TabKey) => void
-}) {
-  const [located, setLocated] = useState<Record<string, BinaryCandidate[]>>({})
-  useEffect(() => { window.electronAPI.agents.locate().then(setLocated).catch(() => {}) }, [])
-
-  const configuredProviders = providers.filter(provider => provider.enabled && provider.apiKey && provider.models.length > 0)
-  const toggleFallback = (providerId: string) => {
-    onSetFallback(fallbackChain.includes(providerId) ? fallbackChain.filter(id => id !== providerId) : [...fallbackChain, providerId])
-  }
-
-  return (
-    <div className="wb-settings-stack">
-      <div className="glass wb-inline-panel">
-        <div>
-          <strong>{tr('Agent 路由', 'Agent routing')}</strong>
-          <span>{tr('指定单个 Agent 时只走该 Agent 绑定；调度模式只在未指定 Agent 时展开。', 'A chosen Agent uses only its binding; schedule modes expand only when no Agent is pinned.')}</span>
-        </div>
-        <button className="ah-btn sm" onClick={() => onTab('local-agents')}>{tr('管理本地 Agent', 'Manage local agents')}</button>
-      </div>
-      {settingsBindingRows(bindings).map(binding => (
-        <BindingRow key={binding.agentId} binding={binding} providers={providers} configuredProviders={configuredProviders}
-          candidates={located[binding.agentId] || []} onChange={onSetBinding} />
-      ))}
-      <div className="glass wb-provider-card">
-        <div className="wb-card-head">
-          <div>
-            <strong>{tr('故障转移', 'Failover')}</strong>
-            <span>{tr('主供应商失败且还没有输出内容时，按顺序尝试备用供应商。', 'When the primary provider fails before output starts, fallback providers are tried in order.')}</span>
-          </div>
-        </div>
-        <div className="wb-chip-row">
-          {providers.filter(provider => provider.enabled && provider.apiKey).map(provider => {
-            const index = fallbackChain.indexOf(provider.id)
-            return (
-              <button key={provider.id} className={index >= 0 ? 'ah-chip mint' : 'ah-chip'} onClick={() => toggleFallback(provider.id)}>
-                {index >= 0 ? `${index + 1}. ` : ''}{provider.name}
-              </button>
-            )
-          })}
-          {providers.filter(provider => provider.enabled && provider.apiKey).length === 0 && <span className="ah-hint">{tr('先配置可用供应商。', 'Configure an available provider first.')}</span>}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function BindingRow({ binding, providers, configuredProviders, candidates, onChange }: {
-  binding: BindingDef
-  providers: ProviderDef[]
-  configuredProviders: ProviderDef[]
-  candidates: BinaryCandidate[]
-  onChange: (binding: BindingDef) => void
-}) {
-  const meta = AGENT_META[binding.agentId]
-  const provider = providers.find(item => item.id === binding.providerId)
-  const modelValue = provider && binding.modelId ? `${binding.providerId}/${binding.modelId}` : ''
-  const protocol = binding.protocol || 'http'
-
-  const patch = (changes: Partial<BindingDef>) => onChange({ ...binding, ...changes, thinking: { ...binding.thinking, ...(changes.thinking || {}) } })
-
-  return (
-    <div className="glass wb-binding-row">
-      <div className="wb-local-agent-head">
-        {meta ? <AgentMark id={binding.agentId} size={34} radius={9} /> : <span className="wb-agent-fallback">{binding.agentId.slice(0, 1)}</span>}
-        <div>
-          <strong>{meta?.name || binding.agentId}</strong>
-          <span>{meta ? agentDesc(binding.agentId, meta.desc) : tr('自定义 Agent', 'Custom Agent')}</span>
-        </div>
-      </div>
-      <div className="wb-form-grid three">
-        <label className="wb-field">
-          <span>{tr('后端', 'Backend')}</span>
-          <select className="ah-select" value={protocol} onChange={event => patch({ protocol: event.target.value as BindingDef['protocol'] })}>
-            <option value="http">{tr('HTTP 模型', 'HTTP model')}</option>
-            <option value="stdio-plain">{tr('本地 CLI', 'Local CLI')}</option>
-            <option value="acp">ACP</option>
-          </select>
-        </label>
-        {protocol === 'http' ? (
-          <label className="wb-field wide">
-            <span>{tr('模型', 'Model')}</span>
-            <select className="ah-select" value={modelValue} onChange={event => {
-              const [providerId, ...modelParts] = event.target.value.split('/')
-              patch({ providerId, modelId: modelParts.join('/') })
-            }}>
-              {!modelValue && <option value="">{tr('选择模型', 'Choose model')}</option>}
-              {configuredProviders.map(item => (
-                <optgroup key={item.id} label={item.name}>
-                  {item.models.map(model => <option key={`${item.id}/${model.id}`} value={`${item.id}/${model.id}`}>{model.label}</option>)}
-                </optgroup>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <>
-            <label className="wb-field">
-              <span>{tr('可执行文件', 'Executable')}</span>
-              <select className="ah-select" value={binding.binary || ''} onChange={event => patch({ binary: event.target.value })}>
-                <option value="">{tr('自动检测', 'Auto detect')}</option>
-                {candidates.map(candidate => <option key={candidate.path} value={candidate.path}>{candidate.label} · {candidate.path}</option>)}
-              </select>
-            </label>
-            <label className="wb-field wide">
-              <span>{tr('参数', 'Args')}</span>
-              <input className="ah-input mono" value={binding.args || ''} placeholder={stdioArgsHint(binding.agentId)} onChange={event => patch({ args: event.target.value })} />
-            </label>
-          </>
-        )}
-        <label className="wb-field">
-          <span>{tr('温度', 'Temperature')}</span>
-          <input className="ah-input" type="number" min={0} max={2} step={0.1} value={binding.temperature ?? 0.3} onChange={event => patch({ temperature: Number(event.target.value) })} />
-        </label>
-      </div>
-    </div>
-  )
-}
-
-function settingsBindingRows(bindings: BindingDef[]): BindingDef[] {
-  const byAgent = new Map(bindings.map(binding => [binding.agentId, binding]))
-  const rows: BindingDef[] = []
-  for (const agentId of AGENT_IDS) {
-    rows.push(byAgent.get(agentId) || defaultCandidateBinding(agentId))
-  }
-  for (const binding of bindings) {
-    if (!AGENT_IDS.includes(binding.agentId)) rows.push(binding)
-  }
-  return rows
-}
-
-function defaultCandidateBinding(agentId: string): BindingDef {
-  return {
-    agentId,
-    providerId: '',
-    modelId: 'local',
-    protocol: 'stdio-plain',
-    thinkingAllow: ['off', 'auto', 'enabled'],
-    thinking: { mode: 'auto', level: 'medium', collapseInUI: true },
-    temperature: 0.2,
-    maxOutputTokens: 8192
-  }
-}
-
-function ApprovalsTab() {
-  const [config, setConfig] = useState<{ preset?: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'; default: { write: ApprovalPolicy; exec: ApprovalPolicy }; overrides: Record<string, { write?: ApprovalPolicy; exec?: ApprovalPolicy }> } | null>(null)
-  const [caps, setCaps] = useState<Array<{ agentId: string; name: string }>>([])
-  const [error, setError] = useState<string | null>(null)
-
-  const load = useCallback(async () => {
-    try {
-      const [nextConfig, nextCaps] = await Promise.all([
-        window.electronAPI.agentic.getApprovalConfig(),
-        window.electronAPI.agentic.capabilities()
-      ])
-      setConfig(nextConfig)
-      setCaps(nextCaps)
-      setError(null)
-    } catch (err: any) {
-      setError(err?.message || tr('加载权限策略失败', 'Failed to load approval policies'))
-    }
-  }, [])
-
-  useEffect(() => { load().catch(() => {}) }, [load])
-
-  const setPreset = async (preset: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom') => {
-    await window.electronAPI.agentic.setApprovalPreset(preset)
-    await load()
-  }
-
-  const setDefault = async (tool: 'write' | 'exec', policy: ApprovalPolicy) => {
-    await window.electronAPI.agentic.setApprovalDefault(tool, policy)
-    await load()
-  }
-
-  const setOverride = async (agentId: string, tool: 'write' | 'exec', value: string) => {
-    await window.electronAPI.agentic.setApprovalOverride(agentId, tool, value === 'default' ? null : value as ApprovalPolicy)
-    await load()
-  }
-
-  if (!config) return <EmptyState icon={IC.check} title={tr('正在加载权限策略', 'Loading approval policies')} detail={error || tr('请稍候。', 'Please wait.')} />
-
-  const currentPreset = config.preset || 'auto'
-
-  return (
-    <div className="wb-settings-stack">
-      {/* Codex 风格预设选择（参考 codex builtin_approval_presets） */}
-      <div className="glass wb-provider-card">
-        <div className="wb-card-head">
-          <div>
-            <strong>{tr('审批模式', 'Approval mode')}</strong>
-            <span>{tr('选择 agent 工具调用的审批策略。"完全访问"等价于 codex Full Access — 永不弹窗。', 'Choose how tool calls are approved. "Full access" equals codex Full Access — never prompts.')}</span>
-          </div>
-        </div>
-        <div className="wb-form-grid" style={{ gap: 8 }}>
-          <PresetCard
-            id="read-only"
-            current={currentPreset}
-            label={tr('只读', 'Read Only')}
-            description={tr('仅允许读取文件，写入和执行均拒绝。', 'Read files only; writes and commands are rejected.')}
-            onClick={() => setPreset('read-only')}
-          />
-          <PresetCard
-            id="auto"
-            current={currentPreset}
-            label={tr('默认（自动）', 'Default (Auto)')}
-            description={tr('低风险自动放行；高风险按 default/overrides 配置决定。', 'Low-risk auto-approved; high-risk follows default/overrides.')}
-            onClick={() => setPreset('auto')}
-          />
-          <PresetCard
-            id="full-access"
-            current={currentPreset}
-            label={tr('完全访问', 'Full Access')}
-            description={tr('永不弹窗审批，所有工具直接执行（等价 codex Never）。', 'Never prompts for approval — all tools execute directly (codex Never).')}
-            onClick={() => setPreset('full-access')}
-          />
-          <PresetCard
-            id="ask-all"
-            current={currentPreset}
-            label={tr('每次询问', 'Ask Every Time')}
-            description={tr('每次写入或执行都需要用户确认。', 'Every write or exec requires user confirmation.')}
-            onClick={() => setPreset('ask-all')}
-          />
-        </div>
-      </div>
-
-      <div className="glass wb-provider-card">
-        <div className="wb-card-head">
-          <div>
-            <strong>{tr('自定义默认策略', 'Custom default policy')}</strong>
-            <span>{tr('修改下方任意值会自动切换到「自定义」模式。', 'Editing any value below switches to Custom mode.')}</span>
-          </div>
-        </div>
-        <div className="wb-form-grid two">
-          <PolicySelect label={tr('写文件', 'Write files')} value={config.default.write} onChange={value => setDefault('write', value)} />
-          <PolicySelect label={tr('执行命令', 'Run commands')} value={config.default.exec} onChange={value => setDefault('exec', value)} />
-        </div>
-      </div>
-      <div className="glass wb-table-card">
-        <div className="wb-table-row head"><span>Agent</span><span>{tr('写文件', 'Write files')}</span><span>{tr('执行命令', 'Run commands')}</span></div>
-        {caps.map(agent => {
-          const override = config.overrides[agent.agentId] || {}
-          return (
-            <div key={agent.agentId} className="wb-table-row">
-              <span>{AGENT_META[agent.agentId]?.name || agent.name || agent.agentId}</span>
-              <select value={override.write || 'default'} onChange={event => setOverride(agent.agentId, 'write', event.target.value)}>
-                <option value="default">{tr('默认', 'Default')}</option><option value="allow">{tr('允许', 'Allow')}</option><option value="ask">{tr('询问', 'Ask')}</option><option value="deny">{tr('拒绝', 'Deny')}</option>
-              </select>
-              <select value={override.exec || 'default'} onChange={event => setOverride(agent.agentId, 'exec', event.target.value)}>
-                <option value="default">{tr('默认', 'Default')}</option><option value="allow">{tr('允许', 'Allow')}</option><option value="ask">{tr('询问', 'Ask')}</option><option value="deny">{tr('拒绝', 'Deny')}</option>
-              </select>
-            </div>
-          )
-        })}
-      </div>
-      {error && <div className="glass wb-error-text">{error}</div>}
-    </div>
-  )
-}
-
-function PresetCard({ id, current, label, description, onClick }: {
-  id: 'read-only' | 'auto' | 'full-access' | 'ask-all'
-  current: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'
-  label: string
-  description: string
-  onClick: () => void
-}) {
-  const active = current === id
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={'wb-preset-card' + (active ? ' active' : '')}
-      style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
-        padding: '12px 14px', borderRadius: 12, cursor: 'pointer', textAlign: 'left',
-        background: active ? 'var(--mint-soft)' : 'var(--bg-input)',
-        border: '1px solid ' + (active ? 'var(--mint-line)' : 'var(--glass-border-default)'),
-        color: active ? 'var(--mint)' : 'var(--tx-1)',
-        font: 'inherit', transition: 'all 0.15s'
-      }}
-    >
-      <strong style={{ fontSize: 13, fontWeight: 600 }}>{label}{active ? ' ✓' : ''}</strong>
-      <span style={{ fontSize: 12, color: 'var(--tx-2)', lineHeight: 1.4 }}>{description}</span>
-    </button>
-  )
-}
-
-function PolicySelect({ label, value, onChange }: { label: string; value: ApprovalPolicy; onChange: (value: ApprovalPolicy) => void }) {
-  return (
-    <label className="wb-field">
-      <span>{label}</span>
-      <select className="ah-select" value={value} onChange={event => onChange(event.target.value as ApprovalPolicy)}>
-        <option value="allow">{tr('允许', 'Allow')}</option>
-        <option value="ask">{tr('询问', 'Ask')}</option>
-        <option value="deny">{tr('拒绝', 'Deny')}</option>
-      </select>
-    </label>
-  )
 }
 
 function WorkspacesTab() {
@@ -1788,6 +1485,7 @@ function MemorySettingsRow({ entry, onEdit, onApprove, onDisable, onDelete, onTo
 
 function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
   const [graph, setGraph] = useState<any>(null)
+  const [cleanupSuggestions, setCleanupSuggestions] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -1797,6 +1495,7 @@ function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
     try {
       const result = await window.electronAPI.memoryGraph.build(entries)
       setGraph(result)
+      setCleanupSuggestions([])
     } catch (err: any) {
       setError(err?.message || tr('构建记忆图谱失败', 'Failed to build memory graph'))
     } finally {
@@ -1808,8 +1507,7 @@ function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
     if (!graph) return
     try {
       const suggestions = await window.electronAPI.memoryGraph.cleanupSuggestions(graph)
-      // TODO: Show cleanup suggestions to user
-      alert(tr(`发现 ${suggestions?.length || 0} 条可清理的记忆`, `Found ${suggestions?.length || 0} memories to clean up`))
+      setCleanupSuggestions(Array.isArray(suggestions) ? suggestions : [])
     } catch (err: any) {
       setError(err?.message || tr('获取清理建议失败', 'Failed to get cleanup suggestions'))
     }
@@ -1844,6 +1542,18 @@ function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+      {cleanupSuggestions.length > 0 && (
+        <div className="wb-memory-kun-suggestions" style={{ marginTop: 8 }}>
+          <strong>{tr(`发现 ${cleanupSuggestions.length} 条可清理的记忆`, `Found ${cleanupSuggestions.length} memories to clean up`)}</strong>
+          <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+            {cleanupSuggestions.slice(0, 5).map((item: any, index) => (
+              <div key={item.id || item.entryId || index} className="ah-chip" style={{ justifyContent: 'flex-start', whiteSpace: 'normal' }}>
+                {String(item.title || item.reason || item.summary || item.id || item.entryId || tr('清理建议', 'Cleanup suggestion')).slice(0, 160)}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
