@@ -17,6 +17,7 @@ import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
 import { CommandPalette, PaletteCommand } from './CommandPalette'
 import { ErrorBoundary } from '../ErrorBoundary'
+import { styledConfirm } from '../lib/confirm'
 import { GitBranchControl } from './GitBranchControl'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, sanitizeCustomSchedule } from './customSchedule'
@@ -1923,7 +1924,8 @@ function WorktreePanel({ workspaceId, onClose }: { workspaceId: string | null; o
     const message = force
       ? tr('这个工作树有未提交变更。确认强制删除并移除记录？', 'This worktree has uncommitted changes. Force remove it?')
       : tr('删除这个工作树并移除记录？', 'Remove this worktree and its record?')
-    if (!window.confirm(message)) return
+    const ok = await styledConfirm({ message, danger: force })
+    if (!ok) return
     try {
       setError(null)
       await window.electronAPI.worktrees.remove(item.id, force)

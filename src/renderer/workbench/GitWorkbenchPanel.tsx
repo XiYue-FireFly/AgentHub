@@ -162,14 +162,12 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
   const stageFile = (file: GitFileStatus) => runAction(`stage:${file.path}`, () => window.electronAPI.git.stageFile(workspaceId, file.path))
   const unstageFile = (file: GitFileStatus) => runAction(`unstage:${file.path}`, () => window.electronAPI.git.unstageFile(workspaceId, file.path))
   const revertFile = async (file: GitFileStatus) => {
-    // P2-6: use styled confirm instead of window.confirm
-    const ok = await window.confirm(tr(`确认丢弃 ${file.path} 的变更？`, `Discard changes in ${file.path}?`))
+    const ok = await styledConfirm({ message: tr(`确认丢弃 ${file.path} 的变更？`, `Discard changes in ${file.path}?`), danger: true })
     if (!ok) return
     void runAction(`revert:${file.path}`, () => window.electronAPI.git.revertFile(workspaceId, file.path))
   }
   const revertAll = async () => {
-    // P2-6: use styled confirm instead of window.confirm
-    const ok = await window.confirm(tr('确认丢弃所有未提交变更？这个操作不可撤销。', 'Discard all uncommitted changes? This cannot be undone.'))
+    const ok = await styledConfirm({ message: tr('确认丢弃所有未提交变更？这个操作不可撤销。', 'Discard all uncommitted changes? This cannot be undone.'), danger: true })
     if (!ok) return
     void runAction('revert-all', () => window.electronAPI.git.revertAll(workspaceId))
   }
