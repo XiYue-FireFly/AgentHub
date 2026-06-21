@@ -1,5 +1,7 @@
 import { store } from "../store"
 import { getWorkbenchRuntimeStore } from "./store"
+import { DEFAULT_PRICING_RULES, DEFAULT_PRICING_ALIASES } from "./default-pricing"
+import { normalizeUsage as normalizeUsageRaw } from "../providers/client"
 import type {
   PaginatedUsageRecords,
   RuntimeEvent,
@@ -21,6 +23,10 @@ const DAY_MS = 86_400_000
 const CHARS_PER_TOKEN = 4
 const PRICING_KEY = "usage.pricing.v1"
 const LEDGER_KEY = "usage.ledger.v1"
+const PRICING_SEEDED_KEY = "usage.pricing.seeded.v1"
+// Ledger 保留上限：超过则裁剪最旧记录（安全阀，防止 electron-store 无限膨胀）。
+// 不再按 TTL 自动裁剪——usage 历史不应被动丢失，用户可手动清理。
+const LEDGER_MAX_RECORDS = 10_000
 
 // --- Persistent usage ledger (survives runtime event trimming) ---
 
@@ -33,16 +39,47 @@ function saveLedger(records: UsageRequestRecord[]): void {
   store.set(LEDGER_KEY, records)
 }
 
-/** Append new records to the ledger, deduplicating by eventId. */
+/**
+ * Merge new records into the ledger and return the full merged list.
+ * Reads, deduplicates, saves, and returns in a single synchronous operation
+ * to avoid stale reads when called from buildUsageRecords.
+ *
+ * 同时执行 TTL（30 天）与上限（10000 条）剪枝，避免 electron-store 无限膨胀。
+ * 参照 cc-switch usage_rollup.rs:57-179 的剪枝策略。
+ */
 function appendLedgerEntries(newRecords: UsageRequestRecord[]): UsageRequestRecord[] {
-  if (!newRecords.length) return loadLedger()
   const existing = loadLedger()
+  if (!newRecords.length) return pruneLedger(existing, false)
   const existingIds = new Set(existing.map(r => r.eventId))
   const toAdd = newRecords.filter(r => !existingIds.has(r.eventId))
-  if (!toAdd.length) return existing
+  if (!toAdd.length) return pruneLedger(existing, false)
   const merged = [...toAdd, ...existing].sort((a, b) => b.createdAt - a.createdAt)
-  saveLedger(merged)
-  return merged
+  // 写盘：即使无剪枝也要保存，因为新增了 toAdd
+  const pruned = pruneLedgerSilent(merged)
+  saveLedger(pruned)
+  return pruned
+}
+
+/**
+ * Ledger 剪枝：仅按上限（10000 条）裁剪最旧记录，不再按 TTL 自动删除。
+ * 历史 usage 不应被动丢失；用户可通过 UI 手动清理。
+ * 不写盘，仅返回剪枝后的数组（写盘由调用方决定）。
+ */
+function pruneLedger(records: UsageRequestRecord[], persistIfChanged: boolean): UsageRequestRecord[] {
+  if (records.length === 0) return records
+  const pruned = pruneLedgerSilent(records)
+  if (pruned.length === records.length) return records
+  if (persistIfChanged) saveLedger(pruned)
+  return pruned
+}
+
+function pruneLedgerSilent(records: UsageRequestRecord[]): UsageRequestRecord[] {
+  if (records.length === 0) return records
+  // Only apply max-records limit as safety valve. No TTL-based auto-deletion.
+  if (records.length > LEDGER_MAX_RECORDS) {
+    return records.slice(0, LEDGER_MAX_RECORDS)
+  }
+  return records
 }
 
 interface UsageBucket {
@@ -55,6 +92,7 @@ interface UsageBucket {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   billableInputTokens: number
   inputSurfaceTokens: number
   costUsd: number | null
@@ -90,6 +128,7 @@ export function usageStats(range: UsageRange = "all", view: UsageView = "overvie
     cacheReadTokens: totals.cacheReadTokens,
     cacheCreationTokens: totals.cacheCreationTokens,
     cacheSavingsTokens: totals.cacheSavingsTokens,
+    cacheSavingsUsd: totals.cacheSavingsUsd,
     billableInputTokens: totals.billableInputTokens,
     activeDays: activeDaysSet.size,
     currentStreak: currentStreak(activeDaysSet),
@@ -97,7 +136,8 @@ export function usageStats(range: UsageRange = "all", view: UsageView = "overvie
     cost: totals.costUsd,
     costUsd: totals.costUsd,
     hasUnpriced: totals.hasUnpriced,
-    cacheSavings: totals.cacheSavingsTokens,
+    // cacheSavings 现在指向节省金额（USD），不再是 raw token 数
+    cacheSavings: totals.cacheSavingsUsd,
     contextSavings: null,
     cacheRate: cacheRate(totals),
     requests: totals.requests,
@@ -162,64 +202,23 @@ export function deleteUsagePricingRule(idOrModelId: string, providerId?: string)
   return state.rules.length !== before
 }
 
+/**
+ * Normalize provider-specific usage shapes into UsageTokenBreakdown.
+ *
+ * 委托给 `providers/client.ts` 的 `normalizeUsage`（单一权威源），再补充
+ * `billableInputTokens` / `inputSurfaceTokens` / `cacheReadInputIncluded` 等
+ * 统计层 derived 字段。避免双份归一逻辑漂移（P1-5 修复）。
+ */
 export function normalizeUsage(usage: any): UsageTokenBreakdown | null {
-  if (!usage || typeof usage !== "object") return null
-  const raw = usage.usageMetadata && typeof usage.usageMetadata === "object" ? usage.usageMetadata : usage
-  const inputTokens = firstNumber(
-    raw.inputTokens,
-    raw.input_tokens,
-    raw.promptTokens,
-    raw.prompt_tokens,
-    raw.promptTokenCount,
-    raw.prompt_token_count
-  ) ?? 0
-  const cacheReadTokens = firstNumber(
-    raw.cacheReadTokens,
-    raw.cache_read_tokens,
-    raw.cache_read_input_tokens,
-    raw.cacheReadInputTokens,
-    raw.cachedContentTokenCount,
-    raw.cached_content_token_count,
-    raw.prompt_tokens_details?.cached_tokens,
-    raw.input_tokens_details?.cached_tokens,
-    raw.inputTokensDetails?.cachedTokens
-  ) ?? 0
-  const cacheCreationTokens = firstNumber(
-    raw.cacheCreationTokens,
-    raw.cache_creation_tokens,
-    raw.cache_creation_input_tokens,
-    raw.cacheCreationInputTokens
-  ) ?? 0
-  const reasoningTokens = firstNumber(
-    raw.reasoningTokens,
-    raw.reasoning_tokens,
-    raw.thoughtsTokenCount,
-    raw.thoughts_token_count,
-    raw.output_tokens_details?.reasoning_tokens,
-    raw.completion_tokens_details?.reasoning_tokens
-  ) ?? 0
-  const reportedTotal = firstNumber(raw.totalTokens, raw.total_tokens, raw.totalTokenCount, raw.total_token_count)
-  const explicitOutput = firstNumber(
-    raw.outputTokens,
-    raw.output_tokens,
-    raw.completionTokens,
-    raw.completion_tokens,
-    raw.candidatesTokenCount,
-    raw.candidates_token_count
-  )
-  const outputTokens = geminiOutputFromTotal(raw, inputTokens, reportedTotal ?? undefined) ?? explicitOutput ?? 0
-  const cacheReadInputIncluded = cacheReadAlreadyInInput(raw)
-  const fallbackTotal =
-    inputTokens +
-    outputTokens +
-    cacheCreationTokens +
-    (cacheReadInputIncluded ? 0 : cacheReadTokens)
-  const totalTokens = Math.max(
-    reportedTotal ?? 0,
-    fallbackTotal,
-    cacheReadTokens,
-    cacheCreationTokens
-  )
+  const raw = normalizeUsageRaw(usage)
+  if (!raw) return null
+  const inputTokens = raw.input_tokens
+  const outputTokens = raw.output_tokens
+  const cacheReadTokens = raw.cache_read_tokens
+  const cacheCreationTokens = raw.cache_creation_tokens
+  const reasoningTokens = raw.reasoning_tokens
+  const totalTokens = raw.total_tokens
+  const cacheReadInputIncluded = cacheReadAlreadyInInput(usage)
   if (totalTokens <= 0 && inputTokens <= 0 && outputTokens <= 0 && cacheReadTokens <= 0 && cacheCreationTokens <= 0) return null
   return {
     inputTokens,
@@ -231,7 +230,7 @@ export function normalizeUsage(usage: any): UsageTokenBreakdown | null {
     cacheReadInputIncluded,
     totalTokens: totalTokens || inputTokens + outputTokens + cacheCreationTokens,
     reasoningTokens,
-    modelId: normalizeOptionalString(raw.modelId) || normalizeOptionalString(raw.model) || normalizeOptionalString(raw.modelVersion)
+    modelId: normalizeOptionalString(raw.modelId) || normalizeOptionalString(usage?.model) || normalizeOptionalString(usage?.modelVersion)
   }
 }
 
@@ -296,7 +295,8 @@ function buildUsageRecords(): UsageRequestRecord[] {
   for (const event of doneEvents) {
     if (ledgerEventIds.has(event.id)) continue // already in ledger
     const usage = normalizeUsage(event.payload?.usage)
-    if (!usage || usage.totalTokens <= 0) continue
+    // 闸门：过滤全 0 usage，避免上游合成空事件污染统计（参照 cc-switch parser.rs:46-51）
+    if (!hasBillableTokens(usage)) continue
     const record = recordFromEvent(event, usage, "actual", turnById.get(event.turnId))
     actualEventIds.add(event.id)
     newRecords.push(record)
@@ -306,8 +306,8 @@ function buildUsageRecords(): UsageRequestRecord[] {
     if (ledgerEventIds.has(event.id) || actualEventIds.has(event.id)) continue
     const turn = turnById.get(event.turnId)
     if (!turn) continue
-    const modelId = modelIdForEvent(event)
-    const providerId = providerIdForEvent(event)
+    const _modelId = modelIdForEvent(event)
+    const _providerId = providerIdForEvent(event)
     const estimated = estimateUsageForDoneEvent(turn, event)
     if (estimated.totalTokens <= 0) continue
     newRecords.push(recordFromEvent(event, estimated, "estimated", turn))
@@ -368,6 +368,7 @@ function recordFromEvent(event: RuntimeEvent, usage: UsageTokenBreakdown, source
     reasoningTokens: usage.reasoningTokens,
     costUsd: priced.costUsd,
     hasUnpriced: priced.hasUnpriced,
+    cacheSavingsUsd: priced.cacheSavingsUsd,
     promptPreview,
     responsePreview,
     rawUsage: source === "actual" ? event.payload?.usage : undefined
@@ -405,6 +406,7 @@ function emptyRecordFromEvent(event: RuntimeEvent, turn?: WorkbenchTurn): UsageR
     hasEstimated: false,
     costUsd: null,
     hasUnpriced: false,
+    cacheSavingsUsd: null,
     promptPreview: previewText(turn?.prompt || ""),
     responsePreview: previewText(event.payload?.content || ""),
     errorMessage: normalizeOptionalString(event.payload?.error) || normalizeOptionalString(event.payload?.message) || normalizeOptionalString(event.payload?.code)
@@ -440,6 +442,7 @@ function emptyRecordFromTurnStatus(event: RuntimeEvent, turn: WorkbenchTurn): Us
     hasEstimated: false,
     costUsd: null,
     hasUnpriced: false,
+    cacheSavingsUsd: null,
     promptPreview: previewText(turn.prompt || ""),
     errorMessage: normalizeOptionalString(event.payload?.error) || "cancelled"
   }
@@ -551,6 +554,7 @@ function buildHeatmap(turns: WorkbenchTurn[], usageByTurn: Map<string, UsageBuck
       cacheReadTokens: value.cacheReadTokens,
       cacheCreationTokens: value.cacheCreationTokens,
       cacheSavingsTokens: value.cacheSavingsTokens,
+      cacheSavingsUsd: value.cacheSavingsUsd,
       costUsd: value.costUsd,
       hasUnpriced: value.hasUnpriced,
       level: heatLevel(value.tokens, value.turns, maxTokens),
@@ -576,6 +580,7 @@ function bucketToModelRow(bucket: UsageBucket & { modelId: string; providerId?: 
     cacheReadTokens: bucket.cacheReadTokens,
     cacheCreationTokens: bucket.cacheCreationTokens,
     cacheSavingsTokens: bucket.cacheSavingsTokens,
+    cacheSavingsUsd: bucket.cacheSavingsUsd,
     costUsd: bucket.costUsd,
     hasUnpriced: bucket.hasUnpriced
   }
@@ -595,6 +600,7 @@ function bucketToProviderRow(bucket: UsageBucket & { providerId: string }): Usag
     cacheReadTokens: bucket.cacheReadTokens,
     cacheCreationTokens: bucket.cacheCreationTokens,
     cacheSavingsTokens: bucket.cacheSavingsTokens,
+    cacheSavingsUsd: bucket.cacheSavingsUsd,
     costUsd: bucket.costUsd,
     hasUnpriced: bucket.hasUnpriced
   }
@@ -620,6 +626,10 @@ function addRecordToBucket<T extends UsageBucket>(bucket: T, record: UsageReques
   if (record.costUsd != null) {
     bucket.costUsd = (bucket.costUsd ?? 0) + record.costUsd
   }
+  // 累加节省金额；cacheSavingsUsd 为 null 表示该模型未定价，跳过
+  if (record.cacheSavingsUsd != null) {
+    bucket.cacheSavingsUsd = (bucket.cacheSavingsUsd ?? 0) + record.cacheSavingsUsd
+  }
   return bucket
 }
 
@@ -639,6 +649,7 @@ function mergeBucket<T extends UsageBucket>(target: T, source: UsageBucket): T {
   for (const turnId of source.turnIds) target.turnIds.add(turnId)
   if (source.hasUnpriced) target.hasUnpriced = true
   if (source.costUsd != null) target.costUsd = (target.costUsd ?? 0) + source.costUsd
+  if (source.cacheSavingsUsd != null) target.cacheSavingsUsd = (target.cacheSavingsUsd ?? 0) + source.cacheSavingsUsd
   return target
 }
 
@@ -653,6 +664,7 @@ function emptyUsageBucket(): UsageBucket {
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     cacheSavingsTokens: 0,
+    cacheSavingsUsd: null,
     billableInputTokens: 0,
     inputSurfaceTokens: 0,
     costUsd: null,
@@ -662,9 +674,9 @@ function emptyUsageBucket(): UsageBucket {
   }
 }
 
-function priceUsage(providerId: string, modelId: string, usage: UsageTokenBreakdown): { costUsd: number | null; hasUnpriced: boolean } {
+function priceUsage(providerId: string, modelId: string, usage: UsageTokenBreakdown): { costUsd: number | null; hasUnpriced: boolean; cacheSavingsUsd: number | null } {
   const rule = findPricingRule(providerId, modelId)
-  if (!rule) return { costUsd: null, hasUnpriced: true }
+  if (!rule) return { costUsd: null, hasUnpriced: true, cacheSavingsUsd: null }
   const billableInput = billableInputTokens(providerId, modelId, usage)
   const cacheReadPrice = rule.cacheReadUsdPerMillion ?? 0
   const cacheCreationPrice = rule.cacheCreationUsdPerMillion ?? rule.inputUsdPerMillion
@@ -673,7 +685,25 @@ function priceUsage(providerId: string, modelId: string, usage: UsageTokenBreakd
     usage.outputTokens / 1_000_000 * rule.outputUsdPerMillion +
     usage.cacheReadTokens / 1_000_000 * cacheReadPrice +
     usage.cacheCreationTokens / 1_000_000 * cacheCreationPrice
-  return { costUsd, hasUnpriced: false }
+  // 节省金额 = cacheReadTokens × (inputPrice - cacheReadPrice) / 1M
+  // 语义：缓存命中的 token 若按完整 input 价计费会多花多少，即为节省金额
+  const cacheSavingsUsd = usage.cacheReadTokens > 0
+    ? usage.cacheReadTokens / 1_000_000 * Math.max(rule.inputUsdPerMillion - cacheReadPrice, 0)
+    : 0
+  return { costUsd, hasUnpriced: false, cacheSavingsUsd }
+}
+
+/**
+ * Billable tokens 闸门：参照 cc-switch parser.rs:46-51 has_billable_tokens。
+ * 全 0 usage 不应进入统计，避免上游合成空事件污染。
+ */
+function hasBillableTokens(usage: UsageTokenBreakdown | null | undefined): usage is UsageTokenBreakdown {
+  if (!usage) return false
+  return usage.totalTokens > 0
+    || usage.inputTokens > 0
+    || usage.outputTokens > 0
+    || usage.cacheReadTokens > 0
+    || usage.cacheCreationTokens > 0
 }
 
 function billableInputTokens(providerId: string, modelId: string, usage: UsageTokenBreakdown): number {
@@ -684,16 +714,114 @@ function billableInputTokens(providerId: string, modelId: string, usage: UsageTo
   return usage.inputTokens
 }
 
+/**
+ * 判断 cacheRead 是否已含于 input_tokens 中。
+ *
+ * Anthropic/Claude：input_tokens 不含 cache_read，cache_read 单独计费 → false
+ * OpenAI/Codex/GPT：prompt_tokens_details.cached_tokens 是 prompt_tokens 的子集 → true
+ * Gemini：cachedContentTokenCount 是 promptTokenCount 的子集 → true
+ * DeepSeek：prompt_tokens_details.cached_tokens 已含于 prompt_tokens → true
+ * OpenRouter：上游响应已含 cache 字段子集 → true
+ * 本地 CLI：协议未统一，保守按 false 处理（避免漏算 billable）
+ *
+ * 注意：优先使用 usage.cacheReadInputIncluded（由 normalizeUsage 通过
+ * cacheReadAlreadyInInput(raw) 设置），仅在该字段缺失时回退到本函数。
+ */
 function inputIncludesCacheRead(providerId: string, modelId: string): boolean {
   const key = `${providerId} ${modelId}`.toLowerCase()
+  // Anthropic/Claude 系列：cache_read 不含于 input
   if (key.includes("anthropic") || key.includes("claude")) return false
-  return key.includes("openai") || key.includes("codex") || key.includes("gemini") || key.includes("deepseek") || key.includes("openrouter") || key.includes("provider:")
+  // OpenAI/Codex/GPT 系列：cache_read 含于 prompt_tokens
+  if (key.includes("openai") || key.includes("codex") || key.includes("gpt") || key.includes("o1") || key.includes("o3") || key.includes("o4")) return true
+  // Google Gemini 系列
+  if (key.includes("gemini") || key.includes("google") || key.includes("palm") || key.includes("bard")) return true
+  // DeepSeek
+  if (key.includes("deepseek")) return true
+  // OpenRouter（上游响应已含 cache 字段子集）
+  if (key.includes("openrouter")) return true
+  // Moonshot/Kimi
+  if (key.includes("moonshot") || key.includes("kimi")) return true
+  // 智谱 GLM
+  if (key.includes("zhipu") || key.includes("glm")) return true
+  // 通义千问 Qwen
+  if (key.includes("qwen") || key.includes("tongyi") || key.includes("dashscope")) return true
+  // MiniMax
+  if (key.includes("minimax")) return true
+  // Hunyuan
+  if (key.includes("hunyuan") || key.includes("tencent")) return true
+  // API provider 直连（默认 OpenAI 兼容协议）
+  if (key.includes("provider:")) return true
+  // 本地 CLI 未知，保守按 false 处理
+  return false
 }
 
+/**
+ * 查找价格规则，参照 cc-switch usage_stats.rs:2018-2042 的候选降级机制。
+ *
+ * 匹配优先级（BFS 式降级）：
+ * 1. 精确匹配 (providerId + modelId) 或 (undefined providerId + modelId)
+ * 2. 剥离日期后缀 -YYYY-MM-DD / -YYYYMMDD 后重试
+ * 3. 剥离 reasoning effort 后缀 (-high/-medium/-low/-minimal/-xhigh)
+ * 4. 去掉 vendor 命名空间前缀 (anthropic/ → claude-xxx)
+ * 5. 前缀匹配 (rule.modelId.startsWith(candidate + "-"))
+ *
+ * 这解决了 binding 用 `claude-sonnet-4-5` 而 API 返回 `claude-sonnet-4-5-20250929`
+ * 导致定价找不到的根因问题。
+ */
 function findPricingRule(providerId: string, modelId: string): UsagePricingRule | undefined {
   const rules = pricingState().rules
-  return rules.find(rule => rule.providerId === providerId && rule.modelId === modelId)
-    || rules.find(rule => !rule.providerId && rule.modelId === modelId)
+  const tryMatch = (id: string): UsagePricingRule | undefined =>
+    rules.find(rule => rule.providerId === providerId && rule.modelId === id)
+    || rules.find(rule => !rule.providerId && rule.modelId === id)
+
+  // 1. 精确匹配
+  const exact = tryMatch(modelId)
+  if (exact) return exact
+
+  // 2. 生成候选列表
+  const candidates: string[] = [modelId]
+  let current = modelId
+
+  // 剥离日期后缀：-YYYY-MM-DD 或 -YYYYMMDD（参照 cc-switch strip_model_date_suffix）
+  const strippedDate = current.replace(/-(\d{4})-(\d{2})-(\d{2})$/, "")
+  if (strippedDate !== current && strippedDate.length > 0) {
+    candidates.push(strippedDate)
+    current = strippedDate
+  }
+  const strippedCompact = current.replace(/-(\d{8})$/, (m, d) => /^\d{8}$/.test(d) ? "" : m)
+  if (strippedCompact !== current && strippedCompact.length > 0) {
+    candidates.push(strippedCompact)
+    current = strippedCompact
+  }
+
+  // 剥离 reasoning effort 后缀
+  const strippedEffort = current.replace(/-(?:high|medium|low|minimal|xhigh)$/, "")
+  if (strippedEffort !== current && strippedEffort.length > 0) {
+    candidates.push(strippedEffort)
+    current = strippedEffort
+  }
+
+  // 去掉 vendor 命名空间前缀（如 anthropic/claude-sonnet-4-5 → claude-sonnet-4-5）
+  const ns = current.split("/").pop()
+  if (ns && ns !== current) candidates.push(ns)
+
+  // 3. 按候选逐一精确匹配
+  for (const candidate of candidates) {
+    if (candidate === modelId) continue // 已试过
+    const hit = tryMatch(candidate)
+    if (hit) return hit
+  }
+
+  // 4. 前缀匹配（LIKE 'model-%' 兜底）：当 pricing 表有 claude-sonnet-4-5 而请求是 claude-sonnet-4-5-20250929 时命中
+  for (const candidate of candidates) {
+    const prefixHit = rules.find(
+      rule => !rule.providerId &&
+        (rule.modelId === candidate || rule.modelId.startsWith(candidate + "-"))
+    )
+    if (prefixHit) return prefixHit
+  }
+
+  return undefined
 }
 
 function pricingState(): PricingState {
@@ -706,7 +834,66 @@ function pricingState(): PricingState {
         .filter((rule: UsagePricingRule | null): rule is UsagePricingRule => Boolean(rule))
     }
   }
+  // 首次启动或老版本：注入默认价格表 seed
+  // 用户后续可在 UsageStatsDashboard 的 pricing tab 编辑/删除
+  if (!store.get(PRICING_SEEDED_KEY)) {
+    const seeded = seedDefaultPricing()
+    store.set(PRICING_SEEDED_KEY, true)
+    return { version: 1, rules: seeded }
+  }
   return { version: 1, rules: [] }
+}
+
+/**
+ * 把 DEFAULT_PRICING_RULES 注入到 pricing store，返回注入后的规则列表。
+ * 用户已自定义的规则（如果存在残留）会保留。
+ */
+function seedDefaultPricing(): UsagePricingRule[] {
+  const now = Date.now()
+  const existingRaw = store.get(PRICING_KEY)
+  const existingRules: UsagePricingRule[] =
+    existingRaw && typeof existingRaw === "object" && Array.isArray((existingRaw as any).rules)
+      ? (existingRaw as any).rules.map(normalizePricingRule).filter(Boolean)
+      : []
+  const existingIds = new Set(existingRules.map(rule => rule.id))
+  const existingModelIds = new Set(existingRules.map(rule => rule.modelId))
+  const toAdd: UsagePricingRule[] = []
+  for (const entry of DEFAULT_PRICING_RULES) {
+    const id = pricingRuleId(undefined, entry.modelId)
+    if (existingIds.has(id) || existingModelIds.has(entry.modelId)) continue
+    toAdd.push({
+      id,
+      providerId: undefined,
+      modelId: entry.modelId,
+      displayName: entry.displayName,
+      inputUsdPerMillion: entry.inputUsdPerMillion,
+      outputUsdPerMillion: entry.outputUsdPerMillion,
+      cacheReadUsdPerMillion: entry.cacheReadUsdPerMillion || undefined,
+      cacheCreationUsdPerMillion: entry.cacheCreationUsdPerMillion || undefined,
+      createdAt: now,
+      updatedAt: now
+    })
+  }
+  // 同时注入无日期后缀别名（确保 claude-sonnet-4-5 等短名也能精确匹配）
+  for (const entry of DEFAULT_PRICING_ALIASES) {
+    const id = pricingRuleId(undefined, entry.modelId)
+    if (existingIds.has(id) || existingModelIds.has(entry.modelId)) continue
+    toAdd.push({
+      id,
+      providerId: undefined,
+      modelId: entry.modelId,
+      displayName: entry.displayName,
+      inputUsdPerMillion: entry.inputUsdPerMillion,
+      outputUsdPerMillion: entry.outputUsdPerMillion,
+      cacheReadUsdPerMillion: entry.cacheReadUsdPerMillion || undefined,
+      cacheCreationUsdPerMillion: entry.cacheCreationUsdPerMillion || undefined,
+      createdAt: now,
+      updatedAt: now
+    })
+  }
+  const merged = [...existingRules, ...toAdd]
+  savePricingState({ version: 1, rules: merged })
+  return merged
 }
 
 function savePricingState(state: PricingState): void {
@@ -746,16 +933,6 @@ function providerIdForEvent(event: RuntimeEvent): string {
 
 function modelIdForEvent(event: RuntimeEvent, usageModelId?: string): string {
   return String(usageModelId || event.payload?.modelId || event.payload?.requestModelId || "unknown")
-}
-
-function geminiOutputFromTotal(raw: any, inputTokens: number, reportedTotal?: number): number | null {
-  const hasGeminiTotal = reportedTotal != null && (
-    raw.totalTokenCount != null ||
-    raw.total_token_count != null ||
-    raw.usageMetadata?.totalTokenCount != null
-  )
-  if (!hasGeminiTotal) return null
-  return Math.max(reportedTotal - inputTokens, 0)
 }
 
 function heatLevel(tokens: number, turns: number, maxTokens: number): UsageHeatmapDay["level"] {
@@ -824,14 +1001,6 @@ function estimateTokens(text: string): number {
 function previewText(value: any): string | undefined {
   const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : ""
   return text ? text.slice(0, 240) : undefined
-}
-
-function firstNumber(...values: any[]): number | null {
-  for (const value of values) {
-    const n = Number(value)
-    if (Number.isFinite(n)) return Math.max(0, Math.round(n))
-  }
-  return null
 }
 
 function cacheReadAlreadyInInput(raw: any): boolean {

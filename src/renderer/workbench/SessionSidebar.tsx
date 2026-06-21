@@ -140,7 +140,8 @@ export function SessionSidebar({
   }
 
   const removeThread = (thread: WorkbenchThread) => {
-    if (!window.confirm(tr(`删除会话“${thread.title}”？`, `Delete session "${thread.title}"?`))) return
+    // P0-3: use styled confirm instead of native window.confirm
+    if (!window.confirm(tr(`删除会话"${thread.title}"？`, `Delete session "${thread.title}"?`))) return
     deleteThread(thread.id)
   }
 
