@@ -46,9 +46,23 @@ ${text.trim()}
 
 Improved prompt:`
 
-      // TODO: Send metaPrompt to the AI model via the provider system
-      // For now, return the original text with a note
-      const enhanced = `[Enhanced] ${text.trim()}`
+      // Send metaPrompt to AI via ai:quickComplete
+      const result = await window.electronAPI.ai.quickComplete({
+        prompt: metaPrompt,
+        systemPrompt: 'You are a prompt engineering assistant. Output ONLY the improved prompt.',
+        timeoutMs: 30_000
+      })
+
+      if (!result?.content) {
+        setError(tr('AI 未能返回结果，请重试', 'AI returned no result, please retry'))
+        return
+      }
+
+      // Clean up the response: strip markdown fences if present
+      let enhanced = result.content.trim()
+      if (enhanced.startsWith('```') && enhanced.endsWith('```')) {
+        enhanced = enhanced.split('\n').slice(1, -1).join('\n').trim()
+      }
 
       onEnhanced(enhanced)
     } catch (err: any) {
