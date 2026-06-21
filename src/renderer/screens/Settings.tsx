@@ -6,6 +6,8 @@ import { styledConfirm } from '../lib/confirm'
 import { ProvidersTab } from './ProvidersTab'
 import { RoutingTab } from './RoutingTab'
 import { ApprovalsTab } from './ApprovalsTab'
+import { WorkspacesTab } from './WorkspacesTab'
+import { McpSettingsTab } from './McpSettingsTab'
 import { ConnectionSummary, SetupTab } from '../glass/connection-status'
 // Phase 4 lazy loading: SkillsTab loaded on demand
 const SkillsTab = React.lazy(() => import('./Skills').then(m => ({ default: m.SkillsTab })))
@@ -444,95 +446,6 @@ function stdioArgsHint(agentId: string): string {
   return englishHints[agentId] || DEFAULT_STDIO_ARGS[agentId] || 'Leave blank to use defaults'
 }
 
-function WorkspacesTab() {
-  const [items, setItems] = useState<Array<{ id: string; name: string; rootPath: string }>>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [editing, setEditing] = useState<{ id?: string; name: string; rootPath: string } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  const refresh = useCallback(async () => {
-    const [list, active] = await Promise.all([
-      window.electronAPI.workspaces.list(),
-      window.electronAPI.workspaces.getActive()
-    ])
-    setItems(list)
-    setActiveId(active)
-  }, [])
-
-  useEffect(() => { refresh().catch((err: any) => setError(err?.message || tr('加载工作目录失败', 'Failed to load workspaces'))) }, [refresh])
-
-  const save = async () => {
-    if (!editing?.name.trim() || !editing.rootPath.trim()) return
-    try {
-      if (editing.id) await window.electronAPI.workspaces.update(editing.id, { name: editing.name.trim(), rootPath: editing.rootPath.trim() })
-      else await window.electronAPI.workspaces.create({ name: editing.name.trim(), rootPath: editing.rootPath.trim() })
-      setEditing(null)
-      await refresh()
-    } catch (err: any) {
-      setError(err?.message || tr('保存工作目录失败', 'Failed to save workspace'))
-    }
-  }
-
-  const pickFolder = async () => {
-    const path = await window.electronAPI.app.pickFolder({ defaultPath: defaultDialogPath('folder', editing?.rootPath) })
-    if (path) {
-      rememberDialogPath('folder', path)
-      setEditing(current => ({ id: current?.id, name: current?.name || path.split(/[\\/]/).filter(Boolean).pop() || tr('工作目录', 'Workspace'), rootPath: path }))
-    }
-  }
-
-  return (
-    <div className="wb-settings-stack">
-      <div className="glass wb-inline-panel">
-        <div>
-          <strong>{tr('工作目录是可选上下文', 'Workspaces are optional context')}</strong>
-          <span>{tr('普通对话和写作不需要目录；终端、Git、工作树和项目文件操作才需要。', 'Chat and writing can work without a folder; terminal, Git, worktrees, and project file actions need one.')}</span>
-        </div>
-        <button className="ah-btn sm primary" onClick={() => setEditing({ name: '', rootPath: '' })}>
-          <Icon d={IC.plus} size={13} /> {tr('添加工作目录', 'Add workspace')}
-        </button>
-      </div>
-      {editing && (
-        <div className="glass wb-provider-card">
-          <div className="wb-card-head"><strong>{editing.id ? tr('编辑工作目录', 'Edit workspace') : tr('添加工作目录', 'Add workspace')}</strong></div>
-          <div className="wb-form-grid two">
-            <input className="ah-input" placeholder={tr('给这个目录起个名字', 'Name this folder')} value={editing.name} onChange={event => setEditing({ ...editing, name: event.target.value })} />
-            <div className="wb-folder-picker">
-              <input className="ah-input mono" placeholder={tr('选择本地目录', 'Choose local folder')} value={editing.rootPath} onChange={event => setEditing({ ...editing, rootPath: event.target.value })} />
-              <button className="ah-btn sm" onClick={pickFolder}>{tr('选择', 'Choose')}</button>
-            </div>
-          </div>
-          <div className="wb-card-actions">
-            <button className="ah-btn sm" onClick={() => setEditing(null)}>{tr('取消', 'Cancel')}</button>
-            <button className="ah-btn sm primary" onClick={save}>{tr('保存', 'Save')}</button>
-          </div>
-        </div>
-      )}
-      {items.length === 0 && <EmptyState icon={IC.folder} title={tr('还没有工作目录', 'No workspaces yet')} detail={tr('可以直接新建对话；需要本地文件能力时再添加目录。', 'You can start a chat now; add a folder when local file features are needed.')} />}
-      {items.map(item => (
-        <div key={item.id} className="glass wb-workspace-row">
-          <div>
-            <strong>{item.name}</strong>
-            {activeId === item.id && <span className="ah-chip mint">{tr('当前', 'Active')}</span>}
-            <p>{item.rootPath}</p>
-          </div>
-          <div className="wb-card-actions">
-            {activeId !== item.id && <button className="ah-btn sm" onClick={async () => { await window.electronAPI.workspaces.setActive(item.id); await refresh() }}>{tr('设为当前', 'Set active')}</button>}
-            <button className="ah-btn sm" onClick={() => setEditing({ id: item.id, name: item.name, rootPath: item.rootPath })}>{tr('编辑', 'Edit')}</button>
-            <button className="ah-btn sm danger" onClick={async () => {
-              const ok = await styledConfirm({ message: tr(`移除工作目录「${item.name}」？磁盘文件不会被删除。`, `Remove workspace "${item.name}"? Files on disk will not be deleted.`), danger: true })
-              if (!ok) return
-              await window.electronAPI.workspaces.remove(item.id)
-              await refresh()
-            }}>{tr('移除', 'Remove')}</button>
-          </div>
-        </div>
-      ))}
-      {error && <div className="glass wb-error-text">{error}</div>}
-    </div>
-  )
-}
-
 function ShortcutsSettingsTab() {
   const [settings, setSettings] = useState<KeyboardShortcutsConfigV1>({ bindings: {} })
   const [search, setSearch] = useState('')
@@ -730,199 +643,6 @@ function ModelsTab({ providers }: { providers: ProviderDef[] }) {
       </section>
     </div>
   )
-}
-
-function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
-  const [servers, setServers] = useState<McpServerConfig[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [adding, setAdding] = useState(false)
-  const [draft, setDraft] = useState({ name: '', transport: 'stdio' as McpServerConfig['transport'], command: '', args: '', url: '' })
-  const [toolsForServer, setToolsForServer] = useState<string | null>(null)
-  const [toolsList, setToolsList] = useState<{ name: string; description?: string }[]>([])
-  const [toolsLoading, setToolsLoading] = useState(false)
-  const [toolsError, setToolsError] = useState<string | null>(null)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      setServers(await window.electronAPI.mcp.list(workspaceId))
-      setError(null)
-    } catch (err: any) {
-      setError(err?.message || tr('加载 MCP 失败', 'Failed to load MCP servers'))
-    } finally {
-      setLoading(false)
-    }
-  }, [workspaceId])
-
-  useEffect(() => { refresh().catch(() => {}) }, [refresh])
-
-  const add = async () => {
-    if (!draft.name.trim()) return
-    await window.electronAPI.mcp.upsert({
-      name: draft.name.trim(),
-      transport: draft.transport,
-      command: draft.transport === 'stdio' ? draft.command.trim() : undefined,
-      args: draft.args.split(/\s+/).map(item => item.trim()).filter(Boolean),
-      url: draft.transport !== 'stdio' ? draft.url.trim() : undefined,
-      enabled: true
-    })
-    setDraft({ name: '', transport: 'stdio', command: '', args: '', url: '' })
-    setAdding(false)
-    await refresh()
-  }
-
-  const scan = async () => {
-    setLoading(true)
-    try {
-      await window.electronAPI.mcp.scanLocal(workspaceId)
-      setServers(await window.electronAPI.mcp.list(workspaceId))
-      setError(null)
-    } catch (err: any) {
-      setError(err?.message || tr('扫描 MCP 失败', 'Failed to scan MCP servers'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const listTools = async (serverId: string) => {
-    if (toolsForServer === serverId) { setToolsForServer(null); return }
-    setToolsForServer(serverId)
-    setToolsLoading(true)
-    setToolsError(null)
-    setToolsList([])
-    try {
-      const result = await window.electronAPI.mcp.listTools(serverId, workspaceId)
-      if (result.ok) setToolsList(result.tools || [])
-      else setToolsError(result.error || tr('获取工具列表失败', 'Failed to list tools'))
-    } catch (err: any) {
-      setToolsError(err?.message || tr('获取工具列表失败', 'Failed to list tools'))
-    } finally {
-      setToolsLoading(false)
-    }
-  }
-
-  const copyCommand = (server: McpServerConfig) => {
-    const cmd = server.transport === 'stdio'
-      ? [server.command, ...(server.args || [])].filter(Boolean).join(' ')
-      : server.url || ''
-    navigator.clipboard.writeText(cmd).catch(() => {})
-  }
-
-  return (
-    <div className="wb-settings-stack wb-mcp-clean">
-      <section className="glass wb-mcp-clean-card">
-        <div className="wb-mcp-clean-head">
-          <div>
-            <strong>{tr('MCP 服务', 'MCP services')}</strong>
-            <span>{tr('管理本地、工作目录和插件目录中的 MCP 服务，启用后同步给支持工具调用的 Agent。', 'Manage MCP services from local, workspace, and plugin folders; enabled services sync to capable agents.')}</span>
-          </div>
-          <div className="wb-card-actions">
-            <button className="ah-btn sm" onClick={scan} disabled={loading}><Icon d={IC.search} size={13} />{tr('扫描本地', 'Scan local')}</button>
-            <button className="ah-btn sm" onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={13} />{tr('刷新', 'Refresh')}</button>
-            <button className="ah-btn sm primary" onClick={() => setAdding(open => !open)}><Icon d={IC.plus} size={13} />{adding ? tr('收起', 'Collapse') : tr('添加服务', 'Add service')}</button>
-          </div>
-        </div>
-
-        <div className="wb-mcp-clean-stats">
-          <div><span>{tr('总数', 'Total')}</span><strong>{servers.length}</strong></div>
-          <div><span>{tr('已启用', 'Enabled')}</span><strong>{servers.filter(server => server.enabled).length}</strong></div>
-          <div><span>{tr('工作目录', 'Workspace')}</span><strong>{workspaceId ? tr('已选择', 'Selected') : tr('未选择', 'None')}</strong></div>
-        </div>
-
-        {adding && (
-          <div className="wb-mcp-editor wb-mcp-clean-editor">
-            <input className="ah-input" placeholder={tr('服务名称', 'Service name')} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
-            <select className="ah-select" value={draft.transport} onChange={event => setDraft({ ...draft, transport: event.target.value as McpServerConfig['transport'] })}>
-              <option value="stdio">stdio</option>
-              <option value="sse">sse</option>
-              <option value="http">http</option>
-            </select>
-            {draft.transport === 'stdio' ? (
-              <>
-                <input className="ah-input mono" placeholder={tr('启动命令', 'Launch command')} value={draft.command} onChange={event => setDraft({ ...draft, command: event.target.value })} />
-                <input className="ah-input mono" placeholder={tr('参数', 'Args')} value={draft.args} onChange={event => setDraft({ ...draft, args: event.target.value })} />
-              </>
-            ) : (
-              <input className="ah-input mono wide" placeholder={tr('服务 URL', 'Service URL')} value={draft.url} onChange={event => setDraft({ ...draft, url: event.target.value })} />
-            )}
-            <button className="ah-btn sm primary" onClick={add}>{tr('添加', 'Add')}</button>
-          </div>
-        )}
-
-        <div className="wb-mcp-clean-list">
-          {servers.map(server => (
-            <div key={server.id} className={'wb-mcp-clean-row' + (server.enabled ? ' enabled' : '')}>
-              <span className="wb-mcp-clean-mark"><Icon d={IC.link} size={15} /></span>
-              <div>
-                <strong>{server.name}</strong>
-                <small className="mono">{server.transport === 'stdio' ? [server.command, ...(server.args || [])].filter(Boolean).join(' ') : server.url}</small>
-                {(server.args?.length || server.env) && <small className="wb-mcp-meta">{server.args?.length ? tr(`${server.args.length} 参数`, `${server.args.length} args`) : ''}{server.env ? ` · ${Object.keys(server.env).length} env` : ''}</small>}
-              </div>
-              <span className="ah-chip">{mcpSourceLabel(server.source)}</span>
-              <span className={'wb-mcp-clean-status ' + (server.status || 'unknown')} title={server.error || ''}>{mcpStatusLabel(server.status || 'unknown')}</span>
-              <Switch on={server.enabled} onChange={async value => { await window.electronAPI.mcp.setEnabled(server.id, value, workspaceId); await refresh() }} />
-              <span className="wb-card-actions">
-                <button className="ah-btn sm" onClick={async () => { await window.electronAPI.mcp.test(server.id, workspaceId); await refresh() }}>{tr('测试', 'Test')}</button>
-                {server.transport === 'stdio' && <button className="ah-btn sm" onClick={() => listTools(server.id)}>{toolsForServer === server.id ? tr('收起工具', 'Hide tools') : tr('工具列表', 'Tools')}</button>}
-                <button className="ah-btn sm" onClick={() => copyCommand(server)}>{tr('复制命令', 'Copy')}</button>
-                {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => {
-                  const ok = await styledConfirm({ message: tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`), danger: true })
-                  if (!ok) return
-                  await window.electronAPI.mcp.remove(server.id)
-                  await refresh()
-                }}>{tr('删除', 'Delete')}</button>}
-              </span>
-              {server.error && <small className="wb-mcp-clean-error">{server.error}</small>}
-              {toolsForServer === server.id && (
-                <div className="wb-mcp-tools-panel">
-                  {toolsLoading && <small>{tr('正在获取工具列表...', 'Loading tools...')}</small>}
-                  {toolsError && <small className="wb-mcp-clean-error">{toolsError}</small>}
-                  {toolsList.length > 0 && (
-                    <div className="wb-mcp-tools-list">
-                      <small>{tr(`共 ${toolsList.length} 个工具`, `${toolsList.length} tool(s) found`)}</small>
-                      {toolsList.map(tool => (
-                        <div key={tool.name} className="wb-mcp-tool-item">
-                          <strong>{tool.name}</strong>
-                          {tool.description && <span>{tool.description.slice(0, 120)}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {!toolsLoading && !toolsError && toolsList.length === 0 && (
-                    <small>{tr('未发现工具', 'No tools found')}</small>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          {servers.length === 0 && <div className="wb-memory-kun-empty"><Icon d={IC.link} size={24} /><span>{tr('暂无 MCP 服务。', 'No MCP services yet.')}</span></div>}
-        </div>
-      </section>
-      {error && <div className="glass wb-error-text">{error}</div>}
-    </div>
-  )
-}
-
-function mcpSourceLabel(source: McpServerConfig['source']): string {
-  return ({
-    workspace: tr('工作目录', 'Workspace'),
-    user: tr('手动添加', 'Manual'),
-    local: tr('本机配置', 'Local config'),
-    claude: 'Claude',
-    codex: 'Codex',
-    gemini: 'Gemini',
-    opencode: 'OpenCode',
-    ccgui: tr('全局配置', 'Global config'),
-    kun: tr('插件目录', 'Plugin folder'),
-    ecc: tr('插件目录', 'Plugin folder')
-  } as Record<McpServerConfig['source'], string>)[source] || source
-}
-
-function mcpStatusLabel(status: string): string {
-  if (status === 'ok') return tr('可用', 'OK')
-  if (status === 'error') return tr('异常', 'Error')
-  return tr('未测试', 'Untested')
 }
 
 function MemorySettingsTab() {
@@ -1562,8 +1282,13 @@ function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
 
 function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
   const [plugins, setPlugins] = useState<any[]>([])
+  const [repositories, setRepositories] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [importMessage, setImportMessage] = useState<string | null>(null)
+  const [importing, setImporting] = useState<string | null>(null)
+  const [repoUrl, setRepoUrl] = useState('')
+  const [repoBranch, setRepoBranch] = useState('')
   const [contributions, setContributions] = useState<any>(null)
 
   const refresh = useCallback(async () => {
@@ -1584,6 +1309,8 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
       if (list && list.length > 0) {
         const contribs = await window.electronAPI.plugins.contributions(list)
         setContributions(contribs)
+      } else {
+        setContributions(null)
       }
     } catch (err: any) {
       setError(err?.message || tr('扫描插件失败', 'Failed to scan plugins'))
@@ -1592,7 +1319,46 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
     }
   }, [workspaceId])
 
-  useEffect(() => { refresh() }, [refresh])
+  const loadRepositories = useCallback(async () => {
+    try {
+      const list = await window.electronAPI.plugins.repositories()
+      setRepositories(Array.isArray(list) ? list : [])
+    } catch { /* ignore startup races */ }
+  }, [])
+
+  const importRepository = useCallback(async (input: { url: string; id?: string; name?: string; branch?: string }, clearAfter = false) => {
+    if (!input.url.trim()) {
+      setError(tr('请输入 GitHub 或 GitCode 仓库地址', 'Enter a GitHub or GitCode repository URL'))
+      return
+    }
+    const key = input.id || input.url
+    setImporting(key)
+    setError(null)
+    setImportMessage(null)
+    try {
+      const result = await window.electronAPI.plugins.importRepository(input)
+      if (!result?.ok) {
+        setError(result?.error || tr('导入插件仓库失败', 'Failed to import plugin repository'))
+        return
+      }
+      const count = Array.isArray(result.plugins) ? result.plugins.length : result.plugin ? 1 : 0
+      setImportMessage(tr(`已导入 ${input.name || result.plugin?.manifest?.name || '插件仓库'}，发现 ${count} 个插件入口。`, `Imported ${input.name || result.plugin?.manifest?.name || 'plugin repository'} with ${count} plugin entr${count === 1 ? 'y' : 'ies'}.`))
+      if (clearAfter) {
+        setRepoUrl('')
+        setRepoBranch('')
+      }
+      await refresh()
+    } catch (err: any) {
+      setError(err?.message || tr('导入插件仓库失败', 'Failed to import plugin repository'))
+    } finally {
+      setImporting(null)
+    }
+  }, [refresh])
+
+  useEffect(() => {
+    refresh()
+    loadRepositories()
+  }, [refresh, loadRepositories])
 
   return (
     <div className="wb-settings-stack">
@@ -1608,6 +1374,56 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
         </div>
 
         {error && <div className="glass wb-error-text">{error}</div>}
+        {importMessage && <div className="glass" style={{ padding: 10, color: 'var(--ok)', fontSize: 12 }}>{importMessage}</div>}
+
+        <div className="wb-mcp-clean-list" style={{ marginTop: 12 }}>
+          {repositories.map(repo => (
+            <div key={repo.id} className="wb-mcp-clean-row">
+              <div style={{ flex: 1 }}>
+                <strong>{repo.name}</strong>
+                <small className="mono">{repo.source || 'builtin'}</small>
+                {repo.description && (
+                  <div style={{ fontSize: 12, color: 'var(--tx-2)', marginTop: 2 }}>{repo.description}</div>
+                )}
+                <div className="mono" style={{ fontSize: 11, color: 'var(--tx-3)', marginTop: 4 }}>{repo.url}</div>
+              </div>
+              <button
+                className="ah-btn sm"
+                disabled={!!importing}
+                onClick={() => importRepository({ id: repo.id, name: repo.name, url: repo.url })}
+              >
+                {importing === repo.id ? tr('导入中...', 'Importing...') : tr('导入', 'Import')}
+              </button>
+            </div>
+          ))}
+          <div className="wb-mcp-clean-row" style={{ alignItems: 'stretch' }}>
+            <div style={{ flex: 1, display: 'grid', gap: 8 }}>
+              <strong>{tr('从仓库 URL 导入', 'Import from repository URL')}</strong>
+              <input
+                className="ah-input mono"
+                value={repoUrl}
+                onChange={event => setRepoUrl(event.target.value)}
+                placeholder="https://github.com/owner/plugin.git"
+              />
+              <input
+                className="ah-input mono"
+                value={repoBranch}
+                onChange={event => setRepoBranch(event.target.value)}
+                placeholder={tr('分支，可选', 'Branch, optional')}
+              />
+              <span style={{ fontSize: 11, color: 'var(--tx-3)' }}>
+                {tr('仅支持 HTTPS GitHub/GitCode 仓库。导入后只扫描 manifest 和 SKILL.md，不执行远程代码。', 'Only HTTPS GitHub/GitCode repositories are supported. AgentHub scans manifest and SKILL.md files only; remote code is not executed.')}
+              </span>
+            </div>
+            <button
+              className="ah-btn sm"
+              disabled={!!importing || !repoUrl.trim()}
+              onClick={() => importRepository({ url: repoUrl.trim(), branch: repoBranch.trim() || undefined }, true)}
+            >
+              {importing === repoUrl.trim() ? tr('导入中...', 'Importing...') : tr('导入仓库', 'Import Repo')}
+            </button>
+          </div>
+        </div>
 
         <div className="wb-mcp-clean-stats">
           <div><span>{tr('已发现', 'Found')}</span><strong>{plugins.length}</strong></div>
