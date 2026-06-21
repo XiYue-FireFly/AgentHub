@@ -326,6 +326,10 @@ interface ElectronAPI {
     suggestCommand: (intent: string, context: any) => Promise<string>
     explainOutput: (context: any) => Promise<string>
   }
+  memoryGraph: {
+    build: (entries: any[]) => Promise<any>
+    cleanupSuggestions: (graph: any) => Promise<any[]>
+  }
   platform: string
 }
 

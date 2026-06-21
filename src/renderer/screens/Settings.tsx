@@ -738,7 +738,7 @@ function defaultCandidateBinding(agentId: string): BindingDef {
 }
 
 function ApprovalsTab() {
-  const [config, setConfig] = useState<{ default: { write: ApprovalPolicy; exec: ApprovalPolicy }; overrides: Record<string, { write?: ApprovalPolicy; exec?: ApprovalPolicy }> } | null>(null)
+  const [config, setConfig] = useState<{ preset?: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'; default: { write: ApprovalPolicy; exec: ApprovalPolicy }; overrides: Record<string, { write?: ApprovalPolicy; exec?: ApprovalPolicy }> } | null>(null)
   const [caps, setCaps] = useState<Array<{ agentId: string; name: string }>>([])
   const [error, setError] = useState<string | null>(null)
 
@@ -758,6 +758,11 @@ function ApprovalsTab() {
 
   useEffect(() => { load().catch(() => {}) }, [load])
 
+  const setPreset = async (preset: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom') => {
+    await window.electronAPI.agentic.setApprovalPreset(preset)
+    await load()
+  }
+
   const setDefault = async (tool: 'write' | 'exec', policy: ApprovalPolicy) => {
     await window.electronAPI.agentic.setApprovalDefault(tool, policy)
     await load()
@@ -770,13 +775,55 @@ function ApprovalsTab() {
 
   if (!config) return <EmptyState icon={IC.check} title={tr('正在加载权限策略', 'Loading approval policies')} detail={error || tr('请稍候。', 'Please wait.')} />
 
+  const currentPreset = config.preset || 'auto'
+
   return (
     <div className="wb-settings-stack">
+      {/* Codex 风格预设选择（参考 codex builtin_approval_presets） */}
       <div className="glass wb-provider-card">
         <div className="wb-card-head">
           <div>
-            <strong>{tr('默认策略', 'Default policy')}</strong>
-            <span>{tr('读取文件不会拦截；写入和执行可按需确认。', 'File reads are not blocked; writes and commands can require confirmation.')}</span>
+            <strong>{tr('审批模式', 'Approval mode')}</strong>
+            <span>{tr('选择 agent 工具调用的审批策略。"完全访问"等价于 codex Full Access — 永不弹窗。', 'Choose how tool calls are approved. "Full access" equals codex Full Access — never prompts.')}</span>
+          </div>
+        </div>
+        <div className="wb-form-grid" style={{ gap: 8 }}>
+          <PresetCard
+            id="read-only"
+            current={currentPreset}
+            label={tr('只读', 'Read Only')}
+            description={tr('仅允许读取文件，写入和执行均拒绝。', 'Read files only; writes and commands are rejected.')}
+            onClick={() => setPreset('read-only')}
+          />
+          <PresetCard
+            id="auto"
+            current={currentPreset}
+            label={tr('默认（自动）', 'Default (Auto)')}
+            description={tr('低风险自动放行；高风险按 default/overrides 配置决定。', 'Low-risk auto-approved; high-risk follows default/overrides.')}
+            onClick={() => setPreset('auto')}
+          />
+          <PresetCard
+            id="full-access"
+            current={currentPreset}
+            label={tr('完全访问', 'Full Access')}
+            description={tr('永不弹窗审批，所有工具直接执行（等价 codex Never）。', 'Never prompts for approval — all tools execute directly (codex Never).')}
+            onClick={() => setPreset('full-access')}
+          />
+          <PresetCard
+            id="ask-all"
+            current={currentPreset}
+            label={tr('每次询问', 'Ask Every Time')}
+            description={tr('每次写入或执行都需要用户确认。', 'Every write or exec requires user confirmation.')}
+            onClick={() => setPreset('ask-all')}
+          />
+        </div>
+      </div>
+
+      <div className="glass wb-provider-card">
+        <div className="wb-card-head">
+          <div>
+            <strong>{tr('自定义默认策略', 'Custom default policy')}</strong>
+            <span>{tr('修改下方任意值会自动切换到「自定义」模式。', 'Editing any value below switches to Custom mode.')}</span>
           </div>
         </div>
         <div className="wb-form-grid two">
@@ -803,6 +850,34 @@ function ApprovalsTab() {
       </div>
       {error && <div className="glass wb-error-text">{error}</div>}
     </div>
+  )
+}
+
+function PresetCard({ id, current, label, description, onClick }: {
+  id: 'read-only' | 'auto' | 'full-access' | 'ask-all'
+  current: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'
+  label: string
+  description: string
+  onClick: () => void
+}) {
+  const active = current === id
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={'wb-preset-card' + (active ? ' active' : '')}
+      style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+        padding: '12px 14px', borderRadius: 12, cursor: 'pointer', textAlign: 'left',
+        background: active ? 'var(--mint-soft)' : 'var(--bg-input)',
+        border: '1px solid ' + (active ? 'var(--mint-line)' : 'var(--glass-border-default)'),
+        color: active ? 'var(--mint)' : 'var(--tx-1)',
+        font: 'inherit', transition: 'all 0.15s'
+      }}
+    >
+      <strong style={{ fontSize: 13, fontWeight: 600 }}>{label}{active ? ' ✓' : ''}</strong>
+      <span style={{ fontSize: 12, color: 'var(--tx-2)', lineHeight: 1.4 }}>{description}</span>
+    </button>
   )
 }
 
@@ -1769,6 +1844,9 @@ function MemorySettingsTab() {
           </div>
         </div>
 
+        {/* Memory Graph Visualization */}
+        <MemoryGraphSection entries={entries} />
+
         <div className="wb-memory-kun-section">
           <div className="wb-memory-kun-record-head">
             <div>
@@ -2113,6 +2191,70 @@ function MemorySettingsRow({ entry, onEdit, onApprove, onDisable, onDelete, onTo
         {entry.status !== 'disabled' && <button onClick={() => onDisable(entry.id)}>{tr('禁用', 'Disable')}</button>}
         <button className="danger" onClick={() => onDelete(entry.id)}>{tr('删除', 'Delete')}</button>
       </div>
+    </div>
+  )
+}
+
+function MemoryGraphSection({ entries }: { entries: MemoryEntry[] }) {
+  const [graph, setGraph] = useState<any>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const buildGraph = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await window.electronAPI.memoryGraph.build(entries)
+      setGraph(result)
+    } catch (err: any) {
+      setError(err?.message || tr('构建记忆图谱失败', 'Failed to build memory graph'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const cleanup = async () => {
+    if (!graph) return
+    try {
+      const suggestions = await window.electronAPI.memoryGraph.cleanupSuggestions(graph)
+      // TODO: Show cleanup suggestions to user
+      alert(tr(`发现 ${suggestions?.length || 0} 条可清理的记忆`, `Found ${suggestions?.length || 0} memories to clean up`))
+    } catch (err: any) {
+      setError(err?.message || tr('获取清理建议失败', 'Failed to get cleanup suggestions'))
+    }
+  }
+
+  if (entries.length === 0) return null
+
+  return (
+    <div className="wb-memory-kun-section">
+      <div className="wb-memory-kun-copy">
+        <strong>{tr('记忆图谱', 'Memory Graph')}</strong>
+        <span>{tr('可视化记忆条目之间的关系，查看清理建议。', 'Visualize relationships between memory entries and view cleanup suggestions.')}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button className="ah-btn sm" onClick={buildGraph} disabled={loading}>
+          {loading ? tr('构建中...', 'Building...') : tr('构建图谱', 'Build Graph')}
+        </button>
+        {graph && (
+          <button className="ah-btn sm" onClick={cleanup}>
+            {tr('清理建议', 'Cleanup Suggestions')}
+          </button>
+        )}
+      </div>
+      {error && <div style={{ fontSize: 12, color: 'var(--color-error)', marginTop: 4 }}>{error}</div>}
+      {graph && (
+        <div style={{ marginTop: 8, padding: 12, background: 'var(--bg-input)', borderRadius: 8, fontSize: 12 }}>
+          <div>{tr(`节点: ${graph.stats?.totalNodes || 0}，边: ${graph.stats?.totalEdges || 0}，孤立节点: ${graph.stats?.isolatedNodes || 0}`, `Nodes: ${graph.stats?.totalNodes || 0}, Edges: ${graph.stats?.totalEdges || 0}, Isolated: ${graph.stats?.isolatedNodes || 0}`)}</div>
+          {graph.stats?.categories && (
+            <div style={{ marginTop: 4 }}>
+              {Object.entries(graph.stats.categories).map(([cat, count]) => (
+                <span key={cat} className="ah-chip" style={{ marginRight: 4, fontSize: 10 }}>{cat}: {count as number}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
