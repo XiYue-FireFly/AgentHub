@@ -4,6 +4,7 @@ import { BindingDef, ProviderDef, TaskItem } from '../glass/meta'
 import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
 import { SettingsScreen, MotionLevel } from '../screens/Settings'
 import { WorkflowsPanel } from './WorkflowsPanel'
+import { TerminalPanel } from './TerminalPanel'
 import { TasksScreen } from '../screens/Tasks'
 import { SetupTab, summarizeAgentConnections } from '../glass/connection-status'
 import { tr } from '../glass/i18n'
@@ -32,7 +33,7 @@ import {
 
 type ViewMode = 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
 type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models'
-type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | null
+type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | null
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
 type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 
@@ -539,6 +540,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     else if (commandId === 'panel-runs') setRightPanel('runs')
     else if (commandId === 'panel-git') setRightPanel('git')
     else if (commandId === 'panel-browser') setRightPanel('browser')
+    else if (commandId === 'panel-terminal') setRightPanel('terminal')
     else if (commandId === 'settings-shortcuts') openSetup('shortcuts')
     else if (commandId === 'settings-mcp') openSetup('mcp')
     else if (commandId === 'open-workflows') setView('workflows')
@@ -1175,6 +1177,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                   onClose={() => setRightPanel(null)}
                   terminalRuns={terminalRuns}
                   setTerminalRuns={setTerminalRuns}
+                />
+              ) : rightPanel === 'terminal' ? (
+                <TerminalPanel
+                  workspaceRoot={workspaceId ? activeWorkspace?.rootPath : undefined}
+                  onClose={() => setRightPanel(null)}
                 />
               ) : (
                 <WorkbenchToolPanel

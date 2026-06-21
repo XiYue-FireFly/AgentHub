@@ -318,6 +318,11 @@ interface ElectronAPI {
     validate: (original: string, replacement: string) => Promise<{ valid: boolean; warnings?: string[] }>
     apply: (content: string, startLine: number, endLine: number, replacement: string) => Promise<{ ok: boolean; content?: string; error?: string }>
   }
+  terminalAi: {
+    buildPrompt: (userPrompt: string, context: any) => Promise<string>
+    suggestCommand: (intent: string, context: any) => Promise<string>
+    explainOutput: (context: any) => Promise<string>
+  }
   platform: string
 }
 
