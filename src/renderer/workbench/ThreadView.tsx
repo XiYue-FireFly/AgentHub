@@ -3,6 +3,7 @@ import { Icon, IC, AgentMark } from '../glass/ui'
 import { ActivityTrail } from '../glass/activity-view'
 import { ToolCallStream } from '../glass/ToolCallStream'
 import { ExecutionReport } from '../glass/ExecutionReport'
+import { InlineEditAffordance } from './InlineEditAffordance'
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
 import { SetupTab, firstRunActionForError } from '../glass/connection-status'
@@ -194,11 +195,20 @@ function ProcessDetails({
           {processRows.map(row => (
             <div key={row.id} className={'wb-agent-process-row ' + row.kind}>
               <span className="wb-agent-process-icon"><Icon d={row.icon} size={13} /></span>
-              <div>
+              <div style={{ flex: 1 }}>
                 <strong>{row.title}</strong>
                 {row.detail && row.filePath
                   ? <MarkdownBlock content={`\`${row.filePath}${row.line ? `:${row.line}` : ''}\` ${row.detail}`} workspaceRoot={workspaceRoot} />
                   : row.detail ? <small>{row.detail}</small> : null}
+                {/* Inline Edit affordance for code-related tool outputs */}
+                {(row.kind === 'activity' && row.detail && /write|edit|create|update|patch|apply/i.test(row.title || '')) && (
+                  <InlineEditAffordance
+                    code={row.detail || ''}
+                    filePath={row.filePath}
+                    startLine={row.line}
+                    workspaceRoot={workspaceRoot || undefined}
+                  />
+                )}
               </div>
               <em>{relativeEventTime(row.createdAt)}</em>
             </div>

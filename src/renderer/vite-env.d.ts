@@ -239,7 +239,8 @@ interface ElectronAPI {
     setEnabled: (agentId: string, on: boolean) => Promise<string[]>
     getMode: () => Promise<'all' | 'selected'>
     setMode: (mode: 'all' | 'selected') => Promise<'all' | 'selected'>
-    getApprovalConfig: () => Promise<{ version: 1; default: { write: 'allow' | 'ask' | 'deny'; exec: 'allow' | 'ask' | 'deny' }; overrides: Record<string, { write?: 'allow' | 'ask' | 'deny'; exec?: 'allow' | 'ask' | 'deny' }> }>
+    getApprovalConfig: () => Promise<{ version: 1; preset?: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'; default: { write: 'allow' | 'ask' | 'deny'; exec: 'allow' | 'ask' | 'deny' }; overrides: Record<string, { write?: 'allow' | 'ask' | 'deny'; exec?: 'allow' | 'ask' | 'deny' }> }>
+    setApprovalPreset: (preset: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom') => Promise<any>
     setApprovalDefault: (tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny') => Promise<any>
     setApprovalOverride: (agentId: string, tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny' | null) => Promise<any>
     resolveApproval: (requestId: string, approved: boolean) => Promise<boolean>
@@ -303,6 +304,19 @@ interface ElectronAPI {
     listPrs: (state?: string, limit?: number) => Promise<Array<{ number: number; title: string; state: string; author: string; url: string; branch: string; createdAt: string; labels: string[] }>>
     listIssues: (state?: string, limit?: number) => Promise<Array<{ number: number; title: string; state: string; author: string; url: string; labels: string[]; createdAt: string }>>
     currentBranchPr: () => Promise<{ branch: string; pr?: any }>
+  }
+  workflows: {
+    list: (category?: string) => Promise<WorkflowDefinition[]>
+    get: (id: string) => Promise<WorkflowDefinition | null>
+    upsert: (input: Partial<WorkflowDefinition> & { name: string; steps: WorkflowStep[] }) => Promise<WorkflowDefinition>
+    delete: (id: string) => Promise<boolean>
+    search: (query: string) => Promise<WorkflowDefinition[]>
+    seed: () => Promise<WorkflowDefinition[]>
+  }
+  inlineEdit: {
+    buildPrompt: (request: any) => Promise<string>
+    validate: (original: string, replacement: string) => Promise<{ valid: boolean; warnings?: string[] }>
+    apply: (content: string, startLine: number, endLine: number, replacement: string) => Promise<{ ok: boolean; content?: string; error?: string }>
   }
   platform: string
 }
@@ -864,6 +878,32 @@ interface LocalAgentStatus {
   candidates: Array<{ source: 'desktop' | 'terminal'; label: string; path: string }>
   workspaceSession: 'per-dispatch' | 'persistent'
   error?: string
+}
+
+type WorkflowStepType = 'prompt' | 'agent' | 'skill' | 'review' | 'gate'
+
+interface WorkflowStep {
+  id: string
+  type: WorkflowStepType
+  label: string
+  agentId?: string
+  prompt?: string
+  skillId?: string
+  dependsOn?: string[]
+  requiresApproval?: boolean
+}
+
+interface WorkflowDefinition {
+  id: string
+  name: string
+  description: string
+  category: 'development' | 'review' | 'research' | 'deployment' | 'custom'
+  steps: WorkflowStep[]
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+  useCount: number
+  pinned?: boolean
 }
 
 interface Window {
