@@ -561,8 +561,19 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       { id: 'open-memory', label: 'Open Memory', labelZh: '打开记忆', category: 'navigation' },
       { id: 'open-skills', label: 'Open Skills', labelZh: '打开技能', category: 'navigation' },
       { id: 'open-prompts', label: 'Open Prompts', labelZh: '打开提示词库', category: 'navigation' },
+      { id: 'open-plugins', label: 'Open Plugins', labelZh: '打开插件管理', category: 'navigation' },
+      { id: 'open-usage', label: 'Open Usage Stats', labelZh: '打开用量统计', category: 'navigation' },
+      { id: 'open-models', label: 'Open Models', labelZh: '打开模型列表', category: 'navigation' },
       { id: 'open-diagnostics', label: 'Run Diagnostics', labelZh: '运行诊断', category: 'system' },
-      { id: 'open-backup', label: 'Create Backup', labelZh: '创建备份', category: 'system' }
+      { id: 'open-backup', label: 'Create Backup', labelZh: '创建备份', category: 'system' },
+      { id: 'seed-workflows', label: 'Seed Default Workflows', labelZh: '加载默认工作流', category: 'system' },
+      // Agent switching commands
+      ...localAgentOptions(localAgents).map(id => ({
+        id: `switch-agent:${id}`,
+        label: `Switch to ${id}`,
+        labelZh: `切换到 ${id}`,
+        category: 'agent' as const
+      }))
     ]
     return [...fromShortcuts, ...extra]
   }, [])
@@ -573,9 +584,25 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     // Handle extra commands
     if (id === 'open-memory') openSetup('memory')
     else if (id === 'open-skills') openSetup('skills')
-    else if (id === 'open-diagnostics') openSetup('appearance') // diagnostics tab would go here
+    else if (id === 'open-plugins') openSetup('plugins')
+    else if (id === 'open-usage') openSetup('usage')
+    else if (id === 'open-models') openSetup('models')
+    else if (id === 'open-prompts') openSetup('shortcuts') // prompts go in shortcuts for now
+    else if (id === 'open-diagnostics') openSetup('appearance')
     else if (id === 'open-backup') openSetup('appearance')
-  }, [runShortcutCommand, openSetup])
+    else if (id === 'seed-workflows') {
+      window.electronAPI.workflows.seed().catch(() => {})
+    }
+    // Agent switching
+    else if (id.startsWith('switch-agent:')) {
+      const agentId = id.split(':')[1]
+      const usable = localAgentOptions(localAgents)
+      if (agentId && usable.includes(agentId)) {
+        setTargetAgent(agentId)
+        setView('chat')
+      }
+    }
+  }, [runShortcutCommand, openSetup, localAgents, setTargetAgent, setView])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
