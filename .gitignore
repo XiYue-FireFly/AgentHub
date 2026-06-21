@@ -33,3 +33,29 @@ COLLAB.md
 # UX 审查产物（Playwright 截图/快照、临时 mock 页）
 .playwright-cli/
 output/
+
+# 本地临时配置 / 截图 / 目标迭代笔记（不入库）
+config.json
+*.bak
+agenthub-screen*.png
+
+# 目标迭代工作笔记（本地 brainstorm，非权威文档）
+GOAL_ITERATION_V2*.md
+
+# Windows device name artifact
+nul
+
+# Local execution reports
+execution-reports.json
+
+# AgentHub dev logs
+agenthub-dev*.log
+agenthub-dev-live*.log
+
+# Claude Code agent workspace
+.claude/
+.workbuddy/
+
+# Backup files (use backup system instead)
+*.bak
+mcp.ts.bak
