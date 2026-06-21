@@ -8,11 +8,17 @@
 import { registerGitIpc } from './git-ipc'
 import { registerMemoryIpc } from './memory-ipc'
 import { registerProviderIpc } from './provider-ipc'
+import { registerMcpIpc } from './mcp-ipc'
+import { registerWorkflowIpc } from './workflow-ipc'
 
 interface IpcRegistrationDeps {
   memory: () => any
   providerMgr: any
   registerAgentsFromBindings: () => void
+  resolveAppVersionFromMain: () => string
+  getWorkspaceManager: () => any
+  store: any
+  registry: any
 }
 
 /**
@@ -32,10 +38,16 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
     registerAgentsFromBindings: deps.registerAgentsFromBindings
   })
 
-  // TODO: Extract remaining IPC groups:
-  // - hub-ipc.ts (threads, turns, runtime, context)
-  // - mcp-ipc.ts (MCP servers, tools)
-  // - workflow-ipc.ts (workflows, shortcuts, diagnostics, backup)
-  // - terminal-ipc.ts (terminal, browser, inline-edit)
-  // - thread-ipc.ts (threads, turns, runtime)
+  // MCP operations (7 handlers)
+  registerMcpIpc()
+
+  // Workflow/Feature operations (40+ handlers)
+  registerWorkflowIpc({
+    resolveAppVersionFromMain: deps.resolveAppVersionFromMain,
+    getWorkspaceManager: deps.getWorkspaceManager,
+    store: deps.store,
+    memory: deps.memory,
+    providerMgr: deps.providerMgr,
+    registry: deps.registry
+  })
 }

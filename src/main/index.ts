@@ -1508,12 +1508,8 @@ ipcMain.handle("schedules:list", () => listSchedules())
 ipcMain.handle("schedules:runPreview", (_event, preset: DispatchPreset) => previewSchedule(preset))
 ipcMain.handle("commands:list", () => listWorkbenchCommands())
 ipcMain.handle("commands:run", (_event, input: { id?: string; text?: string }) => runWorkbenchCommand(input))
-ipcMain.handle("workflows:list", (_event, category?: string) => listWorkflows(category as any))
-ipcMain.handle("workflows:get", (_event, id: string) => getWorkflow(id))
-ipcMain.handle("workflows:upsert", (_event, input: any) => upsertWorkflow(input))
-ipcMain.handle("workflows:delete", (_event, id: string) => deleteWorkflow(id))
-ipcMain.handle("workflows:search", (_event, query: string) => searchWorkflows(query))
-ipcMain.handle("workflows:seed", () => { seedDefaultWorkflows(); return listWorkflows() })
+// Workflows, shortcuts, diagnostics, backup, notifications, onboarding,
+// slashCommands, projectMap, github IPC handlers moved to src/main/ipc/workflow-ipc.ts
 ipcMain.handle("ecc:status", () => eccCommandStatus())
 ipcMain.handle("ecc:update", () => updateEccCommands())
 ipcMain.handle("terminal:run", (_event, input: { workspaceId?: string | null; command: string }) => getTerminalRuntime().run(input))
@@ -1538,14 +1534,7 @@ ipcMain.handle("tasks:clearCompleted", () => {
   }
   return true
 })
-// Git IPC handlers moved to src/main/ipc/git-ipc.ts (registered via registerAllIpcHandlers)
-ipcMain.handle("mcp:list", (_event, workspaceId?: string | null) => listMcpServers(workspaceId))
-ipcMain.handle("mcp:scanLocal", (_event, workspaceId?: string | null) => scanLocalMcpServers(workspaceId))
-ipcMain.handle("mcp:upsert", (_event, input: any) => upsertMcpServer(input))
-ipcMain.handle("mcp:remove", (_event, id: string) => removeMcpServer(id))
-ipcMain.handle("mcp:setEnabled", (_event, id: string, enabled: boolean, workspaceId?: string | null) => setMcpEnabled(id, enabled, workspaceId))
-ipcMain.handle("mcp:test", (_event, id: string, workspaceId?: string | null) => testMcpServer(id, workspaceId))
-ipcMain.handle("mcp:listTools", (_event, id: string, workspaceId?: string | null) => listMcpServerTools(id, workspaceId))
+// Git & MCP IPC handlers moved to src/main/ipc/ (registered via registerAllIpcHandlers)
 ipcMain.handle("worktrees:list", (_event, parentWorkspaceId?: string | null) => listWorktrees(parentWorkspaceId))
 ipcMain.handle("worktrees:create", (_event, input: { parentWorkspaceId: string; branch?: string; path?: string }) => createWorktree(input))
 ipcMain.handle("worktrees:remove", (_event, id: string, force?: boolean) => removeWorktree(id, !!force))
@@ -1641,13 +1630,8 @@ ipcMain.handle("prompts:slashCommands", () => getSlashCommands())
 ipcMain.handle("prompts:incrementUse", (_e, id: string) => incrementUseCount(id))
 ipcMain.handle("prompts:seedDefaults", () => seedDefaultPrompts())
 
-// --- Keyboard Shortcuts ---
-ipcMain.handle("shortcuts:list", (_e, category?: string) => listShortcuts(category as any))
-ipcMain.handle("shortcuts:get", (_e, id: string) => getShortcut(id))
-ipcMain.handle("shortcuts:update", (_e, id: string, key: string) => updateShortcut(id, key))
-ipcMain.handle("shortcuts:reset", (_e, id: string) => resetShortcut(id))
-ipcMain.handle("shortcuts:resetAll", () => resetAllShortcuts())
-ipcMain.handle("shortcuts:conflicts", () => detectConflicts())
+// Keyboard shortcuts, diagnostics, backup, notifications, onboarding,
+// slashCommands, projectMap, github — all moved to src/main/ipc/workflow-ipc.ts
 
 // --- Diagnostics ---
 ipcMain.handle("diagnostics:run", async () => {
@@ -2014,7 +1998,11 @@ app.whenReady().then(async () => {
   registerAllIpcHandlers({
     memory: memory,
     providerMgr: providerMgr,
-    registerAgentsFromBindings: registerAgentsFromBindings
+    registerAgentsFromBindings: registerAgentsFromBindings,
+    resolveAppVersionFromMain,
+    getWorkspaceManager,
+    store,
+    registry
   })
 
   if (pendingDeepLink) {
