@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "./styles/command-palette.css";
 @import "./styles/context-ledger.css";
+@import "./styles/mcp.css";
 
 /* ============================================================
    AgentHub — 玻璃拟态设计系统
@@ -1711,6 +1712,51 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-agent-process-row .wb-markdown {
   margin-top: 2px;
   font-size: var(--font-xs);
+}
+.wb-tool-call-area {
+  margin: 8px 0;
+}
+.tool-call-stream-summary {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--wb-line-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--wb-panel) 94%, var(--wb-bg));
+  color: var(--wb-text);
+  padding: 7px 10px;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.tool-call-stream-summary:hover {
+  border-color: color-mix(in srgb, var(--wb-accent) 30%, var(--wb-line-soft));
+  background: color-mix(in srgb, var(--wb-accent) 6%, var(--wb-panel));
+}
+.tool-call-stream-summary strong {
+  font-weight: 700;
+}
+.tool-call-stream-summary em,
+.tool-call-stream-summary small {
+  color: var(--wb-muted);
+  font-size: 11.5px;
+  font-style: normal;
+}
+.tool-call-stream-summary em.succeeded {
+  color: var(--st-idle);
+}
+.tool-call-stream-summary em.failed {
+  color: var(--wb-red);
+}
+.tool-call-stream-summary small {
+  margin-left: auto;
+}
+.tool-call-stream-chevron {
+  width: 16px;
+  color: var(--wb-muted);
+  text-align: center;
 }
 .wb-completion-summary {
   margin-top: 10px;
@@ -4729,59 +4775,6 @@ button, input, textarea, select { letter-spacing: 0; }
 }
 .winbtn:hover { background: rgba(255,255,255,0.1); color: var(--tx-1); }
 .winbtn.close:hover { background: rgba(232,112,106,0.85); color: #fff; }
-
-.wb-mcp-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-.wb-mcp-table th,
-.wb-mcp-table td {
-  padding: 9px 10px;
-  border-top: 1px solid var(--glass-border);
-  text-align: left;
-  vertical-align: middle;
-}
-.wb-mcp-table th {
-  color: var(--tx-3);
-  font-weight: 600;
-  border-top: none;
-}
-.wb-mcp-table td:first-child {
-  min-width: 150px;
-}
-.wb-mcp-table td strong,
-.wb-mcp-table td small {
-  display: block;
-}
-.wb-mcp-table .mono {
-  font-family: var(--font-mono);
-  color: var(--tx-2);
-  max-width: 360px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.wb-mcp-status {
-  display: inline-flex;
-  align-items: center;
-  min-width: 54px;
-  justify-content: center;
-  border-radius: 999px;
-  padding: 2px 7px;
-  border: 1px solid var(--glass-border);
-  color: var(--tx-3);
-}
-.wb-mcp-status.ok {
-  border-color: var(--mint-line);
-  color: var(--mint);
-  background: var(--mint-soft);
-}
-.wb-mcp-status.error {
-  border-color: rgba(232,112,106,0.24);
-  color: var(--st-error);
-  background: rgba(232,112,106,0.08);
-}
 
 .wb-git-panel {
   gap: 12px;
