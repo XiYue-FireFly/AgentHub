@@ -1,15 +1,18 @@
 /// <reference types="vite/client" />
 
+// Shared type contracts from src/shared/ipc-types.ts
+// Renderer-side reference: these types mirror the main process definitions.
+
 interface ElectronAPI {
   hub: {
     getStatus: () => Promise<any>
     dispatch: (text: string, mode?: string, targetAgent?: string, opts?: { thinking?: any; modelSelection?: ModelSelection; workspaceId?: string | null }) => Promise<any>
     cancel: (taskId: string) => Promise<boolean>
-    onStatus: (callback: (data: any) => void) => () => void
+    onStatus: (callback: (data: { running: boolean }) => void) => () => void
     onStream: (callback: (data: any) => void) => () => void
   }
   providers: {
-    get: () => Promise<any>
+    get: () => Promise<any> // ProvidersConfig — typed in shared/ipc-types.ts
     upsert: (p: any) => Promise<any>
     delete: (id: string) => Promise<boolean>
     setEnabled: (id: string, enabled: boolean) => Promise<any>
@@ -326,6 +329,10 @@ interface ElectronAPI {
     buildPrompt: (userPrompt: string, context: any) => Promise<string>
     suggestCommand: (intent: string, context: any) => Promise<string>
     explainOutput: (context: any) => Promise<string>
+  }
+  ai: {
+    quickComplete: (input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) =>
+      Promise<{ content: string; error?: string }>
   }
   memoryGraph: {
     build: (entries: any[]) => Promise<any>
