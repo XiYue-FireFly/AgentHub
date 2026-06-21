@@ -89,6 +89,30 @@ export const KEYBOARD_SHORTCUT_COMMANDS = [
     descriptionZh: '\u6253\u5f00 MCP \u670d\u52a1\u5668\u7ba1\u7406\u9875',
     descriptionEn: 'Open MCP server settings.',
     defaultBindings: ['Ctrl+Shift+M']
+  },
+  {
+    id: 'command-palette',
+    labelZh: '\u547d\u4ee4\u9762\u677f',
+    labelEn: 'Command palette',
+    descriptionZh: '\u6253\u5f00\u5168\u5c40\u547d\u4ee4\u641c\u7d22\u9762\u677f',
+    descriptionEn: 'Open the global command search palette.',
+    defaultBindings: ['Ctrl+Shift+P']
+  },
+  {
+    id: 'stop-task',
+    labelZh: '\u505c\u6b62\u5f53\u524d\u4efb\u52a1',
+    labelEn: 'Stop current task',
+    descriptionZh: '\u505c\u6b62\u6b63\u5728\u8fd0\u884c\u7684\u4efb\u52a1',
+    descriptionEn: 'Stop the currently running task.',
+    defaultBindings: ['Ctrl+Shift+Escape']
+  },
+  {
+    id: 'focus-composer',
+    labelZh: '\u805a\u7126\u8f93\u5165\u6846',
+    labelEn: 'Focus composer',
+    descriptionZh: '\u5c06\u7126\u70b9\u79fb\u5230\u5e95\u90e8\u8f93\u5165\u6846',
+    descriptionEn: 'Move focus to the bottom composer input.',
+    defaultBindings: ['Ctrl+L']
   }
 ] as const
 

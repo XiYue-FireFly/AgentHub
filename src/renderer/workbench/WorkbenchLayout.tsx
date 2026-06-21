@@ -13,6 +13,7 @@ import { RunTimeline } from './RunTimeline'
 import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
+import { CommandPalette, PaletteCommand } from './CommandPalette'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
@@ -20,6 +21,7 @@ import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
   KEYBOARD_SHORTCUT_STORE_KEY,
+  KEYBOARD_SHORTCUT_COMMANDS,
   KEYBOARD_SHORTCUTS_CHANGED,
   KeyboardShortcutsConfigV1,
   resolveKeyboardShortcutBindings,
@@ -521,7 +523,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
   }, [])
 
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+
   const runShortcutCommand = useCallback((commandId: string) => {
+    if (commandId === 'command-palette') { setCommandPaletteOpen(prev => !prev); return }
+    if (commandId === 'focus-composer') { document.querySelector<HTMLTextAreaElement>('.wb-composer-input')?.focus(); return }
     if (commandId === 'new-chat') void createThread()
     else if (commandId === 'choose-workspace') openCreateProject()
     else if (commandId === 'view-chat') setView('chat')
@@ -534,6 +540,37 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     else if (commandId === 'settings-shortcuts') openSetup('shortcuts')
     else if (commandId === 'settings-mcp') openSetup('mcp')
   }, [createThread, openCreateProject, setView, openSetup])
+
+  const paletteCommands: PaletteCommand[] = useMemo(() => {
+    const cmds = KEYBOARD_SHORTCUT_COMMANDS as readonly { id: string; labelZh: string; labelEn: string; descriptionZh: string; descriptionEn: string; defaultBindings: readonly string[] }[]
+    const fromShortcuts: PaletteCommand[] = cmds.map(cmd => ({
+      id: cmd.id,
+      label: cmd.labelEn || cmd.id,
+      labelZh: cmd.labelZh,
+      labelEn: cmd.labelEn,
+      descriptionZh: cmd.descriptionZh,
+      descriptionEn: cmd.descriptionEn,
+      category: 'keyboard'
+    }))
+    const extra: PaletteCommand[] = [
+      { id: 'open-memory', label: 'Open Memory', labelZh: '打开记忆', category: 'navigation' },
+      { id: 'open-skills', label: 'Open Skills', labelZh: '打开技能', category: 'navigation' },
+      { id: 'open-prompts', label: 'Open Prompts', labelZh: '打开提示词库', category: 'navigation' },
+      { id: 'open-diagnostics', label: 'Run Diagnostics', labelZh: '运行诊断', category: 'system' },
+      { id: 'open-backup', label: 'Create Backup', labelZh: '创建备份', category: 'system' }
+    ]
+    return [...fromShortcuts, ...extra]
+  }, [])
+
+  const executePaletteCommand = useCallback((id: string) => {
+    // Try shortcut handler first
+    runShortcutCommand(id)
+    // Handle extra commands
+    if (id === 'open-memory') openSetup('memory')
+    else if (id === 'open-skills') openSetup('skills')
+    else if (id === 'open-diagnostics') openSetup('appearance') // diagnostics tab would go here
+    else if (id === 'open-backup') openSetup('appearance')
+  }, [runShortcutCommand, openSetup])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1234,6 +1271,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       )}
 
       <ApprovalDialog items={props.approvals} onDecide={props.onApprovalDecide} />
+      {commandPaletteOpen && (
+        <CommandPalette
+          commands={paletteCommands}
+          onExecute={executePaletteCommand}
+          onClose={() => setCommandPaletteOpen(false)}
+        />
+      )}
     </div>
   )
 }
