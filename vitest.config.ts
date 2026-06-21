@@ -12,5 +12,8 @@ export default defineConfig({
     alias: {
       electron: resolve(process.cwd(), 'test/electron-stub.ts')
     }
+  },
+  test: {
+    exclude: ['**/node_modules/**', '**/test/e2e/**', '**/.cc-switch-src/**', '**/output/**']
   }
 })
