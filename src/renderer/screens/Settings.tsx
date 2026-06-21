@@ -3,7 +3,8 @@ import { Icon, IC, AgentMark, Seg, Switch } from '../glass/ui'
 import { AGENT_META, AGENT_IDS, BindingDef, DEFAULT_STDIO_ARGS, ProviderDef } from '../glass/meta'
 import { agentDesc, getLang, setLang, Lang, tr } from '../glass/i18n'
 import { ConnectionSummary, SetupTab } from '../glass/connection-status'
-import { SkillsTab } from './Skills'
+// Phase 4 lazy loading: SkillsTab loaded on demand
+const SkillsTab = React.lazy(() => import('./Skills').then(m => ({ default: m.SkillsTab })))
 import {
   AppearancePreferences,
   DEFAULT_APPEARANCE,
@@ -32,6 +33,8 @@ import {
   resolveKeyboardShortcutBindings,
   shortcutDisplay
 } from '../keyboard-shortcuts'
+// Phase 4 lazy loading: UsageStatsDashboard loaded on demand
+const UsageStatsTabFull = React.lazy(() => import('./UsageStatsDashboard').then(m => ({ default: m.UsageStatsDashboard })))
 
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 
@@ -180,10 +183,10 @@ export function SettingsScreen(props: SettingsScreenProps) {
         )}
         {visibleTab === 'approvals' && <ApprovalsTab />}
         {visibleTab === 'workspaces' && <WorkspacesTab />}
-        {visibleTab === 'skills' && <SkillsTab />}
+        {visibleTab === 'skills' && <React.Suspense fallback={<div className="wb-muted-box">{tr('加载技能...', 'Loading skills...')}</div>}><SkillsTab /></React.Suspense>}
         {visibleTab === 'mcp' && <McpSettingsTab workspaceId={props.workspaceId ?? null} />}
         {visibleTab === 'plugins' && <PluginSettingsTab workspaceId={props.workspaceId ?? null} />}
-        {visibleTab === 'usage' && <UsageStatsTab />}
+        {visibleTab === 'usage' && <React.Suspense fallback={<div className="wb-muted-box">{tr('加载用量统计...', 'Loading usage stats...')}</div>}><UsageStatsTabFull /></React.Suspense>}
         {visibleTab === 'shortcuts' && <ShortcutsSettingsTab />}
         {visibleTab === 'memory' && <MemorySettingsTab />}
         {visibleTab === 'updates' && <UpdatesSettingsTab />}
@@ -1373,275 +1376,6 @@ function mcpStatusLabel(status: string): string {
   return tr('未测试', 'Untested')
 }
 
-function UsageStatsTab() {
-  const [range, setRange] = useState<UsageRange>('all')
-  const [view, setView] = useState<UsageView>('overview')
-  const [stats, setStats] = useState<UsageStats | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [selectedDay, setSelectedDay] = useState<UsageHeatmapDay | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    setLoading(true)
-    setError(null)
-    window.electronAPI.usage.stats(range, view)
-      .then(result => {
-        if (!alive) return
-        setStats(result)
-        const nextSelected = result.heatmap.find(day => day.selected) || result.heatmap.find(day => day.turns > 0 || day.tokens > 0) || result.heatmap.at(-1) || null
-        setSelectedDay(nextSelected)
-      })
-      .catch((err: any) => {
-        if (!alive) return
-        setStats(null)
-        setSelectedDay(null)
-        setError(err?.message || '加载使用统计失败')
-      })
-      .finally(() => { if (alive) setLoading(false) })
-    return () => { alive = false }
-  }, [range, view])
-
-  const cards = useMemo(() => {
-    if (!stats) return []
-    return [
-      ['会话', String(stats.sessions)],
-      ['消息', String(stats.messages)],
-      ['总 Token', formatUsageTokens(stats.totalTokens, stats.hasEstimated)],
-      ['活跃天数', String(stats.activeDays)],
-      ['当前连续', `${stats.currentStreak} 天`],
-      ['最长连续', `${stats.longestStreak} 天`],
-      ['费用', stats.cost == null ? '-' : `$${stats.cost.toFixed(2)}`],
-      ['缓存节省', stats.cacheSavings == null ? '-' : formatToken(stats.cacheSavings)]
-    ]
-  }, [stats])
-
-  const selectedStats = selectedDay
-    ? {
-        date: selectedDay.date,
-        turns: selectedDay.turns,
-        tokens: selectedDay.tokens,
-        actualTokens: selectedDay.actualTokens,
-        estimatedTokens: selectedDay.estimatedTokens,
-        hasEstimated: selectedDay.hasEstimated,
-        rate: stats?.heatmap.find(day => day.date === selectedDay.date)?.level || 0
-      }
-    : null
-
-  return (
-    <div className="wb-usage-shell">
-      <div className="wb-usage-top">
-        <Seg value={view} onChange={value => setView(value as UsageView)} options={[{ value: 'overview', label: '概览' }, { value: 'models', label: '模型' }]} />
-        <Seg value={range} onChange={value => setRange(value as UsageRange)} options={[{ value: 'all', label: '全部' }, { value: '90d', label: '90天' }, { value: '30d', label: '30天' }, { value: '7d', label: '7天' }]} />
-      </div>
-      {loading && <div className="wb-usage-state">加载中…</div>}
-      {error && <div className="wb-usage-state error">{error}</div>}
-      {!loading && !error && stats && (
-        <>
-          <div className="wb-usage-cards">
-            {cards.map(([label, value]) => <button key={label} type="button" className="wb-usage-card"><span>{label}</span><strong>{value}</strong></button>)}
-          </div>
-          <div className="wb-usage-body">
-            <div className="wb-usage-chart">
-              {view === 'models' ? (
-                stats.models.length ? (
-                  <div className="wb-usage-models">
-                    {stats.models.map(row => <button key={`${row.agentId}:${row.modelId}`} type="button" className="wb-usage-model-row"><span>{row.agentId || 'agent'} / {row.modelId}</span><strong>{formatToken(row.tokens)}</strong><small>{row.turns} 次</small></button>)}
-                  </div>
-                ) : (
-                  <div className="wb-usage-empty">暂无模型用量数据。</div>
-                )
-              ) : (
-                <div className="wb-usage-heatmap">
-                  {stats.heatmap.map(day => (
-                    <button
-                      key={day.date}
-                      type="button"
-                      className={`wb-usage-day level-${day.level}${day.selected || selectedDay?.date === day.date ? ' selected' : ''}`}
-                      title={`${day.date} / ${day.turns} 消息 / ${formatToken(day.tokens)}`}
-                      onClick={() => setSelectedDay(day)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-            <aside className="wb-usage-detail">
-              <strong>{selectedStats?.date || '—'}</strong>
-              <span>{selectedStats ? `${selectedStats.turns} 条记录` : '选择一天查看详情'}</span>
-              <small>{selectedStats ? `${formatToken(selectedStats.tokens)} · 等级 ${selectedStats.rate}` : ' '}</small>
-              <div className="wb-usage-mini-metrics">
-                <div><span>Token</span><strong>{formatToken(stats.totalTokens)}</strong></div>
-                <div><span>活跃</span><strong>{stats.activeDays}</strong></div>
-                <div><span>连续</span><strong>{stats.currentStreak}</strong></div>
-              </div>
-            </aside>
-          </div>
-          <div className="wb-usage-foot">最近共使用 {formatToken(stats.totalTokens)}，活跃 {stats.activeDays} 天。</div>
-        </>
-      )}
-    </div>
-  )
-}
-
-// UsageStatsTab and UsageStatsTabV2 are now active
-
-function UsageStatsTabV2() {
-  const [range, setRange] = useState<UsageRange>('all')
-  const [view, setView] = useState<UsageView>('overview')
-  const [stats, setStats] = useState<UsageStats | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [selectedDay, setSelectedDay] = useState<UsageHeatmapDay | null>(null)
-  const [selectedModelKey, setSelectedModelKey] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    setLoading(true)
-    setError(null)
-    window.electronAPI.usage.stats(range, view)
-      .then(result => {
-        if (!alive) return
-        setStats(result)
-        const nextSelected = result.heatmap.find(day => day.selected)
-          || result.heatmap.find(day => day.turns > 0 || day.tokens > 0)
-          || result.heatmap.at(-1)
-          || null
-        setSelectedDay(nextSelected)
-      })
-      .catch((err: any) => {
-        if (!alive) return
-        setStats(null)
-        setSelectedDay(null)
-        setError(err?.message || '加载使用统计失败')
-      })
-      .finally(() => { if (alive) setLoading(false) })
-    return () => { alive = false }
-  }, [range, view])
-
-  useEffect(() => {
-    if (!stats?.models.length) {
-      setSelectedModelKey(null)
-      return
-    }
-    if (!stats.models.some(row => usageModelKey(row) === selectedModelKey)) {
-      setSelectedModelKey(usageModelKey(stats.models[0]))
-    }
-  }, [stats, selectedModelKey])
-
-  const cards = useMemo(() => {
-    if (!stats) return []
-    return [
-      ['会话', String(stats.sessions)],
-      ['消息', String(stats.messages)],
-      ['总 Token', formatUsageTokens(stats.totalTokens, stats.hasEstimated)],
-      ['活跃天数', String(stats.activeDays)],
-      ['当前连续', `${stats.currentStreak} 天`],
-      ['最长连续', `${stats.longestStreak} 天`],
-      ['费用', stats.cost == null ? '-' : `$${stats.cost.toFixed(2)}`],
-      ['缓存节省', stats.cacheSavings == null ? '-' : formatToken(stats.cacheSavings)]
-    ]
-  }, [stats])
-
-  const selectedStats = selectedDay
-    ? {
-        date: selectedDay.date,
-        turns: selectedDay.turns,
-        tokens: selectedDay.tokens,
-        actualTokens: selectedDay.actualTokens,
-        estimatedTokens: selectedDay.estimatedTokens,
-        hasEstimated: selectedDay.hasEstimated,
-        rate: stats?.heatmap.find(day => day.date === selectedDay.date)?.level || 0
-      }
-    : null
-  const selectedModel = stats?.models.find(row => usageModelKey(row) === selectedModelKey) || null
-
-  return (
-    <div className="wb-usage-shell">
-      <div className="wb-usage-top">
-        <Seg value={view} onChange={value => setView(value as UsageView)} options={[{ value: 'overview', label: '概览' }, { value: 'models', label: '模型' }]} />
-        <Seg value={range} onChange={value => setRange(value as UsageRange)} options={[{ value: 'all', label: '全部' }, { value: '90d', label: '90天' }, { value: '30d', label: '30天' }, { value: '7d', label: '7天' }]} />
-      </div>
-      {loading && <div className="wb-usage-state">加载中…</div>}
-      {error && <div className="wb-usage-state error">{error}</div>}
-      {!loading && !error && stats && (
-        <>
-          <div className="wb-usage-cards">
-            {cards.map(([label, value]) => (
-              <button key={label} type="button" className="wb-usage-card" onClick={() => setView(label.includes('Token') ? 'models' : 'overview')}>
-                <span>{label}</span>
-                <strong>{value}</strong>
-              </button>
-            ))}
-          </div>
-          <div className="wb-usage-body">
-            <div className="wb-usage-chart">
-              {view === 'models' ? (
-                stats.models.length ? (
-                  <div className="wb-usage-models">
-                    {stats.models.map(row => {
-                      const key = usageModelKey(row)
-                      return (
-                        <button key={key} type="button" className={'wb-usage-model-row' + (selectedModelKey === key ? ' selected' : '')} onClick={() => setSelectedModelKey(key)}>
-                          <span>{row.agentId || 'Agent'} / {row.modelId}</span>
-                          <strong>{formatUsageTokens(row.tokens, row.hasEstimated)}</strong>
-                          <small>{row.turns} 次{row.hasEstimated ? ` · 含估算 ${formatToken(row.estimatedTokens)}` : ''}</small>
-                        </button>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <div className="wb-usage-empty">暂无模型用量数据。</div>
-                )
-              ) : (
-                <div className="wb-usage-heatmap">
-                  {stats.heatmap.map(day => (
-                    <button
-                      key={day.date}
-                      type="button"
-                      className={`wb-usage-day level-${day.level}${day.selected || selectedDay?.date === day.date ? ' selected' : ''}`}
-                      title={`${day.date} / ${day.turns} 条 / ${formatUsageTokens(day.tokens, day.hasEstimated)}`}
-                      onClick={() => setSelectedDay(day)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-            <aside className="wb-usage-detail">
-              <strong>{view === 'models' ? (selectedModel?.modelId || '未选择模型') : (selectedStats?.date || '未选择日期')}</strong>
-              <span>
-                {view === 'models'
-                  ? (selectedModel ? `${selectedModel.turns} 次调用` : '选择一个模型查看详情')
-                  : (selectedStats ? `${selectedStats.turns} 条记录` : '选择一天查看详情')}
-              </span>
-              <small>
-                {view === 'models'
-                  ? (selectedModel ? `${selectedModel.agentId || 'Agent'} · ${formatUsageTokens(selectedModel.tokens, selectedModel.hasEstimated)}` : ' ')
-                  : (selectedStats ? `${formatUsageTokens(selectedStats.tokens, selectedStats.hasEstimated)} · 等级 ${selectedStats.rate}` : ' ')}
-              </small>
-              {(view === 'models' ? selectedModel?.hasEstimated : selectedStats?.hasEstimated) && (
-                <small>
-                  真实 {formatToken(view === 'models' ? selectedModel?.actualTokens || 0 : selectedStats?.actualTokens || 0)}
-                  {' · '}
-                  估算 {formatToken(view === 'models' ? selectedModel?.estimatedTokens || 0 : selectedStats?.estimatedTokens || 0)}
-                </small>
-              )}
-              <div className="wb-usage-mini-metrics">
-                <div><span>Token</span><strong>{formatUsageTokens(stats.totalTokens, stats.hasEstimated)}</strong></div>
-                <div><span>活跃</span><strong>{stats.activeDays}</strong></div>
-                <div><span>连续</span><strong>{stats.currentStreak}</strong></div>
-              </div>
-            </aside>
-          </div>
-          <div className="wb-usage-foot">
-            当前范围共使用 {formatUsageTokens(stats.totalTokens, stats.hasEstimated)}，活跃 {stats.activeDays} 天。
-            {stats.hasEstimated && <> 其中真实 {formatToken(stats.actualTokens)}，估算 {formatToken(stats.estimatedTokens)}。</>}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
 function MemorySettingsTab() {
   const [scopeFilter, setScopeFilter] = useState<MemoryScopeFilter>('all')
   const [query, setQuery] = useState('')
@@ -2396,10 +2130,6 @@ function memoryStatusLabel(status: MemoryEntryStatus): string {
   return ({ approved: tr('已学习', 'Learned'), candidate: tr('待确认', 'Pending'), disabled: tr('已禁用', 'Disabled') } as Record<MemoryEntryStatus, string>)[status] || status
 }
 
-function usageModelKey(row: UsageModelRow): string {
-  return `${row.agentId || 'agent'}:${row.modelId}`
-}
-
 function UpdatesSettingsTab() {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [loading, setLoading] = useState(false)
@@ -2790,8 +2520,4 @@ function formatToken(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M tokens`
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k tokens`
   return `${value} tokens`
-}
-
-function formatUsageTokens(value: number, hasEstimated?: boolean): string {
-  return `${hasEstimated ? '约 ' : ''}${formatToken(value)}${hasEstimated ? '（含估算）' : ''}`
 }
