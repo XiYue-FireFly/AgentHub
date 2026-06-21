@@ -8,6 +8,7 @@ import { RoutingTab } from './RoutingTab'
 import { ApprovalsTab } from './ApprovalsTab'
 import { WorkspacesTab } from './WorkspacesTab'
 import { McpSettingsTab } from './McpSettingsTab'
+import { ShortcutsSettingsTab } from './ShortcutsSettingsTab'
 import { ConnectionSummary, SetupTab } from '../glass/connection-status'
 // Phase 4 lazy loading: SkillsTab loaded on demand
 const SkillsTab = React.lazy(() => import('./Skills').then(m => ({ default: m.SkillsTab })))
@@ -444,137 +445,6 @@ function stdioArgsHint(agentId: string): string {
     reasonix: 'Candidate only; confirm CLI args manually'
   }
   return englishHints[agentId] || DEFAULT_STDIO_ARGS[agentId] || 'Leave blank to use defaults'
-}
-
-function ShortcutsSettingsTab() {
-  const [settings, setSettings] = useState<KeyboardShortcutsConfigV1>({ bindings: {} })
-  const [search, setSearch] = useState('')
-  const [recording, setRecording] = useState<KeyboardShortcutCommandId | null>(null)
-  const [message, setMessage] = useState<string | null>(null)
-
-  const bindings = useMemo(() => resolveKeyboardShortcutBindings(settings), [settings])
-  const filteredCommands = useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    if (!needle) return KEYBOARD_SHORTCUT_COMMANDS
-    return KEYBOARD_SHORTCUT_COMMANDS.filter(command => [
-      command.labelZh,
-      command.labelEn,
-      command.descriptionZh,
-      command.descriptionEn,
-      command.id,
-      ...(bindings[command.id] || [])
-    ].join(' ').toLowerCase().includes(needle))
-  }, [search, bindings])
-
-  useEffect(() => {
-    let alive = true
-    window.electronAPI.store.get(KEYBOARD_SHORTCUT_STORE_KEY)
-      .then(value => { if (alive) setSettings(normalizeKeyboardShortcuts(value || { bindings: {} })) })
-      .catch(() => { if (alive) setSettings({ bindings: {} }) })
-    return () => { alive = false }
-  }, [])
-
-  const persist = useCallback(async (next: KeyboardShortcutsConfigV1) => {
-    const normalized = normalizeKeyboardShortcuts(next)
-    setSettings(normalized)
-    await window.electronAPI.store.set(KEYBOARD_SHORTCUT_STORE_KEY, normalized)
-    window.dispatchEvent(new CustomEvent(KEYBOARD_SHORTCUTS_CHANGED))
-  }, [])
-
-  const setCommandShortcut = async (commandId: KeyboardShortcutCommandId, shortcut: string) => {
-    const next = normalizeKeyboardShortcuts({
-      bindings: {
-        ...settings.bindings,
-        [commandId]: [shortcut]
-      }
-    })
-    await persist(next)
-    const conflict = findKeyboardShortcutConflict(resolveKeyboardShortcutBindings(next), commandId, shortcut)
-    if (conflict) {
-      const other = KEYBOARD_SHORTCUT_COMMANDS.find(command => command.id === conflict)
-      setMessage(`${shortcut} ${tr('\u5df2\u4e0e', 'also matches')} ${shortcutCommandLabel(other)} ${tr('\u51b2\u7a81\u3002', 'conflicts.')}`)
-    } else {
-      setMessage(tr('\u5feb\u6377\u952e\u5df2\u4fdd\u5b58\u3002', 'Shortcut saved.'))
-    }
-  }
-
-  const resetCommand = async (commandId: KeyboardShortcutCommandId) => {
-    const nextBindings = { ...settings.bindings }
-    delete nextBindings[commandId]
-    await persist({ bindings: nextBindings })
-    setMessage(tr('\u5df2\u6062\u590d\u9ed8\u8ba4\u5feb\u6377\u952e\u3002', 'Default shortcut restored.'))
-  }
-
-  const onRecorderKeyDown = async (event: React.KeyboardEvent, commandId: KeyboardShortcutCommandId) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (event.key === 'Escape') {
-      setRecording(null)
-      setMessage(null)
-      return
-    }
-    if (event.key === 'Backspace' || event.key === 'Delete') {
-      await persist({ bindings: { ...settings.bindings, [commandId]: [] } })
-      setRecording(null)
-      setMessage(tr('\u5df2\u6e05\u9664\u8be5\u547d\u4ee4\u5feb\u6377\u952e\u3002', 'Shortcut cleared for this command.'))
-      return
-    }
-    const shortcut = keyboardEventToShortcut(event)
-    if (!shortcut) return
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && shortcut !== 'Shift+Tab') {
-      setMessage(tr('\u8bf7\u4f7f\u7528 Ctrl\u3001Alt\u3001Meta \u7ec4\u5408\u952e\uff0c\u6216 Shift+Tab\u3002', 'Use Ctrl, Alt, Meta, or Shift+Tab.'))
-      return
-    }
-    await setCommandShortcut(commandId, shortcut)
-    setRecording(null)
-  }
-
-  return (
-    <div className="wb-settings-stack wb-shortcuts">
-      <section className="glass wb-shortcuts-card">
-        <div className="wb-card-head">
-          <div>
-            <strong>{tr('\u5feb\u6377\u952e', 'Keyboard shortcuts')}</strong>
-            <span>{tr('\u5f55\u5236\u3001\u91cd\u7f6e\u6216\u641c\u7d22 AgentHub \u5de5\u4f5c\u53f0\u64cd\u4f5c\u3002', 'Record, reset, or search AgentHub workbench actions.')}</span>
-          </div>
-          <input className="ah-input" value={search} onChange={event => setSearch(event.target.value)} placeholder={tr('\u641c\u7d22\u547d\u4ee4\u6216\u5feb\u6377\u952e', 'Search commands or shortcuts')} />
-        </div>
-
-        <div className="wb-shortcuts-list">
-          {filteredCommands.map(command => {
-            const activeShortcut = shortcutDisplay(bindings[command.id])
-            const conflict = activeShortcut ? findKeyboardShortcutConflict(bindings, command.id, activeShortcut) : null
-            const isRecording = recording === command.id
-            return (
-              <div key={command.id} className={'wb-shortcut-row' + (conflict ? ' conflict' : '')}>
-                <div>
-                  <strong>{shortcutCommandLabel(command)}</strong>
-                  <span>{getLang() === 'en' ? command.descriptionEn : command.descriptionZh}</span>
-                </div>
-                <button
-                  className={'wb-shortcut-key' + (isRecording ? ' recording' : '')}
-                  onClick={() => { setRecording(command.id); setMessage(tr('\u8bf7\u6309\u4e0b\u65b0\u7684\u5feb\u6377\u952e\uff1bEsc \u53d6\u6d88\uff0cBackspace \u6e05\u9664\u3002', 'Press a new shortcut. Esc cancels, Backspace clears.')) }}
-                  onKeyDown={event => onRecorderKeyDown(event, command.id)}
-                  autoFocus={isRecording}
-                >
-                  {isRecording ? tr('\u6b63\u5728\u5f55\u5236...', 'Recording...') : activeShortcut || tr('\u672a\u8bbe\u7f6e', 'Unset')}
-                </button>
-                <button className="ah-btn sm" onClick={() => resetCommand(command.id)}>{tr('\u9ed8\u8ba4', 'Default')}</button>
-                {conflict && <small>{tr('\u51b2\u7a81\uff1a', 'Conflict: ')}{shortcutCommandLabel(KEYBOARD_SHORTCUT_COMMANDS.find(item => item.id === conflict))}</small>}
-              </div>
-            )
-          })}
-          {filteredCommands.length === 0 && <div className="wb-memory-kun-empty"><Icon d={IC.terminal} size={24} /><span>{tr('\u6ca1\u6709\u5339\u914d\u7684\u5feb\u6377\u952e\u3002', 'No matching shortcuts.')}</span></div>}
-        </div>
-      </section>
-      {message && <div className="glass wb-shortcut-message">{message}</div>}
-    </div>
-  )
-}
-
-function shortcutCommandLabel(command?: { labelZh: string; labelEn: string }): string {
-  if (!command) return ''
-  return getLang() === 'en' ? command.labelEn : command.labelZh
 }
 
 function ModelsTab({ providers }: { providers: ProviderDef[] }) {
