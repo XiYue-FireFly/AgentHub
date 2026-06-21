@@ -2214,6 +2214,38 @@ function BrowserPanelV2({
         <input value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') open().catch(err => setLoadError(err?.message || tr('打开网页失败。', 'Failed to open page.'))) }} placeholder={tr('输入网址', 'Enter URL')} />
         <button onClick={() => open().catch(err => setLoadError(err?.message || tr('打开网页失败。', 'Failed to open page.')))} disabled={!url.trim()}>{loading ? tr('载入中', 'Loading') : tr('打开', 'Open')}</button>
         <button onClick={capture} disabled={!session || loading}>{tr('捕获', 'Capture')}</button>
+        {captured && (
+          <>
+            <button onClick={async () => {
+              if (!captured) return
+              const summary = await window.electronAPI.browser.summarize(captured)
+              // Add summary to composer or show in panel
+              const attachment: WorkbenchAttachment = {
+                id: `browser-summary-${Date.now()}`,
+                kind: 'text',
+                name: `Summary: ${captured.title || captured.url}`,
+                text: summary,
+                createdAt: Date.now()
+              }
+              onAttach(attachment)
+              setAttached(true)
+            }} disabled={!captured}>{tr('AI 总结', 'AI Summary')}</button>
+            <button onClick={async () => {
+              if (!captured) return
+              const prompt = await window.electronAPI.browser.analyzePrompt(captured, tr('分析这个页面的主要内容和结构', 'Analyze the main content and structure of this page'))
+              // Add analysis prompt to composer
+              const attachment: WorkbenchAttachment = {
+                id: `browser-analysis-${Date.now()}`,
+                kind: 'text',
+                name: `Analysis: ${captured.title || captured.url}`,
+                text: prompt,
+                createdAt: Date.now()
+              }
+              onAttach(attachment)
+              setAttached(true)
+            }} disabled={!captured}>{tr('AI 分析', 'AI Analyze')}</button>
+          </>
+        )}
         <button onClick={() => session?.url && window.electronAPI.app.openExternal(session.url)} disabled={!session}><Icon d={IC.link} size={13} /></button>
       </div>
       {loadError && <div className="wb-send-error">{loadError}</div>}

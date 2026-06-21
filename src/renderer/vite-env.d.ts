@@ -205,6 +205,9 @@ interface ElectronAPI {
   browser: {
     open: (input: { workspaceId?: string | null; url?: string }) => Promise<BrowserSession>
     capture: (attachment: BrowserContextAttachment) => Promise<BrowserContextAttachment>
+    summarize: (snapshot: any) => Promise<string>
+    extractText: (html: string) => Promise<string>
+    analyzePrompt: (snapshot: any, request?: string) => Promise<string>
   }
   usage: {
     stats: (range?: UsageRange, view?: UsageView) => Promise<UsageStats>
