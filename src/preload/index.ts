@@ -355,6 +355,16 @@ const api = {
     listIssues: (state?: string, limit?: number) => ipcRenderer.invoke('github:listIssues', state, limit),
     currentBranchPr: () => ipcRenderer.invoke('github:currentBranchPr')
   },
+  // --- Slash Commands ---
+  slashCommands: {
+    list: () => ipcRenderer.invoke('slashCommands:list'),
+    get: (shortcut: string) => ipcRenderer.invoke('slashCommands:get', shortcut),
+    save: (input: any) => ipcRenderer.invoke('slashCommands:save', input),
+    delete: (shortcut: string) => ipcRenderer.invoke('slashCommands:delete', shortcut),
+    resolve: (shortcut: string, params: any) => ipcRenderer.invoke('slashCommands:resolve', shortcut, params),
+    validate: (shortcut: string) => ipcRenderer.invoke('slashCommands:validate', shortcut),
+    conflict: (shortcut: string) => ipcRenderer.invoke('slashCommands:conflict', shortcut)
+  },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform
 }

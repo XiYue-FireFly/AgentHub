@@ -87,6 +87,7 @@ import { listNotifications, getUnreadCount, pushNotification, markRead, markAllR
 import { getOnboardingState, shouldShowOnboarding, completeStep, skipAllOnboarding, resetOnboarding, getNextStep } from "./runtime/onboarding"
 import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from "./runtime/workspace-files"
 import { checkGhCli, listPullRequests, listIssues, getCurrentBranchPr } from "./runtime/github-integration"
+import { listSlashCommands, getSlashCommand, saveSlashCommand, deleteSlashCommand, resolveSlashCommand, validateShortcut, checkConflict } from "./runtime/slash-commands"
 import { installAppMenu } from "./menu"
 
 function resolveAppVersionFromMain(): string {
@@ -1660,6 +1661,15 @@ ipcMain.handle("github:checkCli", () => checkGhCli())
 ipcMain.handle("github:listPrs", async (_e, state?: string, limit?: number) => listPullRequests(state as any, limit))
 ipcMain.handle("github:listIssues", async (_e, state?: string, limit?: number) => listIssues(state as any, limit))
 ipcMain.handle("github:currentBranchPr", () => getCurrentBranchPr())
+
+// --- Slash Commands ---
+ipcMain.handle("slashCommands:list", () => listSlashCommands())
+ipcMain.handle("slashCommands:get", (_e, shortcut: string) => getSlashCommand(shortcut))
+ipcMain.handle("slashCommands:save", (_e, input: any) => saveSlashCommand(input))
+ipcMain.handle("slashCommands:delete", (_e, shortcut: string) => deleteSlashCommand(shortcut))
+ipcMain.handle("slashCommands:resolve", (_e, shortcut: string, params: any) => resolveSlashCommand(shortcut, params))
+ipcMain.handle("slashCommands:validate", (_e, shortcut: string) => validateShortcut(shortcut))
+ipcMain.handle("slashCommands:conflict", (_e, shortcut: string) => checkConflict(shortcut))
 
 ipcMain.handle("routes:explain", async (_event, turnId: string) => routeDecisionForTurn(turnId))
 
