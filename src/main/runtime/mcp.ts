@@ -8,6 +8,13 @@ import type { McpConfigState, McpServerConfig } from "./types"
 
 const STORAGE_KEY = "runtime.mcp.v1"
 
+/** Configurable probe timeout: env override > server config > default 5s. */
+function probeTimeoutMs(server: McpServerConfig): number {
+  const envOverride = Number(process.env.AGENTHUB_MCP_PROBE_TIMEOUT_MS)
+  const base = Number.isFinite(envOverride) && envOverride > 0 ? envOverride : (server.timeoutMs || 5000)
+  return Math.max(2500, Math.min(30000, base))
+}
+
 function emptyState(): McpConfigState {
   return { version: 1, servers: [], overrides: {} }
 }
@@ -204,7 +211,7 @@ async function probeStdioServer(server: McpServerConfig): Promise<void> {
       finish(new Error(diag.trim()
         ? `MCP initialize timed out: ${diag.trim().slice(0, 200)}`
         : 'MCP initialize timed out; no JSON-RPC initialize response was received.'))
-    }, Math.max(2500, Math.min(15000, server.timeoutMs || 5000)))
+    }, probeTimeoutMs(server))
     child.stdout?.on('data', (chunk: Buffer | string) => {
       stdout += String(chunk).slice(0, 65536)
       // Only succeed when stdout contains a parsed JSON-RPC initialize result
@@ -537,7 +544,7 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
       resolve(result)
     }
 
-    const timer = setTimeout(() => finish({ ok: false, tools: [], error: `Timout: ${(stderr || stdout).trim().slice(0, 200)}` }), Math.max(5000, Math.min(20000, server.timeoutMs || 10000)))
+    const timer = setTimeout(() => finish({ ok: false, tools: [], error: `Timeout: ${(stderr || stdout).trim().slice(0, 200)}` }), Math.max(5000, Math.min(30000, server.timeoutMs || 10000)))
 
     function sendRequest(method: string, params?: any): Promise<any> {
       return new Promise(res => {
