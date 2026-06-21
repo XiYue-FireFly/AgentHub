@@ -398,7 +398,7 @@ function ApprovalPolicyPanel({ caps }: { caps: CapState[] }) {
   return (
     <Enter className="glass" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }} delay={90}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-        <Icon d={IC.bolt} size={17} style={{ color: '#f5b45a' }} />
+        <Icon d={IC.bolt} size={17} style={{ color: 'var(--st-busy)' }} />
         <div style={{ fontWeight: 700 }}>{tr('审批策略', 'Approval policy')}</div>
         <span className="ah-hint">{tr('agentic 写文件 / 执行命令前的放行规则', 'gate writes & command execution in the agentic loop')}</span>
       </div>
