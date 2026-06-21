@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
 import { ActivityTrail } from '../glass/activity-view'
+import { ToolCallStream } from '../glass/ToolCallStream'
+import { ExecutionReport } from '../glass/ExecutionReport'
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
 import { SetupTab, firstRunActionForError } from '../glass/connection-status'
@@ -117,7 +119,11 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
               status={status}
               workspaceRoot={workspaceRoot}
             />
-            {summary.steps.length > 0 && <ActivityTrail steps={summary.steps as any} running={!summary.done && !summary.error} />}
+            {summary.steps.length > 0 && (
+              <div className="wb-tool-call-area">
+                <ToolCallStream calls={stepsToToolCalls(summary.steps)} />
+              </div>
+            )}
             {summary.orch.length > 0 && <OrchestrateCompact events={summary.orch} turnStatus={turn.status} workspaceRoot={workspaceRoot} />}
             {(summary.routeEvents.length > 0 || summary.guardEvents.length > 0) && (
               <RoleEvents routeEvents={summary.routeEvents} guardEvents={summary.guardEvents} onResolveGuard={onResolveGuard} />
@@ -218,26 +224,30 @@ function CompletionSummary({
 }) {
   const stats = completionStats(events, summary, status)
   if (status === 'cancelled' && stats.activities === 0) return null
+
+  // Use ExecutionReport for a richer completion summary
+  const toolCalls = stepsToToolCalls(summary.steps)
+  const execReport = {
+    totalTools: toolCalls.length,
+    successfulTools: toolCalls.filter(c => c.status === 'succeeded').length,
+    failedTools: toolCalls.filter(c => c.status === 'failed').length,
+    totalDuration: formatEventDuration(events).includes('s') ? parseFloat(formatEventDuration(events)) * 1000 : 0,
+    filesModified: stats.files || []
+  }
+
   return (
-    <div className={'wb-completion-summary ' + status}>
-      <div className="wb-completion-summary-head">
-        <Icon d={status === 'failed' ? IC.x : status === 'cancelled' ? IC.stop : IC.check} size={14} />
-        <strong>{completionTitle(status)}</strong>
-        <small>{formatEventDuration(events)}</small>
-      </div>
-      <ul>
-        {stats.activities > 0 && <li>{tr(`完成 ${stats.activities} 个执行活动。`, `${stats.activities} execution activities recorded.`)}</li>}
-        {stats.guardVerdicts > 0 && <li>{tr(`完成 ${stats.guardVerdicts} 个审查/门禁检查。`, `${stats.guardVerdicts} review/gate checks completed.`)}</li>}
-        {stats.routeDecisions > 0 && <li>{tr(`记录 ${stats.routeDecisions} 个路由决策。`, `${stats.routeDecisions} route decisions recorded.`)}</li>}
-        {stats.files.length > 0 && (
-          <li>
-            {tr('相关文件：', 'Related files: ')}
-            <MarkdownBlock content={stats.files.slice(0, 6).map(file => `\`${file}\``).join('、')} workspaceRoot={workspaceRoot} />
-          </li>
-        )}
-        {stats.finalPreview && <li>{stats.finalPreview}</li>}
-        {status === 'failed' && summary.error?.payload?.error && <li>{friendlyError(summary.error.payload.error)}</li>}
-      </ul>
+    <div className="wb-completion-wrapper">
+      <ExecutionReport stats={execReport} />
+      {stats.finalPreview && (
+        <div className="wb-completion-final-preview">
+          <MarkdownBlock content={stats.finalPreview} workspaceRoot={workspaceRoot} />
+        </div>
+      )}
+      {status === 'failed' && summary.error?.payload?.error && (
+        <div className="wb-output-error">
+          {friendlyError(summary.error.payload.error)}
+        </div>
+      )}
     </div>
   )
 }
@@ -316,6 +326,25 @@ function buildProcessRows(agentId: string, events: RuntimeEvent[], summary: Agen
     })
   }
   return rows.slice(-28)
+}
+
+function stepsToToolCalls(steps: any[]): Array<{ id: string; tool: string; status: 'started' | 'succeeded' | 'failed' | 'declined'; startTime: number; endTime?: number; input?: string; output?: string; error?: string }> {
+  return steps.map(step => {
+    const status = step.status === 'running' || step.status === 'awaiting' ? 'started'
+      : step.status === 'error' ? 'failed'
+      : step.status === 'cancelled' ? 'declined'
+      : 'succeeded'
+    return {
+      id: step.id || `step-${Math.random().toString(36).slice(2, 8)}`,
+      tool: step.tool || step.label || step.kind || 'tool',
+      status,
+      startTime: step.createdAt || Date.now(),
+      endTime: step.status === 'done' || step.status === 'error' ? (step.updatedAt || step.createdAt || Date.now()) : undefined,
+      input: step.detail || undefined,
+      output: step.output || undefined,
+      error: step.status === 'error' ? (step.output || step.error || undefined) : undefined
+    }
+  })
 }
 
 function iconForProcessStep(step: any): React.ReactNode {
