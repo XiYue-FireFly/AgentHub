@@ -240,16 +240,17 @@ git diff --check
 - 日期：2026-06-21（初版）→ 2026-06-21（审查修订）→ 2026-06-21（迭代完成）→ 2026-06-21（附录D bug 修复）
 - 类型检查：✅ 零错误（`tsc -b --noEmit`）
 - ESLint：✅ 0 errors / 80 warnings（`eslint .`）
-- 测试：✅ 91 文件 / 529 用例
+- 测试：✅ 94 文件 / 562 用例
 - 构建：✅ 853.61 KB JS / 265.47 KB CSS
 - 已修复 bug：14 项（第 1.3 节）+ 附录 D 中 P1 全部 6 项 + P2 12/13 项 + ESLint 7 项 = **39 项**
-- 新增模块：22 个（含 4 个 IPC 域模块 + 1 个 CSS 分离文件 + 3 个 GitBranchControl/CommandPalette/模型能力/UI 组件）
+- 新增模块：28 个（含 4 个 IPC 域模块 + 1 个 CSS 分离文件 + 8 个运行时模块 + 3 个渲染层组件 + 2 个 hooks + 4 个其他）
 - 架构治理：index.ts ~2128 行（提取 55 IPC handler）、WorkbenchLayout.tsx 2333 行（提取 GitBranchControl 170 行）、globals.css 10164 行（提取 command-palette.css 130 行）
 - 安全：store:get/set 访问控制 ✅、HubServer 错误处理 ✅、sandbox=true ✅、Map 清理 ✅
 - 架构治理：index.ts IPC 提取 ✅、WorkbenchLayout 拆分 ✅、globals.css 分离 ✅
 - 类型安全：共享 IPC 类型定义 ✅（`src/shared/ipc-types.ts`）
 - 编码规范：`AGENTS.md` ✅
 - 功能增强：workflow-runner ✅、context-manager ✅、workspace-groups ✅、browser-agent ✅
+- UI/UX：responsive-layout hooks ✅、transition utilities ✅、i18n locale files ✅
 - 已完成 Phase：Phase 1.1-1.4 ✅ / Phase 2 ✅ / Phase 3 ✅ / Phase 4 ✅ / Phase 5 ✅
 
 ## 附录 B：审查日志（2026-06-21）
