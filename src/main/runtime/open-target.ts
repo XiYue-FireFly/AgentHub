@@ -129,7 +129,19 @@ export function detectEditor(editorId: string): { found: boolean; path?: string 
   for (const p of platformPaths) {
     if (existsSync(p)) return { found: true, path: p }
   }
-  // Try commands via PATH (would need where/which — skip for now, return not found)
+  // Try commands via PATH using where.exe (Windows) or which (macOS/Linux)
+  for (const cmd of editor.commands) {
+    try {
+      const lookupCmd = process.platform === 'win32' ? 'where.exe' : 'which'
+      const result = require('child_process').execFileSync(lookupCmd, [cmd], {
+        encoding: 'utf-8',
+        timeout: 3000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true
+      }).trim().split(/\r?\n/)[0]
+      if (result && existsSync(result)) return { found: true, path: result }
+    } catch { /* not found in PATH */ }
+  }
   return { found: false }
 }
 
