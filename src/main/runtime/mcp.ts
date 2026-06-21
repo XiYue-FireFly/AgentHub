@@ -599,7 +599,6 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
       return sendRequest('tools/list')
     }).then(toolsResult => {
       if (settled || !toolsResult) return
-      clearTimeout(timer)
       if (toolsResult.error) {
         finish({ ok: false, tools: [], error: `tools/list failed: ${JSON.stringify(toolsResult.error)}` })
         return
@@ -609,7 +608,20 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
         description: t.description || undefined,
         inputSchema: t.inputSchema || undefined
       }))
-      finish({ ok: true, tools })
+      // Step 4: List resources (non-fatal — some servers don't support this)
+      return sendRequest('resources/list').then(resourcesResult => {
+        const resourceCount = resourcesResult?.result?.resources?.length ?? 0
+        // Step 5: List prompts (non-fatal)
+        return sendRequest('prompts/list').then(promptsResult => {
+          clearTimeout(timer)
+          const promptCount = promptsResult?.result?.prompts?.length ?? 0
+          finish({ ok: true, tools, resources: resourceCount, prompts: promptCount })
+        })
+      }).catch(() => {
+        clearTimeout(timer)
+        // resources/list or prompts/list failed — still return tools
+        finish({ ok: true, tools, resources: 0, prompts: 0 })
+      })
     }).catch(err => {
       if (!settled) finish({ ok: false, tools: [], error: String(err) })
     })
