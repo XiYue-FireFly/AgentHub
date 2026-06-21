@@ -612,8 +612,30 @@ async function runCustomScheduleTurn(input: {
               blockedByGuard = deniedByGuard
             }
           } else {
+            // R6 fix: medium/revise should also go through approval instead of directly blocking.
+            // Previously: medium risk directly set blockedByGuard, blocking the executor.
+            // Now: medium risk sends to approval flow (same as high), giving user a choice.
             emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
-            blockedByGuard = reason
+            const guardDecision = await requestGuardApproval(guardStore, {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              agentId: step.agentId,
+              role: step.role,
+              verdict
+            })
+            const { decision } = guardDecision
+            if (decision === "approved") {
+              runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
+                role: step.role,
+                level: verdict.level,
+                status: "warn",
+                reasons: ["User approved continuing after medium-risk guard warning.", ...verdict.reasons],
+                decision,
+                checkedAt: Date.now()
+              })
+            } else {
+              blockedByGuard = reason
+            }
           }
         } else {
           emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
