@@ -257,7 +257,17 @@
   - New-14 Onboarding（8 步引导流，跳过/完成/重置）
   - New-15 通知中心（push/markRead/markAllRead，7 天自动清理，未读计数）
 
+#### 新功能（深度集成）
+
+  - New-4 Inline Edit（代码选区 + 指令 → AI diff，验证 + 应用）
+  - New-5 Terminal AI（终端上下文 → AI prompt，命令建议，输出解释）
+  - New-10 Browser Workspace（页面快照摘要，HTML 可读文本提取，分析 prompt）
+
 #### 基础设施
 
   - Memory Graph（节点-边图谱，cleanup 建议）
   - DX-1 CI workflow 更新（支持 sync/* 分支触发）
+  - DX-2 E2E 测试基线（Playwright config + 3 个基础 E2E 测试）
+  - DX-3 性能基线（bundle size check script，预算 JS 900KB / CSS 300KB）
+  - DX-4 Error Boundary（React 错误边界组件，chat 视图包裹）
+  - DX-5 i18n（zh-CN/en-US locale 文件，t() 函数，60+ 翻译 key）
