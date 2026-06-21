@@ -6,6 +6,7 @@ import type { AgentUIStatus, BindingDef, ProviderDef } from '../glass/meta'
 import { WorkspaceItem } from './types'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { formatContextWindow } from './contextCapacity'
+import { PromptEnhancer } from './PromptEnhancer'
 import { defaultDialogPath, rememberDialogPath } from '../appearance'
 
 type ComposerThinkingConfig = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
@@ -651,6 +652,13 @@ export function ComposerBar({
                 </div>
               )}
             </div>
+            {!sending && text.trim() && (
+              <PromptEnhancer
+                text={text}
+                onEnhanced={enhanced => setText(enhanced)}
+                disabled={sending}
+              />
+            )}
             {sending
               ? <button className="wb-send stop" onClick={onCancel} title={tr('停止', 'Stop')}><Icon d={IC.stop} size={15} /></button>
               : <button className="wb-send" disabled={!text.trim() && attachments.length === 0} onClick={send} title={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
