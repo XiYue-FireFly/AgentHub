@@ -33,9 +33,10 @@ const STATUS_STYLES: Record<ToolCall['status'], { border: string; bg: string; te
 }
 
 function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
-  return `${Math.floor(ms / 60000)}m ${((ms % 60000) / 1000).toFixed(0)}s`
+  const value = Math.max(0, Math.round(ms))
+  if (value < 1000) return `${value}ms`
+  if (value < 60000) return `${(value / 1000).toFixed(1)}s`
+  return `${Math.floor(value / 60000)}m ${((value % 60000) / 1000).toFixed(0)}s`
 }
 
 export function ToolCallStream({ calls, className = '', defaultOpen = true, collapseWhenComplete = false }: ToolCallStreamProps) {
@@ -44,8 +45,10 @@ export function ToolCallStream({ calls, className = '', defaultOpen = true, coll
   const summary = useMemo(() => summarizeCalls(calls), [calls])
 
   useEffect(() => {
-    if (collapseWhenComplete && summary.running === 0) setStreamOpen(false)
-  }, [collapseWhenComplete, summary.running])
+    const shouldCollapse = collapseWhenComplete && summary.running === 0
+    setStreamOpen(shouldCollapse ? false : defaultOpen)
+    if (shouldCollapse) setExpandedIds(new Set())
+  }, [collapseWhenComplete, defaultOpen, summary.running])
 
   const toggleExpand = (id: string) => {
     setExpandedIds(prev => {
@@ -75,7 +78,7 @@ export function ToolCallStream({ calls, className = '', defaultOpen = true, coll
       </button>
       {streamOpen && calls.map(call => {
         const isExpanded = expandedIds.has(call.id)
-        const duration = call.endTime ? call.endTime - call.startTime : null
+        const duration = call.endTime ? Math.max(0, call.endTime - call.startTime) : null
         const s = STATUS_STYLES[call.status]
 
         return (
@@ -142,7 +145,9 @@ export function ToolCallStream({ calls, className = '', defaultOpen = true, coll
 
 function summarizeCalls(calls: ToolCall[]) {
   const started = calls.map(call => call.startTime).filter(Number.isFinite)
-  const ended = calls.map(call => call.endTime || 0).filter(value => value > 0)
+  const ended = calls
+    .map(call => call.endTime && call.endTime >= call.startTime ? call.endTime : 0)
+    .filter(value => value > 0)
   const total = calls.length
   const running = calls.filter(call => call.status === 'started').length
   const succeeded = calls.filter(call => call.status === 'succeeded').length

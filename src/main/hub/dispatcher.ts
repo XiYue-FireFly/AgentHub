@@ -87,6 +87,22 @@ function localCliModelLabelForAgent(agentId: string): { providerId: "local-cli";
   }
 }
 
+function fallbackContentFromActivitySteps(steps: any[]): string {
+  const candidates = steps
+    .filter(step => step && step.status === "done" && typeof step.output === "string" && step.output.trim())
+    .filter(step => {
+      const haystack = `${step.kind || ""} ${step.tool || ""} ${step.label || ""}`
+      return /\b(agent|task|subagent)\b/i.test(haystack)
+    })
+    .map(step => step.output.trim())
+    .filter(output => !/^(No files found|No matches found|\(Bash completed with no output\))$/i.test(output))
+  if (candidates.length === 0) return ""
+  return candidates
+    .slice(-3)
+    .map((output, index, list) => list.length === 1 ? output : `## Sub-agent output ${index + 1}\n\n${output}`)
+    .join("\n\n")
+}
+
 export function providerDirectAgentId(providerId: string): string {
   return `provider:${providerId}`
 }
@@ -894,6 +910,7 @@ export class Dispatcher extends EventEmitter {
     let settled = false
     let spawnedOnce = false
     let sawActivity = false
+    const activitySteps: any[] = []
     const cleanup = () => {
       adapter.onOutput = null
       adapter.onError = null
@@ -939,6 +956,7 @@ export class Dispatcher extends EventEmitter {
           if (settled || !step) return
           lastOutputAt = Date.now()
           sawActivity = true
+          activitySteps.push(step)
           self.emit("stream", { kind: "activity", taskId: task.id, agentId, step })
         }
         adapter.onOutput = onChunk
@@ -993,16 +1011,38 @@ export class Dispatcher extends EventEmitter {
           }
         }, POLL_MS)
       }), () => { try { adapter.stop() } catch { /* noop */ } })
+      content = content || fallbackContentFromActivitySteps(activitySteps)
       task.results.set(agentId, content)
       if (usage) task.usage.set(agentId, usage)
       this.emit("stream", { kind: "done", taskId: task.id, agentId, providerId, modelId, content, usage, durationMs: Date.now() - start })
       return { content }
     } catch (e: any) {
       if (e === AGENT_CANCELLED || e?.code === "AGENT_CANCELLED") return { content: "", error: "已暂停该 Agent。" }
-      task.errors.set(agentId, e.message)
-      // Include structured exit code from adapter (if available) for better diagnostics
+      content = content || fallbackContentFromActivitySteps(activitySteps)
       const exitCode = adapter.exitCode ?? null
       const fullStderr = adapter.lastStderr || undefined
+      if (content.trim() && exitCode !== null && e?.code !== "AGENT_TIMEOUT") {
+        task.results.set(agentId, content)
+        if (usage) task.usage.set(agentId, usage)
+        this.emit("stream", {
+          kind: "activity",
+          taskId: task.id,
+          agentId,
+          step: {
+            id: `${task.id}-${agentId}-exit-warning`,
+            kind: "note",
+            tool: "process_exit",
+            label: "CLI exit warning",
+            detail: e.message,
+            output: fullStderr ? fullStderr.trim().slice(-800) : undefined,
+            status: "done"
+          }
+        })
+        this.emit("stream", { kind: "done", taskId: task.id, agentId, providerId, modelId, content, usage, durationMs: Date.now() - start })
+        return { content }
+      }
+      task.errors.set(agentId, e.message)
+      // Include structured exit code from adapter (if available) for better diagnostics
       this.emit("stream", {
         kind: "error",
         taskId: task.id,

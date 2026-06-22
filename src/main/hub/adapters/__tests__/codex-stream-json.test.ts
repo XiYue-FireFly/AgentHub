@@ -78,6 +78,33 @@ describe("parseCodexStreamJsonLine", () => {
     expect(parseCodexStreamJsonLine(line)).toEqual({ content: "Done." })
   })
 
+  it("extracts final answer from agent_message content blocks", () => {
+    const line = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_4",
+        type: "agent_message",
+        content: [
+          { type: "text", text: "First paragraph." },
+          { type: "output_text", text: "Second paragraph." }
+        ]
+      }
+    })
+    expect(parseCodexStreamJsonLine(line)).toEqual({ content: "First paragraph.\nSecond paragraph." })
+  })
+
+  it("extracts final answer from nested message content blocks", () => {
+    const line = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_4",
+        type: "agent_message",
+        message: { content: [{ type: "text", text: "Nested answer." }] }
+      }
+    })
+    expect(parseCodexStreamJsonLine(line)).toEqual({ content: "Nested answer." })
+  })
+
   it("passes non-JSON lines through as content", () => {
     expect(parseCodexStreamJsonLine("plain text answer")).toEqual({ content: "plain text answer\n" })
   })

@@ -25,6 +25,26 @@ export interface ParsedActivity {
   usage?: any
 }
 
+function contentBlockText(block: any): string {
+  if (!block) return ''
+  if (typeof block === 'string') return block
+  if (block.type === 'text' && typeof block.text === 'string') return block.text
+  if (block.type === 'output_text' && typeof block.text === 'string') return block.text
+  if (typeof block.content === 'string') return block.content
+  if (Array.isArray(block.content)) return block.content.map(contentBlockText).join('')
+  return ''
+}
+
+function agentMessageText(item: any): string {
+  if (!item || typeof item !== 'object') return ''
+  if (typeof item.text === 'string') return item.text
+  if (typeof item.content === 'string') return item.content
+  if (Array.isArray(item.content)) return item.content.map(contentBlockText).filter(Boolean).join('\n')
+  if (typeof item.message === 'string') return item.message
+  if (Array.isArray(item.message?.content)) return item.message.content.map(contentBlockText).filter(Boolean).join('\n')
+  return ''
+}
+
 function basename(path: string): string {
   if (!path) return ''
   const parts = String(path).split(/[\\/]/)
@@ -98,7 +118,8 @@ export function parseCodexStreamJsonLine(line: string): ParsedActivity | null {
   }
 
   if (obj.type === 'item.completed' && item.type === 'agent_message') {
-    return typeof item.text === 'string' ? { content: item.text } : null
+    const text = agentMessageText(item)
+    return text ? { content: text } : null
   }
 
   return null

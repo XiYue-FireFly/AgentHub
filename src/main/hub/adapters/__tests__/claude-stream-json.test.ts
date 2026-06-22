@@ -38,11 +38,12 @@ describe("parseClaudeStreamJsonLine", () => {
     const r = parseClaudeStreamJsonLine(line)
     expect(r?.steps?.map(s => s.id)).toEqual(["a", "b"])
     expect(r?.steps?.[1].label).toBe("$ npm test")
+    expect(r?.content).toBe("I'll do two things.")
   })
 
-  it("ignores assistant messages with only text (no tools)", () => {
+  it("extracts assistant text messages even when no tools are present", () => {
     const line = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "just talking" }] } })
-    expect(parseClaudeStreamJsonLine(line)).toBeNull()
+    expect(parseClaudeStreamJsonLine(line)).toEqual({ content: "just talking" })
   })
 
   it("maps user tool_result → done step with output, no label (so merge keeps title)", () => {

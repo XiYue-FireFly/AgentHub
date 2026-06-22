@@ -34,7 +34,9 @@ describe("ThreadView agent output status", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
     expect(source).toContain("defaultOpen={status === 'running'}")
-    expect(source).toContain("collapseWhenComplete")
+    expect(source).toContain("collapseWhenComplete={status !== 'running'}")
+    expect(source).toContain("const [open, setOpen] = useState(status === 'running')")
+    expect(source).toContain("setOpen(status === 'running')")
   })
 
   it("uses raw event duration and counts failed agent runs in completion reports", () => {
@@ -51,6 +53,7 @@ describe("ThreadView agent output status", () => {
     expect(source).toContain("function eventDurationMs(events: RuntimeEvent[]): number")
     expect(source).toContain("terminalEventTime(events)")
     expect(source).toContain("event.payload?.durationMs")
+    expect(source).toContain("explicitDurations.reduce((sum, value) => sum + value, 0)")
     expect(source).not.toContain("parseFloat(formatEventDuration(events))")
   })
 
@@ -59,6 +62,31 @@ describe("ThreadView agent output status", () => {
 
     expect(source).toContain("eventsOrSummary.routeEvents.length > 0 || eventsOrSummary.guardEvents.length > 0")
     expect(source).toContain("return pendingGuard && (turnStatus === 'running' || turnStatus === 'queued') ? 'running' : 'completed'")
+  })
+
+  it("groups repeated agent runs by schedule role so reviewer failures do not overwrite main output", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("function eventGroupKey(event: RuntimeEvent): string")
+    expect(source).toContain("event.payload?.scheduleRole")
+    expect(source).toContain("event.payload?.role")
+    expect(source).toContain("event.payload?.sourceStepId")
+    expect(source).toContain("event.payload?.failedStepId")
+    expect(source).toContain("`${agentId}:${role}:${stepId || role}`")
+    expect(source).toContain("summary.scheduleRole ? ` · ${roleName(summary.scheduleRole)}` : ''")
+  })
+
+  it("downgrades non-blocking guard step failures and preserves process-only output", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("const nonBlockingGuardFailure = isNonBlockingGuardFailureSummary(summary)")
+    expect(source).toContain("const status = nonBlockingGuardFailure ? 'completed' : outputStatus")
+    expect(source).toContain("summary.error && !nonBlockingGuardFailure")
+    expect(source).toContain("function isNonBlockingGuardFailureSummary")
+    expect(source).toContain("guard-step-fallback")
+    expect(source).toContain("function emptyOutputText")
+    expect(source).toContain("The agent did not return final text, but the run process above was preserved.")
+    expect(source).toContain("const finalIsError = summary.hasError && !isNonBlockingGuardFailureSummary(summary)")
   })
 
   it("does not render empty 0ms completion reports without reportable work", () => {
@@ -72,10 +100,31 @@ describe("ThreadView agent output status", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
     expect(source).toContain("function stepsToToolCalls(steps: any[], runStatus: WorkbenchTurnStatus = 'running', terminalTime?: number)")
+    expect(source).toContain("rawStatus === 'started' && runStatus === 'completed' ? 'succeeded'")
     expect(source).toContain("rawStatus === 'started' && runStatus === 'failed' ? 'failed'")
+    expect(source).toContain("const fallbackEndTime = terminalTime && terminalTime >= startTime")
     expect(source).toContain("calls={stepsToToolCalls(summary.steps, status, terminalEventTime(agentEvents))}")
     expect(source).toContain("!isLikelySourceFilePath(parsed.path)")
     expect(source).toContain("function isLikelySourceFilePath(path: string): boolean")
     expect(source).toContain("/\\b[a-z][a-z0-9+.-]*:\\/\\//i.test(value)")
+  })
+
+  it("reports only write-like file operations as modified files", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("const files = extractModifiedFiles(events)")
+    expect(source).toContain("function extractModifiedFiles(events: RuntimeEvent[]): string[]")
+    expect(source).toContain("if (!step || !isWriteLikeStep(step)) continue")
+    expect(source).toContain("function isWriteLikeStep(step: any): boolean")
+    expect(source).toContain("read|grep|glob|search|find|list|ls|cat|view|fetch|open")
+    expect(source).toContain("write|edit|create|update|patch|apply|modify|delete|remove|rename|move|save|fs_write")
+  })
+
+  it("treats approval-required tool rows as declined instead of failed attempts", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("function isApprovalRequiredStep(step: any): boolean")
+    expect(source).toContain("requires approval|approval required|This command requires approval")
+    expect(source).toContain(": step.status === 'error' ? approvalRequired ? 'declined' : 'failed'")
   })
 })

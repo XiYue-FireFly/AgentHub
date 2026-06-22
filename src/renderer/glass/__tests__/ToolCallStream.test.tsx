@@ -34,7 +34,17 @@ describe('ToolCallStream', () => {
     expect(source).toContain('collapseWhenComplete')
     expect(source).toContain('tool-call-stream-summary')
     expect(source).toContain('summary.running === 0')
-    expect(source).toContain('setStreamOpen(false)')
+    expect(source).toContain('setStreamOpen(shouldCollapse ? false : defaultOpen)')
+    expect(source).toContain('setExpandedIds(new Set())')
+    expect(source).toContain('[collapseWhenComplete, defaultOpen, summary.running]')
     expect(source).toContain('streamOpen && calls.map')
+  })
+
+  it('clamps tool durations so failed timeout rows never show negative time', () => {
+    const source = readFileSync(join(process.cwd(), 'src/renderer/glass/ToolCallStream.tsx'), 'utf8')
+
+    expect(source).toContain('const value = Math.max(0, Math.round(ms))')
+    expect(source).toContain('const duration = call.endTime ? Math.max(0, call.endTime - call.startTime) : null')
+    expect(source).toContain('call.endTime && call.endTime >= call.startTime ? call.endTime : 0')
   })
 })

@@ -268,7 +268,12 @@ export class WorkbenchRuntimeStore extends EventEmitter {
   }
 
   setRunStatus(turnId: string, agentId: string, status: WorkbenchTurnStatus, payload: any = {}): void {
-    const run = [...this.load().runs].reverse().find(r => r.turnId === turnId && r.agentId === agentId)
+    const run = [...this.load().runs].reverse().find(r => {
+      if (r.turnId !== turnId || r.agentId !== agentId) return false
+      const role = payload.scheduleRole || payload.role
+      if (role && r.role !== role) return false
+      return true
+    })
     if (run) {
       run.status = status
       if (status !== "running" && status !== "queued") run.endedAt = Date.now()
@@ -289,8 +294,8 @@ export class WorkbenchRuntimeStore extends EventEmitter {
       : stream.kind === "error" ? "agent:error"
       : "agent:activity"
     if (stream.kind === "start" && stream.agentId) this.createRun({ turnId, agentId: stream.agentId, role: stream.scheduleRole || "target" })
-    if (stream.kind === "done" && stream.agentId) this.setRunStatus(turnId, stream.agentId, "completed", { durationMs: stream.durationMs })
-    if (stream.kind === "error" && stream.agentId) this.setRunStatus(turnId, stream.agentId, stream.code === "AGENT_CANCELLED" ? "cancelled" : "failed", { error: stream.error, code: stream.code, durationMs: stream.durationMs })
+    if (stream.kind === "done" && stream.agentId) this.setRunStatus(turnId, stream.agentId, "completed", { durationMs: stream.durationMs, scheduleRole: stream.scheduleRole, scheduleStepId: stream.scheduleStepId, taskId: stream.taskId })
+    if (stream.kind === "error" && stream.agentId) this.setRunStatus(turnId, stream.agentId, stream.code === "AGENT_CANCELLED" ? "cancelled" : "failed", { error: stream.error, code: stream.code, durationMs: stream.durationMs, scheduleRole: stream.scheduleRole, scheduleStepId: stream.scheduleStepId, taskId: stream.taskId })
     const persistNow = kind !== "agent:delta"
     return this.appendEvent(turn.threadId, turn.id, kind, stream.agentId, stream, persistNow)
   }

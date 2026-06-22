@@ -162,6 +162,29 @@ describe("WorkbenchRuntimeStore", () => {
     })
   })
 
+  it("updates repeated same-agent schedule runs by role instead of overwriting the latest run", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { turn } = runtime.createTurn({ prompt: "five role", mode: "firefly-custom", workspaceId: null })
+
+    runtime.appendStreamEvent(turn.id, { kind: "start", taskId: "router-task", agentId: "claude", providerId: "local-cli", modelId: "claude", mode: "content", scheduleRole: "router", scheduleStepId: "router" })
+    runtime.appendStreamEvent(turn.id, { kind: "done", taskId: "router-task", agentId: "claude", providerId: "local-cli", modelId: "claude", content: "{}", durationMs: 1, scheduleRole: "router", scheduleStepId: "router" })
+    runtime.appendStreamEvent(turn.id, { kind: "start", taskId: "lead-task", agentId: "claude", providerId: "local-cli", modelId: "claude", mode: "content", scheduleRole: "lead", scheduleStepId: "main" })
+    runtime.appendStreamEvent(turn.id, { kind: "done", taskId: "lead-task", agentId: "claude", providerId: "local-cli", modelId: "claude", content: "answer", durationMs: 2, scheduleRole: "lead", scheduleStepId: "main" })
+    runtime.appendStreamEvent(turn.id, { kind: "start", taskId: "review-task", agentId: "claude", providerId: "local-cli", modelId: "claude", mode: "content", scheduleRole: "reviewer", scheduleStepId: "reviewer" })
+    runtime.appendStreamEvent(turn.id, { kind: "error", taskId: "review-task", agentId: "claude", providerId: "local-cli", modelId: "claude", error: "exit 1", durationMs: 3, scheduleRole: "reviewer", scheduleStepId: "reviewer" })
+
+    const runs = runtime.snapshot(undefined).runs.filter(run => run.turnId === turn.id)
+    expect(runs.map(run => [run.role, run.status])).toEqual([
+      ["router", "completed"],
+      ["lead", "completed"],
+      ["reviewer", "failed"]
+    ])
+    const reviewStatus = runtime.eventsSince(turn.threadId, 0).filter(event => event.kind === "run:status").at(-1)
+    expect(reviewStatus?.payload).toMatchObject({ status: "failed", scheduleRole: "reviewer", scheduleStepId: "reviewer" })
+  })
+
   it("prunes old stream deltas before completion events", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()

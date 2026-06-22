@@ -120,7 +120,11 @@ export function parseClaudeStreamJsonLine(line: string): ParsedActivity | null {
       const blocks = obj.message?.content
       if (!Array.isArray(blocks)) return null
       const steps: ActivityStepLike[] = []
+      const texts: string[] = []
       for (const b of blocks) {
+        if (b?.type === 'text' && typeof b.text === 'string' && b.text) {
+          texts.push(b.text)
+        }
         if (b?.type === 'tool_use' && b.id) {
           steps.push({
             id: String(b.id),
@@ -132,7 +136,12 @@ export function parseClaudeStreamJsonLine(line: string): ParsedActivity | null {
           })
         }
       }
-      return steps.length ? { steps } : null
+      const content = texts.join('\n')
+      if (!steps.length && !content) return null
+      return {
+        ...(steps.length ? { steps } : {}),
+        ...(content ? { content } : {})
+      }
     }
 
     case 'user': {
