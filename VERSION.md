@@ -4,8 +4,8 @@
 
 ## 当前版本
 
-- 当前代码版本：`1.0.0`
-- 当前发布状态：`1.0.0` 准备发布到 GitHub（tag `v1.0.0`，Windows NSIS 安装包）
+- 当前代码版本：`1.1.0`
+- 当前发布状态：`1.1.0` 已提交并打 tag（tag `v1.1.0`）
 - 版本来源：以 `package.json` 的 `version` 与 `build.buildVersion` 为准；两者必须同步
 
 ## 升版规则
@@ -182,9 +182,26 @@
   - `npm.cmd run build`
   - `npm.cmd run build:win`
 
+### 1.1.0
+
+- 状态：已提交并打 tag `v1.1.0`。
+- 摘要：**Model Routing Center + IPC 模块化拆分 + CSS 重构**。
+  - Model Routing Center（Settings → Models）：每模型管理 provider、上游模型、上下文、推理、超时、重试和 Codex catalog，支持内联编辑、连接测试和导出。
+  - `index.ts` 从 ~2100 行拆至 ~700 行：提取 8 个 IPC 域模块（terminal、browser、conversation、plugins、workspace、passthrough、hub-threads、missing）。
+  - `globals.css` 大规模重构（847 insertions, 265 deletions），扩展设计 token、改善深色/浅色主题一致性。
+  - Git IPC 错误路径脱敏（`sanitizeGitError`）、写操作统一错误包装（`wrapGit`）。
+  - ProviderManager 模型标准化流水线、Codex slot 解析、`modelRoutes` 配置持久化。
+  - `app-event-log` 结构化事件日志、`schedule-helpers` / `workspace-helpers` 工具提取。
+  - `.gitignore` 补充 `.omo/`、`.mimocode/`、`logs/`、`opencode.json`。
+- 主要文件：`src/main/ipc/*.ts`（8 新文件）、`src/main/index.ts`、`src/main/providers/manager.ts`、`src/main/runtime/models-center.ts`、`src/main/runtime/app-event-log.ts`、`src/main/runtime/schedule-helpers.ts`、`src/renderer/globals.css`、`src/renderer/screens/Settings.tsx`、`RELEASE_NOTES_v1.1.0.md`、`package.json`。
+- 验证：
+  - `npm run typecheck`
+  - `npm run test`
+  - `npm run build`
+
 ### 下一个候选版本
 
-- 当前稳定版本：`1.0.0`；后续小修复使用 `1.0.x`，较大功能版本使用 `1.1.0`。
+- 当前稳定版本：`1.1.0`；后续小修复使用 `1.1.x`，较大功能版本使用 `1.2.0`。
 - 适用范围：ACP 增强（terminal handler / server 复用）、session/prompt 联机验证、后续 agentic / 工作区 / 技能流程修复与小增强。
 - 登记要求：完成后补充改动摘要、验证命令、提交哈希或发布 tag。
 
