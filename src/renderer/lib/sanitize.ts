@@ -8,5 +8,5 @@ export function sanitizeHtml(html: string): string {
     .replace(DANGEROUS_TAGS, '')
     .replace(EVENT_HANDLERS, '')
     .replace(JS_PROTOCOL, '')
-    .replace(SVG_EVENTS, (match) => match.replace(/\s+on[a-z]+/i, ''))
+    .replace(SVG_EVENTS, (match) => match.replace(/\s+on[a-z]+/gi, ''))
 }

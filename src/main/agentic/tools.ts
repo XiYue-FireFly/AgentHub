@@ -185,8 +185,10 @@ function runCommand(command: string, cwd: string, shellOverride?: boolean): Prom
         setTimeout(() => { try { child.kill('SIGKILL') } catch { /* noop */ } }, 500)
         finish(false, out + `\n[timed out after ${EXEC_TIMEOUT_MS / 1000}s]`)
       }, EXEC_TIMEOUT_MS)
-      child.stdout?.on('data', d => { out += decodeProcessChunk(d) })
-      child.stderr?.on('data', d => { out += decodeProcessChunk(d) })
+      // LOW-12: Cap intermediate output buffer to prevent unbounded memory growth
+      const MAX_BUFFER = MAX_OUTPUT_CHARS * 2
+      child.stdout?.on('data', d => { if (out.length < MAX_BUFFER) out += decodeProcessChunk(d) })
+      child.stderr?.on('data', d => { if (out.length < MAX_BUFFER) out += decodeProcessChunk(d) })
       child.on('error', e => { clearTimeout(timer); finish(false, out + '\n[spawn error] ' + (e as Error).message) })
       child.on('close', code => { clearTimeout(timer); finish(code === 0, (out || '(no output)') + `\n[exit code ${code}]`) })
     } catch (e) {

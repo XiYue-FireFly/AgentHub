@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { existsSync, readFileSync, statSync } from "node:fs"
-import { join } from "node:path"
+import { resolve } from "node:path"
 import { promisify } from "node:util"
 import { getWorkspaceManager } from "../hub/workspace"
 import type {
@@ -566,7 +566,9 @@ async function diffStatsForPath(rootPath: string, filePath: string): Promise<{ a
   }
   if (!additions && !deletions && await isUntracked(rootPath, filePath)) {
     try {
-      const fullPath = join(rootPath, filePath)
+      const rootResolved = resolve(rootPath)
+      const fullPath = resolve(rootResolved, filePath)
+      if (!fullPath.startsWith(rootResolved)) return { additions: 0, deletions: 0 }
       const st = statSync(fullPath)
       if (st.isFile() && st.size <= 200 * 1024) {
         const text = readFileSync(fullPath, "utf8")
@@ -757,7 +759,9 @@ async function isUntracked(rootPath: string, filePath: string): Promise<boolean>
 
 function untrackedPreview(rootPath: string, filePath: string): string {
   try {
-    const fullPath = join(rootPath, filePath)
+    const rootResolved = resolve(rootPath)
+    const fullPath = resolve(rootResolved, filePath)
+    if (!fullPath.startsWith(rootResolved)) return `# 未跟踪\n${filePath}\nInvalid path: traversal not allowed`
     const st = statSync(fullPath)
     if (!st.isFile()) return `# 未跟踪\n${filePath}\n无法预览非普通文件。`
     if (st.size > 200 * 1024) return `# 未跟踪\n${filePath}\n文件较大，已跳过内容预览。`

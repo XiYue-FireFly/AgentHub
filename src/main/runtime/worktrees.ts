@@ -47,10 +47,9 @@ export async function removeWorktree(id: string, force = false): Promise<boolean
   const item = state.items.find(wt => wt.id === id)
   if (!item) return false
   const parent = getWorkspaceManager().getById(item.parentWorkspaceId)
-  if (parent) {
-    const safeRoot = dirname(resolve(parent.rootPath))
-    if (!isInside(resolve(item.path), safeRoot)) throw new Error("Refusing to remove a worktree outside the managed root.")
-  }
+  if (!parent) throw new Error("Parent workspace not found; refusing to remove worktree.")
+  const safeRoot = dirname(resolve(parent.rootPath))
+  if (!isInside(resolve(item.path), safeRoot)) throw new Error("Refusing to remove a worktree outside the managed root.")
   if (existsSync(item.path) && !force && await gitIsDirty(item.path)) {
     throw new Error("Worktree has uncommitted changes. Commit or pass force=true.")
   }

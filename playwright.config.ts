@@ -24,11 +24,6 @@ export default defineConfig({
         baseURL: 'http://localhost:4173'
       }
     }
-  ],
-  webServer: {
-    command: 'npx vite --config src/renderer/vite.config.mjs --host 127.0.0.1 --port 4173',
-    port: 4173,
-    timeout: 30_000,
-    reuseExistingServer: true
-  }
+  ]
+  // MED-35: Removed unused webServer config — E2E tests use Electron's built-in Chromium, not a separate browser server
 })

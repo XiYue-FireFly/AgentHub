@@ -161,11 +161,13 @@ export async function testModelRoute(input: { providerId: string; modelId: strin
   let content = ''
   let usage: any = undefined
   let timer: NodeJS.Timeout | undefined
+  // MED-18: Use AbortController to cancel the underlying fetch when timeout fires
+  const controller = new AbortController()
   try {
     await Promise.race([
       new Promise<void>((resolve, reject) => {
         client.stream(
-          { messages: [{ role: 'user', content: 'Reply with: ok' }], systemPrompt: '', thinkingOverride: binding.thinking },
+          { messages: [{ role: 'user', content: 'Reply with: ok' }], systemPrompt: '', thinkingOverride: binding.thinking, signal: controller.signal },
           {
             onContent: delta => { content += delta },
             onDone: final => { usage = final.usage; resolve() },
@@ -174,7 +176,7 @@ export async function testModelRoute(input: { providerId: string; modelId: strin
         )
       }),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Model test timed out')), Math.min(routed.model.timeoutMs || 30_000, 60_000))
+        timer = setTimeout(() => { controller.abort(); reject(new Error('Model test timed out')) }, Math.min(routed.model.timeoutMs || 30_000, 60_000))
       })
     ])
     return {

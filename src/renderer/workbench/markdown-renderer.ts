@@ -173,8 +173,10 @@ function inlineMarkdown(value: string): string {
 }
 
 function fileReferenceHtml(parsed: { path: string; line?: number }, label: string): string {
+  // MED-27: parsed.path is already HTML-escaped (from inlineMarkdown's escapeHtml call);
+  // do not double-escape it in the data attribute
   return [
-    `<a href="#" class="wb-file-ref-chip" data-file-path="${escapeHtml(parsed.path)}"`,
+    `<a href="#" class="wb-file-ref-chip" data-file-path="${parsed.path}"`,
     parsed.line ? ` data-line="${parsed.line}"` : '',
     '>',
     `<span class="wb-file-ref-icon">${escapeHtml(fileKindLabel(parsed.path))}</span>`,

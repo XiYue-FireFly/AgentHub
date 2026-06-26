@@ -1,6 +1,8 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, ipcMain, shell, WebContents } from "electron"
 import { join, resolve } from "path"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
+import { randomBytes } from "crypto"
+import { isProviderDirectSelection } from "../shared/utils"
 import { HubServer } from "./hub/server"
 import { AgentRegistry } from "./hub/registry"
 import { EventPipeline } from "./hub/pipeline"
@@ -82,7 +84,7 @@ function materializeAttachments(attachments: WorkbenchAttachment[], workspaceId:
       if (data.byteLength > IMAGE_DATA_URL_BYTES) return att
       mkdirSync(attachmentDir, { recursive: true })
       const safeName = (att.name || `attachment.${ext}`).replace(new RegExp(`[<>:"/\\\\|?*${String.fromCharCode(0)}-${String.fromCharCode(31)}]`, "g"), "_").slice(0, 80)
-      const fileName = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${safeName.endsWith(`.${ext}`) ? safeName : `${safeName}.${ext}`}`
+      const fileName = `${Date.now().toString(36)}-${randomBytes(4).toString('hex').slice(0, 5)}-${safeName.endsWith(`.${ext}`) ? safeName : `${safeName}.${ext}`}`
       const filePath = join(attachmentDir, fileName)
       writeFileSync(filePath, data)
       return { ...att, path: filePath, mime, size: att.size || data.byteLength }
@@ -135,10 +137,6 @@ function finalAssistantContentForTurn(turn: WorkbenchTurn): string {
   }).join("\n\n")
 }
 
-function isProviderDirectSelection(selection: ModelSelection | undefined | null): selection is ModelSelection {
-  return selection?.source === "provider" && !!selection.providerId && !!selection.modelId
-}
-
 function modelMessagesForTurn(threadId: string, currentPrompt: string, attachments?: WorkbenchAttachment[], excludeTurnId?: string): ChatCompletionMessage[] {
   const snapshot = runtimeStore.snapshot(undefined)
   const completedTurns = snapshot.turns
@@ -188,7 +186,14 @@ function availableRouteAgents(agentIds?: string[]) {
   }))
 }
 
+// MED-04: Cache route stats to avoid expensive full-history scan on every routing decision
+let routeStatsCache: { stats: Record<string, { success: number; failure: number; avgDurationMs?: number }>; timestamp: number } | null = null
+const ROUTE_STATS_CACHE_TTL = 5000
+
 function routeStatsFromHistory(): Record<string, { success: number; failure: number; avgDurationMs?: number }> {
+  if (routeStatsCache && Date.now() - routeStatsCache.timestamp < ROUTE_STATS_CACHE_TTL) {
+    return routeStatsCache.stats
+  }
   const stats: Record<string, { success: number; failure: number; totalDuration: number; durationCount: number; avgDurationMs?: number }> = {}
   const events = runtimeStore.snapshot(undefined).threads.flatMap(thread => runtimeStore.eventsSince(thread.id, 0))
   for (const event of events) {
@@ -202,7 +207,7 @@ function routeStatsFromHistory(): Record<string, { success: number; failure: num
     }
     stats[event.agentId] = entry
   }
-  return Object.fromEntries(Object.entries(stats).map(([id, item]) => [
+  const result = Object.fromEntries(Object.entries(stats).map(([id, item]) => [
     id,
     {
       success: item.success,
@@ -210,6 +215,8 @@ function routeStatsFromHistory(): Record<string, { success: number; failure: num
       avgDurationMs: item.durationCount ? Math.round(item.totalDuration / item.durationCount) : undefined
     }
   ]))
+  routeStatsCache = { stats: result, timestamp: Date.now() }
+  return result
 }
 
 function makeRouteDecision(threadId: string, turnId: string, prompt: string, agentIds?: string[]): RouteDecision {
@@ -410,7 +417,7 @@ function createWindow(): void {
 }
 
 function createTray(): void {
-  const trayIcon = nativeImage.createFromPath(appAssetPath("icon.png"))
+  const trayIcon = nativeImage.createFromPath(appAssetPath(process.platform === "win32" ? "icon.ico" : "icon.png"))
   tray = new Tray(trayIcon)
   const contextMenu = Menu.buildFromTemplate([
     { label: "Open AgentHub", click: () => ensureWindowVisible() },
@@ -672,7 +679,9 @@ ipcMain.handle("turns:cancelAgent", (_event, turnId: string, agentId: string) =>
   for (const taskId of turn.taskIds) cancelled = !!dispatcher?.cancelAgent(taskId, agentId) || cancelled
   if (cancelled) {
     runtimeStore.setRunStatus(turnId, agentId, "cancelled", { error: "已暂停该 Agent。" })
-    const remainingRunning = snapshot.runs.filter(run => run.turnId === turnId && run.agentId !== agentId && run.status === "running")
+    // LOW-03: Re-fetch snapshot to get updated run statuses after cancel
+    const freshSnapshot = runtimeStore.snapshot()
+    const remainingRunning = freshSnapshot.runs.filter(run => run.turnId === turnId && run.agentId !== agentId && run.status === "running")
     if (turn.targetAgent === agentId || remainingRunning.length === 0) runtimeStore.setTurnStatus(turnId, "cancelled")
   }
   return cancelled
@@ -786,12 +795,16 @@ ipcMain.handle("turns:retry", async (_event, turnId: string) => {
 // (registered via registerAllIpcHandlers in app.whenReady)
 
 
+// MED-06: Whitelist of allowed deep link actions to prevent arbitrary action injection
+const DEEP_LINK_ACTIONS = new Set(['open', 'thread', 'settings', 'agents', 'providers', 'models', 'memory', 'workflows'])
+
 function parseDeepLink(url: string): { action: string; params: Record<string, string> } | null {
   if (!url || !url.startsWith('agenthub://')) return null
   try {
     const stripped = url.startsWith('agenthub://') ? url.slice('agenthub://'.length).replace(/^[/]+/, '') : url
     const [actionPath, query] = stripped.split('?')
     const action = actionPath.split('/')[0] || 'open'
+    if (!DEEP_LINK_ACTIONS.has(action)) return null
     const params: Record<string, string> = {}
     if (query) {
       for (const part of query.split('&')) {
@@ -850,7 +863,11 @@ app.whenReady().then(async () => {
   providerMgr.unlockSecrets()   // app ready 后解密落盘的 apiKey 到内存（safeStorage 此时可用）
   createWindow()
   createTray()
-  await initHub()
+  try {
+    await initHub()
+  } catch (e: any) {
+    console.error('[AgentHub] initHub failed:', e?.message || String(e))
+  }
 
   // Register domain-specific IPC handlers (extracted from monolithic index.ts)
   registerAllIpcHandlers({
@@ -875,6 +892,8 @@ app.whenReady().then(async () => {
       pendingDeepLink = null
     })
   }
+}).catch(e => {
+  console.error('[AgentHub] Fatal startup error:', e)
 })
 
 app.on("window-all-closed", () => {

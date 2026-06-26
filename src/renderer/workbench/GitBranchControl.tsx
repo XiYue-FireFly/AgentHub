@@ -25,32 +25,48 @@ export function GitBranchControl({ workspaceId, onOpenGit, compact = false }: {
   const popoverRef = useRef<HTMLDivElement | null>(null)
   const branchInputRef = useRef<HTMLInputElement | null>(null)
 
-  const refresh = useCallback(async () => {
+  // LOW-19: Separate status and branches fetch into independent effects
+  const refreshStatus = useCallback(async () => {
     if (!workspaceId) {
       setStatus(null)
-      setBranches([])
       setError(null)
-      return
+      return null
     }
     setLoading(true)
     try {
       const nextStatus = await window.electronAPI.git.status(workspaceId)
       setStatus(nextStatus)
-      if (open && nextStatus.isRepo) {
-        const branchResponse = await window.electronAPI.git.branches(workspaceId).catch(() => null)
-        setBranches(branchResponse?.localBranches || [])
-      } else if (!open) {
-        setBranches([])
-      }
       setError(nextStatus.isRepo ? null : (nextStatus.error || tr('未检测到 Git 仓库。', 'No Git repository detected.')))
+      return nextStatus
     } catch (e: any) {
       setError(e?.message || tr('读取 Git 状态失败。', 'Failed to read Git status.'))
+      return null
     } finally {
       setLoading(false)
     }
-  }, [workspaceId, open])
+  }, [workspaceId])
 
-  useEffect(() => { refresh().catch(() => {}) }, [refresh])
+  useEffect(() => { refreshStatus().catch(() => {}) }, [refreshStatus])
+
+  useEffect(() => {
+    if (!workspaceId || !open || !status?.isRepo) {
+      if (!open) setBranches([])
+      return
+    }
+    let cancelled = false
+    window.electronAPI.git.branches(workspaceId)
+      .then(response => { if (!cancelled) setBranches(response?.localBranches || []) })
+      .catch(() => { if (!cancelled) setBranches([]) })
+    return () => { cancelled = true }
+  }, [workspaceId, open, status?.isRepo])
+
+  const refresh = useCallback(async () => {
+    const nextStatus = await refreshStatus()
+    if (open && nextStatus?.isRepo) {
+      const branchResponse = await window.electronAPI.git.branches(workspaceId).catch(() => null)
+      setBranches(branchResponse?.localBranches || [])
+    }
+  }, [refreshStatus, open, workspaceId])
 
   useEffect(() => {
     if (!open) return

@@ -130,6 +130,11 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
       const signature = `${provider.id}:${provider.kind}:${baseUrl}:${apiKey}:${provider.models?.length ?? 0}:${provider.modelFetch?.lastSuccessCount ?? -1}`
       if (autoFetchSignaturesRef.current.has(signature)) continue
       autoFetchSignaturesRef.current.add(signature)
+      // LOW-18: LRU cleanup — prevent unbounded growth of fetch signatures
+      if (autoFetchSignaturesRef.current.size > 20) {
+        const entries = [...autoFetchSignaturesRef.current]
+        autoFetchSignaturesRef.current = new Set(entries.slice(-20))
+      }
       const timer = window.setTimeout(() => {
         fetchModels(provider, { automatic: true }).catch(() => {})
       }, 350)

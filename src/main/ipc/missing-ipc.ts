@@ -7,7 +7,7 @@
  */
 
 import { ipcMain, shell, dialog, app } from 'electron'
-import { isAbsolute, normalize, resolve } from 'node:path'
+import { isAbsolute, normalize, resolve, extname } from 'node:path'
 import { readFileSync, statSync } from 'node:fs'
 import { getWorkspaceManager } from '../hub/workspace'
 import { getSkillManager } from '../skills/manager'
@@ -19,6 +19,10 @@ import { openWithEditor } from '../runtime/open-target'
 import { getCachedLocalAgentStatuses } from '../runtime/local-agents'
 import { ProviderClient } from '../providers/client'
 import type { AgentRouteBinding, ThinkingConfig } from '../providers/types'
+
+const SENSITIVE_EXTENSIONS = new Set([
+  '.pem', '.key', '.p12', '.pfx', '.crt', '.cer', '.der', '.keystore', '.jks', '.ssh', '.ovpn', '.kdbx'
+])
 
 interface MissingIpcDeps {
   dispatcher: any
@@ -124,7 +128,9 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   ipcMain.handle("app:openExternal", async (_e, url: string) => {
     if (url && (url.startsWith('http:') || url.startsWith('https:') || url.startsWith('mailto:'))) {
       await shell.openExternal(url)
+      return { ok: true }
     }
+    return { ok: false, error: 'Invalid URL scheme' }
   })
   ipcMain.handle("app:openPath", async (_e, input: { path: string; target?: string; line?: number; column?: number; workspaceRoot?: string | null }) => {
     try {
@@ -144,12 +150,21 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       const rawPath = input.path || ''
       // Check for traversal BEFORE normalization
       if (rawPath.includes('..')) return { ok: false, error: 'Invalid path: traversal not allowed' }
-      const resolved = isAbsolute(rawPath) ? normalize(rawPath) : (() => {
-        const activeId = getWorkspaceManager()?.getActive()
-        const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
-        const root = input?.workspaceRoot || ws?.rootPath || app.getPath('userData')
-        return resolve(root, rawPath)
-      })()
+      // Block sensitive file extensions
+      const ext = extname(rawPath).toLowerCase()
+      if (SENSITIVE_EXTENSIONS.has(ext)) return { ok: false, error: 'Access to sensitive file type denied' }
+      // Resolve and validate path is within allowed directories
+      const activeId = getWorkspaceManager()?.getActive()
+      const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
+      const root = input?.workspaceRoot || ws?.rootPath || app.getPath('userData')
+      const resolved = isAbsolute(rawPath) ? normalize(rawPath) : resolve(root, rawPath)
+      // For absolute paths, ensure they're within workspace root or user directory
+      if (isAbsolute(rawPath)) {
+        const home = app.getPath('home')
+        if (!resolved.startsWith(root) && !resolved.startsWith(home + '\\') && !resolved.startsWith(home + '/')) {
+          return { ok: false, error: 'Access denied: path outside allowed directories' }
+        }
+      }
       const st = statSync(resolved)
       if (st.size > 1_000_000) return { ok: false, error: 'File too large' }
       return { ok: true, content: readFileSync(resolved, 'utf-8') }
@@ -186,6 +201,7 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
 
   // --- AI Quick Complete ---
   ipcMain.handle("ai:quickComplete", async (_e, input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) => {
+    let timeout: ReturnType<typeof setTimeout> | null = null
     try {
       const provider = input.providerId ? providerMgr.getProvider(input.providerId) : providerMgr.getEnabledProviders()?.[0]
       if (!provider) return { ok: false, error: 'No provider available' }
@@ -211,7 +227,7 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       const thinking: ThinkingConfig = { mode: 'off', level: 'medium' }
       const client = new ProviderClient(provider, model, binding, thinking)
       const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), input.timeoutMs || 30000)
+      timeout = setTimeout(() => controller.abort(), input.timeoutMs || 30000)
       let content = ''
       let errorMessage = ''
       await client.stream({
@@ -226,12 +242,13 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       clearTimeout(timeout)
       if (errorMessage) return { ok: false, error: errorMessage }
       return { ok: true, content }
-    } catch (e: any) { return { ok: false, error: e?.message } }
+    } catch (e: any) { if (timeout) clearTimeout(timeout); return { ok: false, error: e?.message } }
   })
 }
 
 function resolveAppPath(pathText: string, workspaceRoot?: string | null): string {
   const p = pathText || ''
+  if (p.includes('..')) throw new Error('Invalid path: traversal not allowed')
   if (isAbsolute(p)) return p
   const activeId = getWorkspaceManager()?.getActive()
   const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null

@@ -445,6 +445,8 @@ export function migrateLegacySwappedOfficialBindings(bindings: AgentRouteBinding
 export class ProviderManager extends EventEmitter {
   private cfg: ProvidersConfig
   private secretsUnlocked = false
+  /** MED-20: Debounce timer for health-check saves */
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor() {
     super()
@@ -561,6 +563,15 @@ export class ProviderManager extends EventEmitter {
     store.set(STORAGE_KEY, persisted)
     this.emit('config:changed', this.cfg)
   }
+
+  /** MED-20: Debounced save for health checks to avoid excessive disk writes */
+  private scheduleSave(delayMs = 300): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer)
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null
+      this.save()
+    }, delayMs)
+  }
   // ---- 查询 ----
   getConfig(): ProvidersConfig {
     const config = JSON.parse(JSON.stringify(this.cfg)) as ProvidersConfig
@@ -624,7 +635,9 @@ export class ProviderManager extends EventEmitter {
  }
  if (!isUsable(provider)) return null
 
- const model = provider.models.find(m => m.id === binding.modelId) ?? (usingFallbackProvider ? provider.models[0] : undefined)
+ // LOW-35: When using fallback provider, prefer models with similar capabilities (tools support)
+ const model = provider.models.find(m => m.id === binding.modelId)
+   ?? (usingFallbackProvider ? (provider.models.find(m => m.supportsTools) ?? provider.models[0]) : undefined)
  if (!model) return null
  return { provider, model, binding, thinking: binding.thinking }
  }
@@ -854,7 +867,7 @@ export class ProviderManager extends EventEmitter {
     if (!p.apiKey) {
       const h: import('./types').ProviderHealth = { reachable: false, status: 'unauthorized', lastCheck: Date.now(), error: '未配置 API Key' }
       p.health = h
-      this.save()
+      this.scheduleSave()
       return h
     }
     const start = Date.now()
@@ -873,12 +886,12 @@ export class ProviderManager extends EventEmitter {
         error: unauthorized ? `鉴权失败 (HTTP ${res.status})` : (res.status >= 400 ? `HTTP ${res.status}` : undefined)
       }
       p.health = h
-      this.save()
+      this.scheduleSave()
       return h
     } catch (e: any) {
       const h: import('./types').ProviderHealth = { reachable: false, status: 'unreachable', lastCheck: Date.now(), latencyMs: Date.now() - start, error: e?.message || String(e) }
       p.health = h
-      this.save()
+      this.scheduleSave()
       return h
     }
   }
@@ -936,17 +949,20 @@ export class ProviderManager extends EventEmitter {
 
         const old = new Map(p.models.map(m => [m.id, m]))
         const nextModels = raw.map(m => modelDefinitionFromFetched(m, requestProvider, old.get(m.id)))
-        p.baseUrl = requestProvider.baseUrl
-        p.apiKey = requestProvider.apiKey
-        p.kind = requestProvider.kind
-        if (requestProvider.apiKey && !p.enabled) p.enabled = true
-        p.models = nextModels
-        p.modelFetch = {
-          status: "ok",
-          lastAttemptAt: Date.now(),
-          lastSuccessAt: Date.now(),
-          lastSuccessCount: p.models.length
-        }
+        // MED-19: Assemble complete provider patch before applying to avoid partial state
+        Object.assign(p, {
+          baseUrl: requestProvider.baseUrl,
+          apiKey: requestProvider.apiKey,
+          kind: requestProvider.kind,
+          enabled: requestProvider.apiKey && !p.enabled ? true : p.enabled,
+          models: nextModels,
+          modelFetch: {
+            status: "ok",
+            lastAttemptAt: Date.now(),
+            lastSuccessAt: Date.now(),
+            lastSuccessCount: nextModels.length
+          }
+        })
         this.save()
         appendAppEventLog('providers:fetchModels:ok', { providerId: p.id, baseUrl: p.baseUrl, kind: p.kind, count: p.models.length })
         return { ok: true, count: p.models.length }

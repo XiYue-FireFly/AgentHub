@@ -80,7 +80,11 @@ export function useTransitionState(open: boolean, duration = 200) {
     if (open) {
       setMounted(true)
       // Next frame: trigger transition-in
-      requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)))
+      let raf2 = 0
+      const raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => setVisible(true))
+      })
+      return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2) }
     } else {
       setVisible(false)
       // Wait for transition-out, then unmount

@@ -84,6 +84,8 @@ export class HubServer extends EventEmitter {
     })
 
     ws.on('close', () => this.clients.delete(clientId))
+    // MED-12: Handle individual client socket errors to prevent uncaughtException
+    ws.on('error', (e: Error) => log.error('WS client error: ' + e.message))
     this.emit('client:connected', client)
   }
 

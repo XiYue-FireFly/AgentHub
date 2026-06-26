@@ -3,7 +3,8 @@ import { summarizePageSnapshot, extractReadableText, buildPageAnalysisPrompt } f
 
 export function registerBrowserIpc(): void {
   ipcMain.handle("browser:open", (_event, input: { workspaceId?: string | null; url?: string }) => ({
-    id: `browser-${Date.now().toString(36)}`,
+    // LOW-05: Add random suffix to prevent ID collisions on rapid creation
+    id: `browser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
     workspaceId: input?.workspaceId ?? null,
     url: input?.url || "about:blank",
     title: "",

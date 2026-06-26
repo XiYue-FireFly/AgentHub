@@ -156,7 +156,22 @@ class WorkspaceManager {
       try { text = readFileSync(abs, 'utf-8') } catch { omitted++; continue }
       const relLabel = relativePath(root, abs).replace(/\\/g, '/')
       const body = `## ${relLabel}\n${text.trim()}`
-      if (used + body.length > maxChars && blocks.length > 0) { omitted++; continue }
+      // LOW-13: Also size-check the first file (truncate instead of skip)
+      if (used + body.length > maxChars) {
+        if (blocks.length === 0) {
+          const remaining = maxChars - used
+          if (remaining > 20) {
+            const header = `## ${relLabel}\n`
+            const truncNotice = '\n…(truncated)'
+            const clipLen = Math.max(0, remaining - header.length - truncNotice.length)
+            const clipped = clipLen > 0 ? text.slice(0, clipLen).trim() : ''
+            blocks.push(`${header}${clipped}${truncNotice}`)
+            used = maxChars
+            continue
+          }
+        }
+        omitted++; continue
+      }
       blocks.push(body)
       used += body.length
     }

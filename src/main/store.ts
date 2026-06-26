@@ -10,18 +10,16 @@ const ENC_PREFIX = 'enc:v1:'
 
 /**
  * 用 OS 级 safeStorage（Windows DPAPI / macOS Keychain / Linux libsecret）加密密钥后落盘。
- * 幂等：已加密的值原样返回，避免重复加密。safeStorage 不可用时回退明文（不阻断功能）。
+ * 幂等：已加密的值原样返回，避免重复加密。safeStorage 不可时抛错（拒绝明文存储密钥）。
  * 注意：safeStorage 须在 app ready 后调用。
  */
 export function encryptSecret(plain: string): string {
   if (!plain) return ''
   if (plain.startsWith(ENC_PREFIX)) return plain
-  try {
-    if (safeStorage.isEncryptionAvailable()) {
-      return ENC_PREFIX + safeStorage.encryptString(plain).toString('base64')
-    }
-  } catch { /* 回退明文 */ }
-  return plain
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('SafeStorage is not available; cannot encrypt secrets securely')
+  }
+  return ENC_PREFIX + safeStorage.encryptString(plain).toString('base64')
 }
 
 /** 解密 encryptSecret 的产物；旧明文（无前缀）原样返回；解密失败返回空串（视为未配置，提示重填）。 */
@@ -110,7 +108,12 @@ class AppStore {
 
   getAll(): Record<string, any> {
     this.init()
-    return { ...this.data }
+    // LOW-06: Return deep copy to prevent callers from mutating internal state
+    try {
+      return JSON.parse(JSON.stringify(this.data))
+    } catch {
+      return { ...this.data }
+    }
   }
 }
 

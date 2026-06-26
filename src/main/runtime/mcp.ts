@@ -43,7 +43,17 @@ export function listMcpServers(workspaceId?: string | null): McpServerConfig[] {
 }
 
 export function enabledMcpServers(workspaceId?: string | null): McpServerConfig[] {
-  return listMcpServers(workspaceId).filter(server => server.enabled)
+  const state = readState()
+  return listMcpServers(workspaceId).filter(server => {
+    if (!server.enabled) return false
+    // MED-25: Auto-discovered stdio MCP servers require explicit user confirmation before execution
+    if (server.source !== "user" && server.transport === "stdio") {
+      const override = state.overrides[server.id]
+      // Only include if the user has explicitly enabled (confirmed) this server
+      return override?.enabled === true
+    }
+    return true
+  })
 }
 
 export function scanLocalMcpServers(workspaceId?: string | null): McpServerConfig[] {
@@ -446,13 +456,17 @@ function serversFromConfig(config: any, source: McpServerConfig["source"], sourc
   return entries.map(([name, raw]: [string, any]) => {
     const spec = raw?.server && typeof raw.server === "object" ? raw.server : raw
     const serverName = raw?.name || raw?.id || name
+    const transport = spec?.transport || spec?.type || (spec?.url ? "http" : "stdio")
+    // MED-25: Auto-discovered stdio MCP servers require explicit user confirmation before execution
+    // The `enabled` field reflects the config; confirmation is gated in `enabledMcpServers()`
+    const configEnabled = raw?.enabled !== false && raw?.disabled !== true && !disabled.has(String(serverName))
     return normalizeServer({
     id: stableId(`${source}:${sourcePath}:${name}`),
     name: serverName,
     source,
     sourcePath,
-    enabled: raw?.enabled !== false && raw?.disabled !== true && !disabled.has(String(serverName)),
-    transport: spec?.transport || spec?.type || (spec?.url ? "http" : "stdio"),
+    enabled: configEnabled,
+    transport,
     command: spec?.command,
     args: Array.isArray(spec?.args) ? spec.args : [],
     env: spec?.env && typeof spec.env === "object" ? spec.env : undefined,

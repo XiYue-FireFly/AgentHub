@@ -3,6 +3,7 @@ import { routePreview } from '../hub/route-preview'
 import { buildContextProjection } from '../runtime/context-ledger'
 import { runGitQuery } from '../runtime/git'
 import { optionalWorkbenchWorkspace } from '../runtime/workspace-helpers'
+import { isProviderDirectSelection } from '../../shared/utils'
 
 interface HubThreadsDeps {
   hub: any
@@ -56,6 +57,9 @@ export function registerHubThreadsIpc(deps: HubThreadsDeps): void {
   ipcMain.handle("threads:delete", (_event, threadId: string) => runtimeStore.deleteThread(threadId))
   ipcMain.handle("threads:select", (_event, threadId: string | null) => runtimeStore.selectThread(threadId))
   ipcMain.handle("threads:fork", (_event, input: { sourceThreadId: string; sourceTurnId: string; message: string }) => {
+    if (!input || typeof input.message !== 'string' || !input.message.trim()) {
+      throw new Error('Invalid fork input: message is required')
+    }
     const newThread = runtimeStore.createThread({ title: `Fork: ${input.message.slice(0, 50)}` })
     const sourceEvents = runtimeStore.eventsSince(input.sourceThreadId, 0)
     const turnEvents = sourceEvents.filter((e: any) => e.turnId === input.sourceTurnId)
@@ -99,18 +103,27 @@ export function registerHubThreadsIpc(deps: HubThreadsDeps): void {
       modelSelection: undefined,
       thinking: { mode: "off", level: "minimal" }
     })
-    const result = await runGitQuery(workspaceId, input?.query || "status")
-    runtimeStore.appendStreamEvent(targetThread.id, {
-      turnId: turn.id,
-      type: "content",
-      content: result,
-      agentId: "git"
-    })
-    runtimeStore.setTurnStatus(turn.id, "completed")
-    return { threadId: targetThread.id, turnId: turn.id, result }
+    try {
+      const result = await runGitQuery(workspaceId, input?.query || "status")
+      runtimeStore.appendStreamEvent(targetThread.id, {
+        turnId: turn.id,
+        type: "content",
+        content: result,
+        agentId: "git"
+      })
+      runtimeStore.setTurnStatus(turn.id, "completed")
+      return { threadId: targetThread.id, turnId: turn.id, result }
+    } catch (e: any) {
+      runtimeStore.setTurnStatus(turn.id, "failed")
+      runtimeStore.appendStreamEvent(targetThread.id, {
+        turnId: turn.id,
+        type: "content",
+        content: `Git query failed: ${e?.message || String(e)}`,
+        agentId: "git"
+      })
+      return { threadId: targetThread.id, turnId: turn.id, result: null, error: e?.message || String(e) }
+    }
   })
 }
 
-function isProviderDirectSelection(selection: any): boolean {
-  return selection?.source === "provider" && !!selection.providerId && !!selection.modelId
-}
+// isProviderDirectSelection is now imported from shared/utils (LOW-08)

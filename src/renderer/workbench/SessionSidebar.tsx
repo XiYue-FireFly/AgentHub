@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useMemo, useState } from 'react'
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { WorkspaceItem } from './types'
@@ -52,6 +52,7 @@ export function SessionSidebar({
   const [renameValue, setRenameValue] = useState('')
   const [renamingBusy, setRenamingBusy] = useState(false)
   const grouped = useMemo(() => groupThreadsByWorkspace(threads), [threads])
+  const resizeHandlersRef = useRef<{ move: ((e: PointerEvent) => void) | null; up: ((e: PointerEvent) => void) | null }>({ move: null, up: null })
   const query = search.trim().toLowerCase()
   const personalThreads = grouped.get(PERSONAL_WORKSPACE_KEY) ?? []
   const visiblePersonalThreads = useMemo(() => {
@@ -93,6 +94,19 @@ export function SessionSidebar({
       .catch(() => {})
   }, [])
 
+  // Cleanup drag listeners on unmount
+  useEffect(() => {
+    return () => {
+      const { move, up } = resizeHandlersRef.current
+      if (move) window.removeEventListener('pointermove', move)
+      if (up) {
+        window.removeEventListener('pointerup', up)
+        window.removeEventListener('pointercancel', up)
+      }
+      document.body.classList.remove('wb-sidebar-resizing')
+    }
+  }, [])
+
   const startResize = (event: React.PointerEvent) => {
     const startX = event.clientX
     const startWidth = sidebarWidth
@@ -108,7 +122,9 @@ export function SessionSidebar({
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', up)
+      resizeHandlersRef.current = { move: null, up: null }
     }
+    resizeHandlersRef.current = { move, up }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
     window.addEventListener('pointercancel', up)

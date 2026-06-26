@@ -1,5 +1,5 @@
 import { BaseAgentAdapter } from './agent-adapter'
-import { spawn, exec, execSync, ChildProcess } from 'child_process'
+import { spawn, exec, execFileSync, ChildProcess } from 'child_process'
 import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { createLogger } from '../../logger'
@@ -76,7 +76,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     } else if (this.binary) {
       // 裸命令：用 where/which 预检 PATH，避免 shell 报 GBK 乱码错误
       try {
-        execSync((process.platform === 'win32' ? 'where ' : 'which ') + this.binary,
+        execFileSync(process.platform === 'win32' ? 'where' : 'which', [this.binary],
           { timeout: 2000, encoding: 'utf-8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
       } catch {
         this.status = 'error'

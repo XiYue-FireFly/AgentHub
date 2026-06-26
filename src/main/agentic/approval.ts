@@ -144,7 +144,13 @@ class ApprovalConfig {
   }
 
   getConfig(): PersistedApproval {
-    return this.read()
+    // LOW-10: Return deep copy to prevent callers from mutating internal cache
+    const data = this.read()
+    try {
+      return JSON.parse(JSON.stringify(data))
+    } catch {
+      return { ...data, default: { ...data.default }, overrides: { ...data.overrides } }
+    }
   }
 
   /**

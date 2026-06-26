@@ -143,7 +143,8 @@ export class KeywordRouter {
   }
 
   routeWithMention(text: string): string | null {
-    const mentionMatch = text.match(/@(\w+)/)
+    // LOW-11: Allow hyphens in agent IDs (e.g. @my-agent)
+    const mentionMatch = text.match(/@([\w-]+)/)
     return mentionMatch ? mentionMatch[1].toLowerCase() : null
   }
 }

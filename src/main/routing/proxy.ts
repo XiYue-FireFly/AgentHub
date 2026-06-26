@@ -13,7 +13,7 @@
  *   - 熔断：同一厂商连续失败 3 次后跳过 60s，成功即复位
  *
  * 接管方式（见 设置→代理）：
- *   Claude Code:  ANTHROPIC_BASE_URL=http://127.0.0.1:9528  ANTHROPIC_AUTH_TOKEN=agenthub
+ *   Claude Code:  ANTHROPIC_BASE_URL=http://127.0.0.1:9528  ANTHROPIC_AUTH_TOKEN=<local-token>
  *   Codex:        config.toml 自定义 model_provider，base_url=http://127.0.0.1:9528/v1
  *   模型名可用 "provider/model"（如 deepseek/deepseek-chat）精确指路，未知名称走默认路由。
  */
@@ -25,6 +25,7 @@ import { getProviderManager } from "../providers/manager"
 import { buildProviderClient, ProviderClient } from "../providers/client"
 import { ChatCompletionMessage, ChatCompletionRequest, ProviderDefinition, ModelDefinition, ThinkingConfig } from "../providers/types"
 import { createLogger } from '../logger'
+import { getLocalToken } from '../store'
 
 const log = createLogger('Proxy')
 
@@ -139,6 +140,19 @@ export class LocalProxy extends EventEmitter {
       return
     }
     for (const k of Object.keys(cors)) res.setHeader(k, cors[k])
+
+    // Token authentication: all endpoints except /health require a valid bearer token
+    if (url.pathname !== "/health") {
+      const authHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : ""
+      const apiKeyHeader = typeof req.headers["x-api-key"] === "string" ? req.headers["x-api-key"] : ""
+      const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i)
+      const providedToken = bearerMatch?.[1] || apiKeyHeader
+      if (!providedToken || providedToken !== getLocalToken()) {
+        res.writeHead(401, { "content-type": "application/json" })
+        res.end(JSON.stringify({ error: { message: "unauthorized: invalid or missing token" } }))
+        return
+      }
+    }
 
     try {
       if (url.pathname === "/v1/models" && req.method === "GET") return this.listModels(res)
@@ -439,7 +453,7 @@ export class LocalProxy extends EventEmitter {
       const IDLE_MS = 90000         // 流中空闲超时：长时间无新增 → 中止
       let timer: ReturnType<typeof setTimeout> | null = null
       const arm = (ms: number) => { if (timer) clearTimeout(timer); timer = setTimeout(() => { if (!settled) controller.abort() }, ms) }
-      const onClose = () => { if (!settled) controller.abort() }   // 客户端断开 → 中止上游，不再写死 socket
+      const onClose = () => { settled = true; controller.abort() }   // 客户端断开 → 中止上游，标记 settled 避免后续回调
       res.on("close", onClose)
       const cleanup = () => { if (timer) { clearTimeout(timer); timer = null } res.off("close", onClose) }
       arm(FIRST_BYTE_MS)
@@ -500,6 +514,7 @@ export class LocalProxy extends EventEmitter {
     const mgr = getProviderManager()
     const data: any[] = []
     for (const p of mgr.getProviders()) {
+      if (!p.enabled) continue
       for (const m of p.models) {
         data.push({
           id: p.id + "/" + m.id,
@@ -747,6 +762,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
       totalSize += c.length
       if (totalSize > MAX_BODY_SIZE) {
         clearTimeout(timer)
+        req.removeAllListeners()
         req.destroy()
         reject(new Error('Request body too large'))
         return
@@ -754,7 +770,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
       chunks.push(c)
     })
     req.on("end", () => { clearTimeout(timer); resolve(Buffer.concat(chunks).toString("utf-8")) })
-    req.on("error", (e) => { clearTimeout(timer); reject(e) })
+    req.on("error", (e) => { clearTimeout(timer); req.removeAllListeners(); reject(e) })
   })
 }
 

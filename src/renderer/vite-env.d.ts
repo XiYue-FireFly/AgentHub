@@ -1,7 +1,11 @@
 /// <reference types="vite/client" />
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference
+/// <reference path="../shared/ipc-types.ts" />
 
 // Shared type contracts from src/shared/ipc-types.ts
 // Renderer-side reference: these types mirror the main process definitions.
+// ipc-types.ts is the canonical source of truth; this file provides ambient
+// globals for the renderer process.
 
 interface ElectronAPI {
   hub: {
@@ -52,7 +56,10 @@ interface ElectronAPI {
     close: () => Promise<void>
     onMaximized: (callback: (maximized: boolean) => void) => () => void
   }
-  onChatResponse: (callback: (data: any) => void) => () => void
+  // LOW-24: Moved onChatResponse into chat namespace
+  chat: {
+    onResponse: (callback: (data: any) => void) => () => void
+  }
   store: {
     get: (key: string) => Promise<any>
     set: (key: string, value: any) => Promise<boolean>

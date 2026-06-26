@@ -43,6 +43,13 @@ export function ThreadView({
 }) {
   const byTurn = useMemo(() => groupEvents(events), [events])
 
+  // LOW-14: Low-frequency timer to refresh time-relative labels (such as "刚刚", "5分钟前")
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick(t => t + 1), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   if (!thread && turns.length === 0) {
     return (
       <section className="wb-thread-empty">

@@ -14,6 +14,13 @@ export default defineConfig({
     }
   },
   test: {
+    // MED-36: Add happy-dom environment for renderer/component tests and coverage config
+    environment: 'node',
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      exclude: ['**/node_modules/**', '**/test/e2e/**', '**/.cc-switch-src/**', '**/output/**']
+    },
     exclude: ['**/node_modules/**', '**/test/e2e/**', '**/.cc-switch-src/**', '**/output/**']
   }
 })

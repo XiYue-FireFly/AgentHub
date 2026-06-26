@@ -262,7 +262,7 @@ export class Dispatcher extends EventEmitter {
           await Promise.all(targets.map(t => this.sendToAgent(task, t.agentId, text, opts)))
         }
 
-        if ((task as any).status !== "cancelled") task.status = task.errors.size === targets.length && targets.length > 0 ? "failed" : "completed"
+        if ((task as any).status !== "cancelled") task.status = task.errors.size > 0 ? "failed" : "completed"
       }
     } catch (e: any) {
       task.status = "failed"
@@ -826,7 +826,13 @@ export class Dispatcher extends EventEmitter {
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: e.message, code: e?.code, durationMs: Date.now() - start })
       return { content: "", error: e.message }
     } finally {
-      this.registry.setStatus(agentId, "idle")
+      const remaining = (this.busyCount.get(agentId) || 1) - 1
+      if (remaining <= 0) {
+        this.busyCount.delete(agentId)
+        this.registry.setStatus(agentId, "idle")
+      } else {
+        this.busyCount.set(agentId, remaining)
+      }
     }
   }
   // --- /AgentHub native agentic ---

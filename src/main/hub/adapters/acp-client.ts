@@ -276,6 +276,8 @@ export class AcpClient {
   private buf = ''
   private decoder = new TextDecoder('utf-8')
   private initResult: any = null
+  /** MED-08: Prevent re-entrant handleExit (spawn 'error' + 'exit' can fire back-to-back) */
+  private exited = false
   /** 当前活跃 prompt 的 update 处理器（按 sessionId） */
   private promptHandlers = new Map<string, AcpPromptHandlers>()
   /** ACP sessionId → workspace root，用于 client fs handler 的沙箱边界。 */
@@ -295,6 +297,7 @@ export class AcpClient {
   /** spawn server 并完成 initialize 握手。幂等：已启动则直接返回。 */
   async start(cwd?: string): Promise<void> {
     if (this.proc) return
+    this.exited = false
     const proc = spawn(this.binary, this.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: cwd || undefined,
@@ -403,6 +406,11 @@ export class AcpClient {
 
   private onStdout(d: Buffer): void {
     this.buf += this.decoder.decode(d, { stream: true })
+    // MED-11: Cap buffer at 1MB to prevent unbounded memory growth from malformed servers
+    const MAX_BUF = 1024 * 1024
+    if (this.buf.length > MAX_BUF) {
+      this.buf = this.buf.slice(-MAX_BUF)
+    }
     let nl: number
     while ((nl = this.buf.indexOf('\n')) >= 0) {
       const line = this.buf.slice(0, nl).trim()
@@ -492,13 +500,17 @@ export class AcpClient {
     const deny = opts.find(o => /deny|reject/i.test(String(o.kind || o.optionId || o.name || '')))
     const req = acpPermissionRequest(msg.params)
     let approved = true
-    const sid = msg.params?.sessionId
+    // MED-09: Ensure sid is a string (server may send numeric sessionId)
+    const sid = String(msg.params?.sessionId || '')
     const handler = sid ? this.promptHandlers.get(sid)?.onRequestPermission : undefined
     if (handler && req.tool) {
       try { approved = await handler(req) } catch { approved = false }
     }
     if (approved && pick) {
       this.respond(msg.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
+    } else if (approved) {
+      // MED-10: No options provided but approved — return default "allow" outcome
+      this.respond(msg.id, { outcome: { outcome: 'allow' } })
     } else if (!approved && deny) {
       this.respond(msg.id, { outcome: { outcome: 'selected', optionId: deny.optionId } })
     } else {
@@ -519,6 +531,9 @@ export class AcpClient {
   }
 
   private handleExit(err: Error): void {
+    // MED-08: Prevent re-entrant calls (spawn 'error' and 'exit' events can fire in sequence)
+    if (this.exited) return
+    this.exited = true
     this.proc = null
     this.initResult = null
     for (const [, p] of this.pending) p.reject(err)

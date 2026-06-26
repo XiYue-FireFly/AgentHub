@@ -80,6 +80,8 @@ export class WorkbenchRuntimeStore extends EventEmitter {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
+      // MED-21: Flush any pending debounced saves before disposal
+      this.save()
     }
   }
 

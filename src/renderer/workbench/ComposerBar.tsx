@@ -278,12 +278,13 @@ export function ComposerBar({
     setText(next.text)
     setAttachments(next.attachments)
     // Defer to next tick so state updates propagate
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       if (next.text.trim()) {
         onSend(next.text.trim(), next.attachments, next.overrides)
       }
     }, 50)
-  }, [sending, queue])
+    return () => clearTimeout(timer)
+  }, [sending, queue, onSend])
 
   const send = async () => {
     const prompt = text.trim() || (attachments.length ? tr('请分析我附加的内容。', 'Please analyze the attached content.') : '')

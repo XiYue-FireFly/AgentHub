@@ -67,10 +67,13 @@ const api = {
     setProviderThinking: (id: string, t: any) => ipcRenderer.invoke('routing:setProviderThinking', id, t),
     activeBinding: (agentId: string) => ipcRenderer.invoke('routing:activeBinding', agentId)
   },
-  onChatResponse: (callback: (data: any) => void) => {
-    const handler = (_event: any, data: any) => callback(data)
-    ipcRenderer.on('chat:response', handler)
-    return () => ipcRenderer.removeListener('chat:response', handler)
+  // LOW-24: Moved onChatResponse into chat namespace for cleaner API surface
+  chat: {
+    onResponse: (callback: (data: any) => void) => {
+      const handler = (_event: any, data: any) => callback(data)
+      ipcRenderer.on('chat:response', handler)
+      return () => ipcRenderer.removeListener('chat:response', handler)
+    }
   },
   store: {
     get: (key: string) => ipcRenderer.invoke('store:get', key),
@@ -94,8 +97,14 @@ const api = {
   },
   app: {
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
-    openPath: (input: { path: string; target?: 'editor' | 'antigravity' | 'explorer' | 'system' | 'vscode' | 'cursor' | 'windsurf' | 'zed' | 'file-manager'; line?: number; column?: number; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:openPath', input),
-    resolvePath: (input: { path: string; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:resolvePath', input),
+    openPath: (input: { path: string; target?: 'editor' | 'antigravity' | 'explorer' | 'system' | 'vscode' | 'cursor' | 'windsurf' | 'zed' | 'file-manager'; line?: number; column?: number; workspaceRoot?: string | null }) => {
+      if (!input || typeof input.path !== 'string') return Promise.reject(new Error('Invalid path'))
+      return ipcRenderer.invoke('app:openPath', input)
+    },
+    resolvePath: (input: { path: string; workspaceRoot?: string | null }) => {
+      if (!input || typeof input.path !== 'string') return Promise.reject(new Error('Invalid path'))
+      return ipcRenderer.invoke('app:resolvePath', input)
+    },
     readTextFile: (input: { path: string; workspaceRoot?: string | null }) => ipcRenderer.invoke('app:readTextFile', input),
     pickFolder: (options?: { defaultPath?: string }) => ipcRenderer.invoke('app:pickFolder', options),
     pickFiles: (options?: { defaultPath?: string }) => ipcRenderer.invoke('app:pickFiles', options),
@@ -187,7 +196,12 @@ const api = {
     update: () => ipcRenderer.invoke('ecc:update')
   },
   terminal: {
-    run: (input: { workspaceId?: string | null; command: string }) => ipcRenderer.invoke('terminal:run', input),
+    run: (input: { workspaceId?: string | null; command: string }) => {
+      if (!input || typeof input.command !== 'string' || !input.command.trim()) {
+        return Promise.reject(new Error('Invalid terminal command'))
+      }
+      return ipcRenderer.invoke('terminal:run', input)
+    },
     cancel: (runId: string) => ipcRenderer.invoke('terminal:cancel', runId),
     history: () => ipcRenderer.invoke('terminal:history')
   },

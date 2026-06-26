@@ -54,13 +54,31 @@ export function createError(
  * Wrap an unknown error into an AppError.
  */
 export function wrapError(source: ErrorSource, err: unknown, context?: string): AppError {
-  const message = err instanceof Error ? err.message : String(err)
-  const cause = err instanceof Error ? err.stack?.split('\n').slice(0, 3).join('\n') : undefined
+  // LOW-22: Check err.message property for non-Error objects that have one
+  const message = err instanceof Error
+    ? err.message
+    : (typeof err === 'object' && err !== null && typeof (err as any).message === 'string'
+      ? (err as any).message
+      : String(err))
+  // LOW-26: Extend cause to 5 lines; derive cause from non-Error values too
+  const cause = deriveCause(err)
   return createError(source, 'UNKNOWN', context ? `${context}: ${message}` : message, {
     cause,
     retryable: false,
     raw: err
   })
+}
+
+/** LOW-26: Derive a cause string from unknown error values (up to 5 lines). */
+function deriveCause(err: unknown): string | undefined {
+  if (err instanceof Error) {
+    return err.stack?.split('\n').slice(0, 5).join('\n')
+  }
+  if (typeof err === 'string') return err || undefined
+  if (typeof err === 'object' && err !== null) {
+    try { return JSON.stringify(err, null, 2).split('\n').slice(0, 5).join('\n') } catch { return undefined }
+  }
+  return undefined
 }
 
 /**
@@ -73,7 +91,7 @@ export const ERRORS = {
   PROVIDER_UNREACHABLE: (provider: string) =>
     createError('provider', 'PROVIDER_UNREACHABLE', `Cannot connect to ${provider}`, { retryable: true, action: 'Check network connection and API endpoint' }),
   PROVIDER_MODEL_NOT_FOUND: (provider: string, model: string) =>
-    createError('provider', 'PROVIDER_MODEL_NOT_FOUND', `Model ${model} not found in ${provider}`),
+    createError('provider', 'PROVIDER_MODEL_NOT_FOUND', `Model ${model} not found in ${provider}`, { action: 'Verify the model name and provider configuration' }),
 
   // MCP
   MCP_TIMEOUT: (server: string) =>
@@ -95,11 +113,11 @@ export const ERRORS = {
   AGENT_TIMEOUT: (agentId: string) =>
     createError('agent', 'AGENT_TIMEOUT', `Agent ${agentId} timed out`, { retryable: true }),
   AGENT_CANCELLED: () =>
-    createError('agent', 'AGENT_CANCELLED', 'Task was cancelled by user'),
+    createError('agent', 'AGENT_CANCELLED', 'Task was cancelled by user', { action: 'Re-run the task if needed' }),
 
   // System
   STORE_ACCESS_DENIED: (key: string) =>
-    createError('system', 'STORE_ACCESS_DENIED', `Access denied for store key: ${key}`),
+    createError('system', 'STORE_ACCESS_DENIED', `Access denied for store key: ${key}`, { action: 'Check app permissions and storage access' }),
   WORKSPACE_NOT_BOUND: () =>
     createError('system', 'WORKSPACE_NOT_BOUND', 'No workspace bound to this session', { action: 'Bind a workspace in Settings → Workspaces' })
 } as const

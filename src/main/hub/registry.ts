@@ -74,6 +74,7 @@ export class AgentRegistry extends EventEmitter {
     const info = this.agents.get(id)
     if (info) {
       info.errorCount++
+      info.status = "error"
       this.emit("agent:status", { id, status: "error" })
     }
   }

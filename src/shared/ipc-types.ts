@@ -3,6 +3,7 @@
  *
  * Defines the type contracts between main process and renderer.
  * This is the single source of truth for IPC argument/return types.
+ * vite-env.d.ts mirrors these types as ambient globals for the renderer.
  *
  * Phase 2: IPC Type Safety — eliminate Promise<any> in ElectronAPI.
  */
@@ -22,6 +23,13 @@ export interface ThreadForkInput {
   message: string
 }
 
+export interface ModelSelection {
+  providerId: string
+  modelId: string
+  agentId?: string
+  source?: 'provider' | 'local-cli'
+}
+
 export interface TurnCreateInput {
   threadId?: string | null
   workspaceId?: string | null
@@ -29,7 +37,7 @@ export interface TurnCreateInput {
   mode?: string
   targetAgent?: string | null
   thinking?: any
-  modelSelection?: any
+  modelSelection?: ModelSelection
   attachments?: any[]
   customSchedule?: any
 }
@@ -39,28 +47,53 @@ export interface TurnCreateInput {
 // ============================================================
 
 export interface GitStatus {
-  branch: string
+  workspaceId: string | null
+  rootPath: string | null
   isRepo: boolean
+  branch: string
+  upstream?: string | null
   ahead: number
   behind: number
   files: GitFileStatus[]
+  stagedFiles: GitFileStatus[]
+  unstagedFiles: GitFileStatus[]
+  totalAdditions: number
+  totalDeletions: number
   error?: string
 }
 
 export interface GitFileStatus {
   path: string
-  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked'
-  staged: boolean
+  status: string
+  index: string
+  workingTree: string
+  additions: number
+  deletions: number
+  oldPath?: string
+  isDiffOnlyFallback?: boolean
+  mutationDisabled?: boolean
 }
 
 export interface GitBranch {
   name: string
   current: boolean
+  isCurrent?: boolean
+  isRemote?: boolean
+  remote?: string | null
+  upstream?: string | null
+  lastCommit?: number
+  headSha?: string | null
+  ahead?: number
+  behind?: number
 }
 
 export interface GitBranchListResponse {
+  branches: Array<Pick<GitBranch, 'name' | 'current'>>
   localBranches: GitBranch[]
   remoteBranches: GitBranch[]
+  currentBranch: string | null
+  repositoryState: 'git_repository' | 'not_git_repository' | 'unknown'
+  diagnostic?: { kind: string; reason?: string | null; message?: string | null; workspaceId?: string | null; pathKind?: string | null } | null
 }
 
 // ============================================================
@@ -98,13 +131,19 @@ export interface MemoryCatalog {
 export interface McpServerConfig {
   id: string
   name: string
-  source: string
+  source: 'user' | 'workspace' | 'local' | 'ecc' | 'kun' | 'claude' | 'codex' | 'gemini' | 'opencode' | 'ccgui'
   enabled: boolean
   transport: 'stdio' | 'sse' | 'http'
   command?: string
   args?: string[]
   env?: Record<string, string>
+  headers?: Record<string, string>
+  cwd?: string
   url?: string
+  timeoutMs?: number
+  trustScope?: string
+  trustedWorkspaceRoots?: string[]
+  sourcePath?: string
   status?: 'unknown' | 'ok' | 'error'
   error?: string
 }
@@ -297,15 +336,31 @@ export interface EditApplyResult {
 export interface UsageStats {
   range: string
   view: string
+  sessions: number
+  messages: number
   totalTokens: number
   actualTokens: number
   estimatedTokens: number
   hasEstimated: boolean
-  requests: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  cacheSavingsTokens: number
+  billableInputTokens: number
+  activeDays: number
+  currentStreak: number
+  longestStreak: number
   cost: number | null
+  costUsd: number | null
+  hasUnpriced: boolean
+  cacheSavings: number | null
+  contextSavings: number | null
+  cacheRate: number | null
+  requests: number
+  heatmap: any[]
   models: any[]
   providers: any[]
-  heatmap: any[]
 }
 
 // ============================================================

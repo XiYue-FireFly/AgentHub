@@ -39,13 +39,21 @@ export function useResponsiveLayout(): ResponsiveLayout {
   useEffect(() => {
     if (typeof window === 'undefined') return
 
+    // LOW-16: rAF throttle to avoid excessive re-renders during resize
+    let rafId = 0
     const onResize = () => {
-      setWidth(window.innerWidth)
-      setHeight(window.innerHeight)
+      if (rafId) cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => {
+        setWidth(window.innerWidth)
+        setHeight(window.innerHeight)
+      })
     }
 
     window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      if (rafId) cancelAnimationFrame(rafId)
+    }
   }, [])
 
   const mode: LayoutMode = width < BREAKPOINTS.phone ? 'phone'

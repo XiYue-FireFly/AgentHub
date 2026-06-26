@@ -82,12 +82,16 @@ export function useConfirmDialog(): [
 
   const confirm = useCallback((message: string, opts?: { title?: string; confirmLabel?: string; danger?: boolean }) => {
     return new Promise<boolean>((resolve) => {
-      setState({
-        message,
-        title: opts?.title || tr('确认操作', 'Confirm Action'),
-        confirmLabel: opts?.confirmLabel,
-        danger: opts?.danger,
-        resolve
+      setState(prev => {
+        // MED-29: Resolve the previous Promise before overwriting to prevent leaked unresolved promises
+        if (prev) prev.resolve(false)
+        return {
+          message,
+          title: opts?.title || tr('确认操作', 'Confirm Action'),
+          confirmLabel: opts?.confirmLabel,
+          danger: opts?.danger,
+          resolve
+        }
       })
     })
   }, [])

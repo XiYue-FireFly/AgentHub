@@ -162,7 +162,13 @@ function installStyleHealthCheck(): void {
     if (!root) return
     const style = window.getComputedStyle(root)
     const styled = style.display === 'flex' && style.overflow === 'hidden'
-    if (styled || document.getElementById(FALLBACK_STYLE_ID)) return
+    const fallback = document.getElementById(FALLBACK_STYLE_ID)
+    // LOW-17: Remove fallback styles once the main stylesheet has properly applied
+    if (styled) {
+      if (fallback) fallback.remove()
+      return
+    }
+    if (fallback) return
     console.warn('[AgentHub] Workbench stylesheet did not apply; installing fallback layout styles.')
     const tag = document.createElement('style')
     tag.id = FALLBACK_STYLE_ID

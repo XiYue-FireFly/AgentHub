@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, app } from 'electron'
 import { configureLocalAgent, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from '../runtime/local-agents'
 import { readLocalModelConfig, scanLocalModels } from '../runtime/local-models'
 import { getRunTimeoutMs, setRunTimeoutMs, RUN_TIMEOUT_DEFAULTS } from '../runtime/run-preferences'
@@ -173,7 +173,7 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
   ipcMain.handle("diagnostics:runSuite", async () => {
     return runDiagnosticSuite({
       appVersion: resolveAppVersionFromMain(),
-      hasProviders: (registry.getAll().length > 0),
+      hasProviders: ((providerMgr?.getConfig?.()?.providers?.length ?? 0) > 0),
       hasAgents: (registry.getAll().length > 0),
       hasMcpServers: listMcpServers().length > 0,
       hasMemoryEntries: (memory()?.listEntries?.()?.length ?? 0) > 0,
@@ -189,8 +189,8 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
     let gitClean = false
     let hasChangelog = false
     let hasGitTag = false
+    const cwd = app.isPackaged ? app.getAppPath() : join(__dirname, "..", "..")
     try {
-      const cwd = join(__dirname, "..", "..")
       const status = await new Promise<string>((resolve, reject) => {
         execFile("git", ["status", "--porcelain"], { cwd, encoding: "utf-8", timeout: 10000, windowsHide: true }, (err: any, stdout: string) => err ? reject(err) : resolve(stdout))
       })
@@ -203,11 +203,24 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
         hasGitTag = tagOutput.trim().length > 0
       } catch { hasGitTag = false }
     } catch { /* git not available */ }
+    // LOW-04: Actually execute typecheck, test, and build
+    const runCommand = (cmd: string, args: string[], timeoutMs: number): Promise<boolean> => {
+      return new Promise((resolve) => {
+        execFile(cmd, args, { cwd, encoding: "utf-8", timeout: timeoutMs, windowsHide: true, maxBuffer: 10 * 1024 * 1024 }, (err: any) => {
+          resolve(!err)
+        })
+      })
+    }
+    const [typecheckPass, testPass, buildPass] = await Promise.all([
+      runCommand('npx', ['tsc', '-b', '--noEmit'], 120000),
+      runCommand('npx', ['vitest', 'run'], 120000),
+      runCommand('npx', ['electron-vite', 'build'], 120000)
+    ])
     return runReleaseChecks({
       appVersion,
-      typecheckPass: null as any,
-      testPass: null as any,
-      buildPass: null as any,
+      typecheckPass,
+      testPass,
+      buildPass,
       hasChangelog,
       hasGitTag,
       gitClean

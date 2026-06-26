@@ -8,6 +8,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
+import { decryptSecret } from '../store'
 
 export interface BackupMeta {
   id: string
@@ -30,6 +31,7 @@ const BACKUP_VERSION = '1.0.0'
 
 /** Keys to include in backup (sensitive keys like API keys are encrypted in store). */
 const BACKUP_KEYS = [
+  'providers.config.v1',
   'runtime.mcp.v1',
   'agentic.approval.v1',
   'agentic.config.v1',
@@ -60,7 +62,15 @@ export function createBackup(
 
     for (const key of BACKUP_KEYS) {
       if (allData[key] !== undefined) {
-        backupStore[key] = allData[key]
+        let value = allData[key]
+        // MED-23: Decrypt API keys for cross-machine portability
+        if (key === 'providers.config.v1' && value?.providers) {
+          value = JSON.parse(JSON.stringify(value))
+          for (const p of value.providers) {
+            if (p.apiKey) p.apiKey = decryptSecret(p.apiKey)
+          }
+        }
+        backupStore[key] = value
         includedKeys.push(key)
       }
     }

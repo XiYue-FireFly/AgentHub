@@ -18,7 +18,7 @@
 import { readFileSync, writeFileSync, existsSync, copyFileSync, renameSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir } from 'os'
-import { store, encryptSecret, decryptSecret } from '../store'
+import { store, encryptSecret, decryptSecret, getLocalToken } from '../store'
 
 const SECTION = '[model_providers.agenthub]'
 
@@ -199,9 +199,9 @@ export function claudeApply(modelRef: string, proxyOrigin: string): TakeoverStat
   j.env = {
     ...env,
     ANTHROPIC_BASE_URL: proxyOrigin,
-    ANTHROPIC_AUTH_TOKEN: 'agenthub',
+    ANTHROPIC_AUTH_TOKEN: getLocalToken(),
     ANTHROPIC_MODEL: modelRef,
-    ANTHROPIC_SMALL_FAST_MODEL: modelRef
+    ANTHROPIC_SMALL_FAST_MODEL: env.ANTHROPIC_SMALL_FAST_MODEL || modelRef
   }
   atomicWrite(path, JSON.stringify(j, null, 2) + '\n')
   return claudeStatus()
@@ -266,7 +266,7 @@ export function openclawApply(modelRef: string, proxyOpenAIUrl: string): Takeove
   j.models.providers = j.models.providers || {}
   j.models.providers.agenthub = {
     baseUrl: proxyOpenAIUrl,
-    apiKey: 'agenthub',
+    apiKey: getLocalToken(),
     api: 'openai-completions',
     models: [{ id: aliasId, name: 'AgentHub ' + modelRef }]
   }
@@ -365,7 +365,7 @@ function hermesProviderItem(modelRef: string, proxyOpenAIUrl: string): string {
   return [
     '- name: agenthub',
     '  base_url: ' + proxyOpenAIUrl,
-    '  api_key: agenthub',
+    '  api_key: ' + getLocalToken(),
     '  api_mode: chat_completions',
     '  models:',
     '    ' + modelRef + ':',

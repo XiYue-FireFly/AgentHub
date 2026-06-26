@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+import { ipcMain, app } from 'electron'
+import { resolve } from 'node:path'
 import { createWorktree, listWorktrees, openWorktree, removeWorktree, syncWorktree } from '../runtime/worktrees'
 import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from '../runtime/workspace-files'
 import { getWorkspaceManager, WorkspaceNotFoundError, WorkspacePathInvalidError } from '../hub/workspace'
@@ -28,7 +29,16 @@ export function registerWorkspaceIpc(): void {
   })
   ipcMain.handle("workspaceFiles:preview", (_e, filePath: string, maxLines?: number) => {
     if (filePath.includes('..')) return { ok: false, error: 'Invalid path: traversal not allowed' }
-    return readFilePreview(filePath, maxLines)
+    // Validate absolute path is within workspace root or user directory
+    const resolved = resolve(filePath)
+    const activeId = getWorkspaceManager()?.getActive()
+    const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
+    const root = ws?.rootPath
+    if (root && !resolved.startsWith(root)) {
+      const home = app.getPath('home')
+      if (!resolved.startsWith(home)) return { ok: false, error: 'Access denied: path outside allowed directories' }
+    }
+    return readFilePreview(resolved, maxLines)
   })
 
   ipcMain.handle("workspaces:list", () => getWorkspaceManager().list())

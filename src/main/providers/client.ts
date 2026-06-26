@@ -85,7 +85,10 @@ export class ProviderClient {
         await this.streamOpenAICompat(provider, model, messages, opts, thinking, cb, opts.signal)
       }
     } catch (e: any) {
-      cb.onError?.(e)
+      // LOW-30: Sanitize API keys from error messages (Gemini URL contains key as query param)
+      const rawMsg = typeof e?.message === 'string' ? e.message : String(e)
+      const sanitized = rawMsg.replace(/([?&]key=)[^&\s]+/gi, '$1[REDACTED]')
+      cb.onError?.(sanitized === rawMsg ? e : new Error(sanitized))
     }
   }
 
@@ -397,7 +400,19 @@ export function openaiMessagesToAnthropic(messages: ChatCompletionMessage[]): an
       out.push({ role: 'assistant', content: blocks })
       continue
     }
-    out.push({ role: m.role, content: m.content })
+    // MED-22: Merge consecutive same-role messages (Anthropic requires alternating user/assistant roles)
+    const last = out[out.length - 1]
+    if (last && last.role === m.role) {
+      if (typeof last.content === 'string') {
+        last.content = last.content + '\n' + (m.content || '')
+      } else if (Array.isArray(last.content)) {
+        last.content.push({ type: 'text', text: m.content || '' })
+      } else {
+        out.push({ role: m.role, content: m.content })
+      }
+    } else {
+      out.push({ role: m.role, content: m.content })
+    }
   }
   return out.map(({ _toolGroup, ...rest }) => rest)
 }
@@ -496,7 +511,8 @@ export function normalizeUsage(u: any): {
   return {
     prompt_tokens: prompt ?? 0,
     completion_tokens: completion ?? 0,
-    total_tokens: Math.max(total ?? 0, cacheRead, cacheCreation),
+    // LOW-32: Use reported total when available; fall back to cache tokens when total is 0/undefined
+    total_tokens: (total ?? 0) || (cacheRead + cacheCreation),
     input_tokens: prompt ?? 0,
     output_tokens: completion ?? 0,
     cache_read_tokens: cacheRead,

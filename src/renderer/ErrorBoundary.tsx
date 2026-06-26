@@ -43,6 +43,11 @@ export class ErrorBoundary extends Component<Props, State> {
     this.setState(prev => ({ hasError: false, error: null, errorInfo: null, resetKey: prev.resetKey + 1 }))
   }
 
+  // LOW-20: Provide navigation to a safe state (full reload resets all state)
+  private handleGoHome = () => {
+    window.location.reload()
+  }
+
   private handleCopyError = () => {
     const text = `[${this.props.label || 'Error'}]\n${this.state.error?.message}\n${this.state.error?.stack}\n${this.state.errorInfo}`
     navigator.clipboard.writeText(text).catch(() => {})
@@ -59,6 +64,7 @@ export class ErrorBoundary extends Component<Props, State> {
             <p className="wb-error-boundary-msg">{this.state.error?.message || 'An unexpected error occurred.'}</p>
             <div className="wb-error-boundary-actions">
               <button className="ah-btn sm primary" onClick={this.handleReload}>Try again</button>
+              <button className="ah-btn sm" onClick={this.handleGoHome}>Go to overview</button>
               <button className="ah-btn sm" onClick={this.handleCopyError}>Copy error</button>
             </div>
           </div>

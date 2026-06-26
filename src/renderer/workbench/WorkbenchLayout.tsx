@@ -153,6 +153,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const smartScheduleStoreLoaded = useRef(false)
   const userExplicitAgentRef = useRef<string | null>(null)  // 跟踪用户明确选择的 agent
   const selectedThreadIdRef = useRef<string | null>(null)
+  const terminalWatchAbortRef = useRef<AbortController | null>(null)
+
+  // Cleanup terminal watch on unmount
+  useEffect(() => {
+    return () => { terminalWatchAbortRef.current?.abort() }
+  }, [])
 
   const setSelectedThreadId = useCallback((threadId: string | null) => {
     selectedThreadIdRef.current = threadId
@@ -348,9 +354,17 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [props.runtimeRefreshNonce, loadWorkbench, workspaceId])
 
   useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth)
+    // LOW-16: rAF throttle to avoid excessive re-renders during resize
+    let rafId = 0
+    const onResize = () => {
+      if (rafId) cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => setViewportWidth(window.innerWidth))
+    }
     window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      if (rafId) cancelAnimationFrame(rafId)
+    }
   }, [])
 
   useEffect(() => {
@@ -482,6 +496,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     const usable = localAgentOptions(localAgents)
     if (usable.length === 0 || customScheduleHasRunnableSteps(smartSchedule)) return
     const next = defaultSmartFiveRoleSchedule(usable)
+    // MED-28: Stricter termination — skip if generated schedule is identical to current
+    if (JSON.stringify(next) === JSON.stringify(smartSchedule)) return
     setSmartScheduleState(next)
     window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [localAgents, smartSchedule])
@@ -1109,7 +1125,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setRightPanel('runs')
       const run = await window.electronAPI.terminal.run({ workspaceId: workspaceId ?? null, command: terminalCommand })
       setTerminalRuns(prev => [run, ...prev.filter(item => item.id !== run.id)].slice(0, 20))
-      void watchTerminalRun(run.id, setTerminalRuns)
+      terminalWatchAbortRef.current?.abort()
+      const ac = new AbortController()
+      terminalWatchAbortRef.current = ac
+      void watchTerminalRun(run.id, setTerminalRuns, ac.signal)
       return true
     }
     if (command.action === 'run-git' || raw.startsWith('/git')) {
@@ -2484,9 +2503,11 @@ function clampInspectorWidth(width: number, viewportWidth = typeof window === 'u
   return Math.max(MIN_INSPECTOR_WIDTH, Math.min(MAX_INSPECTOR_WIDTH, responsiveMax, Math.round(width)))
 }
 
-async function watchTerminalRun(runId: string, setRuns: React.Dispatch<React.SetStateAction<TerminalRun[]>>) {
+async function watchTerminalRun(runId: string, setRuns: React.Dispatch<React.SetStateAction<TerminalRun[]>>, signal?: AbortSignal) {
   for (let i = 0; i < 24; i++) {
+    if (signal?.aborted) return
     await new Promise(resolve => setTimeout(resolve, i < 8 ? 500 : 1200))
+    if (signal?.aborted) return
     const history = await window.electronAPI.terminal.history().catch(() => [])
     const current = history.find(run => run.id === runId)
     setRuns(history)

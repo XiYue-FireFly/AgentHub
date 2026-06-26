@@ -29,8 +29,8 @@ const TEXT_EXTENSIONS = new Set([
   '.css', '.scss', '.less', '.html', '.xml', '.yaml', '.yml', '.toml',
   '.py', '.rb', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp',
   '.sh', '.bash', '.zsh', '.ps1', '.cmd', '.bat',
-  '.sql', '.graphql', '.env', '.gitignore', '.dockerignore',
-  '.txt', '.log', '.cfg', '.ini', '.conf'
+  '.sql', '.graphql', '.gitignore', '.dockerignore',
+  '.txt'
 ])
 
 /**

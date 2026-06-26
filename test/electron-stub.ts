@@ -30,6 +30,36 @@ export const dialog = { showOpenDialog: () => Promise.resolve({ canceled: true, 
 export const Menu = { buildFromTemplate: () => ({}), setApplicationMenu: () => {} }
 export const nativeImage = { createFromPath: () => ({}) }
 export class BrowserWindow {}
+export class Tray {
+  constructor() {}
+  setToolTip() {}
+  setIcon() {}
+  setContextMenu() {}
+  on() { return this }
+  destroy() {}
+}
+export class Notification {
+  static isSupported() { return false }
+  show() {}
+  on() { return this }
+}
+export class WebContents {
+  send() {}
+  on() { return this }
+  once() { return this }
+  removeAllListeners() {}
+}
+export const session = {
+  defaultSession: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} }
+}
+export const powerSaveBlocker = {
+  start() { return 0 },
+  stop() {}
+}
+export const systemPreferences = {
+  getMediaAccessStatus: () => 'granted',
+  askForMediaAccess: () => Promise.resolve(true)
+}
 export const contextBridge = { exposeInMainWorld: () => {} }
 
-export default { app, safeStorage, ipcMain, ipcRenderer, shell, dialog, Menu, nativeImage, BrowserWindow, contextBridge }
+export default { app, safeStorage, ipcMain, ipcRenderer, shell, dialog, Menu, nativeImage, BrowserWindow, Tray, Notification, WebContents, session, powerSaveBlocker, systemPreferences, contextBridge }

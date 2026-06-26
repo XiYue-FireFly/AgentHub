@@ -1,7 +1,7 @@
 /**
  * Real agent detection - no mock data.
  */
-import { execFileSync } from "child_process";
+import { execFileSync, execFile } from "child_process";
 import { getProviderManager } from "../providers/manager";
 import { AGENTS } from "./agents";
 
@@ -37,6 +37,9 @@ const CLI_PROBES = [
   ...EXTRA_PROBES
 ];
 
+// MED-14: Use platform-appropriate binary lookup command
+const WHICH_CMD = process.platform === 'win32' ? 'where.exe' : 'which';
+
 function probe(probe: typeof CLI_PROBES[0]) {
   try {
     const out = execFileSync(probe.binary, ["--version"], {
@@ -48,7 +51,7 @@ function probe(probe: typeof CLI_PROBES[0]) {
     const version = out.trim().split(/\r?\n/)[0];
     let binaryPath = probe.binary;
     try {
-      binaryPath = execFileSync("where.exe", [probe.binary], {
+      binaryPath = execFileSync(WHICH_CMD, [probe.binary], {
         timeout: 2000,
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
@@ -61,10 +64,35 @@ function probe(probe: typeof CLI_PROBES[0]) {
   }
 }
 
-export function detectAgents() {
+// MED-13: Async probe using execFile + Promise.all for non-blocking detection
+function probeAsync(probe: typeof CLI_PROBES[0]): Promise<DetectedAgent> {
+  return new Promise(resolve => {
+    execFile(probe.binary, ["--version"], {
+      timeout: 3000,
+      encoding: "utf-8",
+      windowsHide: true
+    }, (err: Error | null, stdout: string) => {
+      if (err) {
+        resolve({ id: probe.id, name: probe.name, found: false, capabilities: probe.caps });
+        return;
+      }
+      const version = stdout.trim().split(/\r?\n/)[0];
+      execFile(WHICH_CMD, [probe.binary], {
+        timeout: 2000,
+        encoding: "utf-8",
+        windowsHide: true
+      }, (e2: Error | null, pathOut: string) => {
+        const binaryPath = e2 ? probe.binary : pathOut.trim().split(/\r?\n/)[0].trim();
+        resolve({ id: probe.id, name: probe.name, found: true, version, path: binaryPath, capabilities: probe.caps });
+      });
+    });
+  });
+}
+
+function buildProviderAgents(): DetectedAgent[] {
   const mgr = getProviderManager();
   const bindings = mgr.getBindings();
-  const agents = bindings.map(b => {
+  return bindings.map(b => {
     const resolved = mgr.resolveBinding(b.agentId);
     const provider = resolved && resolved.provider;
     const health = provider && provider.health;
@@ -83,12 +111,15 @@ export function detectAgents() {
       providerId: provider && provider.id,
       modelId: resolved && resolved.model.id,
       baseUrl: provider && provider.baseUrl,
-      reachable: health && health.reachable,
+      reachable: health ? !!health.reachable : undefined,
       latencyMs: health && health.latencyMs,
       error: health && health.error
     };
   });
-  return agents.concat(CLI_PROBES.map(probe) as any);
+}
+
+export function detectAgents() {
+  return buildProviderAgents().concat(CLI_PROBES.map(probe) as any);
 }
 
 export async function detectAgentsAsync() {
@@ -96,5 +127,8 @@ export async function detectAgentsAsync() {
   for (const p of mgr.getEnabledProviders()) {
     await mgr.checkProviderHealth(p.id);
   }
-  return detectAgents();
+  const providerAgents = buildProviderAgents();
+  // MED-13: Use async probes with Promise.all instead of blocking execFileSync
+  const cliAgents = await Promise.all(CLI_PROBES.map(probeAsync));
+  return providerAgents.concat(cliAgents as any);
 }

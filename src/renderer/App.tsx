@@ -126,6 +126,8 @@ function AppInner() {
     if (!memoryReady.current) return
     const memoryApi = window.electronAPI?.memory
     if (!memoryApi?.saveState) return
+    // LOW-15: Pause memory save during streaming to avoid excessive writes
+    if (tasks.some(t => t.status === 'running')) return
     const timer = setTimeout(() => {
       memoryApi.saveState({ messages, tasks }).catch(() => {})
     }, 450)

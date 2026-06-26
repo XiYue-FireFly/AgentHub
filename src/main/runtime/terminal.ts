@@ -59,7 +59,8 @@ export class TerminalRuntime {
       this.children.delete(run.id)
     })
     child.on("close", code => {
-      if (run.status !== "cancelled") run.status = code === 0 ? "completed" : "failed"
+      // MED-17: Skip status update if already 'failed' (error event fired first) or 'cancelled'
+      if (run.status !== "cancelled" && run.status !== "failed") run.status = code === 0 ? "completed" : "failed"
       run.exitCode = code
       run.completedAt = Date.now()
       this.children.delete(run.id)
@@ -134,8 +135,9 @@ function killProcessTree(child: ChildProcessWithoutNullStreams): void {
   if (!child.pid) { try { child.kill() } catch { /* noop */ }; return }
   if (process.platform === 'win32') {
     try {
-      const { execSync } = require('child_process')
-      execSync(`taskkill /pid ${child.pid} /t /f`, { windowsHide: true, timeout: 5000 })
+      // LOW-27: Use execFileSync with array args (no shell injection risk)
+      const { execFileSync } = require('child_process')
+      execFileSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, timeout: 5000 })
     } catch { try { child.kill() } catch { /* noop */ } }
   } else {
     try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* noop */ } }

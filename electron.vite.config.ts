@@ -2,6 +2,7 @@ import { resolve, join } from 'path'
 import { existsSync, mkdirSync, copyFileSync, readdirSync } from 'fs'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 /**
  * 设计资产同步：把 design_handoff_glass_ui 的官方 Agent 图标（320×320 PNG）
@@ -29,7 +30,8 @@ function syncMarvisIcon(): void {
     const dstDir = resolve('src/renderer/public/icons')
     const dst = resolve(dstDir, 'marvis.png')
     if (existsSync(dst)) return
-    const appDir = 'D:/Program Files/Tencent/Marvis/Application'
+    // LOW-43: Allow overriding Marvis app directory via env var
+    const appDir = process.env.MARVIS_APP_DIR || 'D:/Program Files/Tencent/Marvis/Application'
     if (!existsSync(appDir)) return
     mkdirSync(dstDir, { recursive: true })
     for (const v of readdirSync(appDir).sort().reverse()) {
@@ -53,7 +55,9 @@ function syncMinimaxCodeIcon(): void {
     const dstDir = resolve('src/renderer/public/icons')
     const dst = resolve(dstDir, 'minimax-code.png')
     if (existsSync(dst)) return
+    // LOW-43: Allow overriding MiniMax Code icon path via env var
     const candidates = [
+      process.env.MINIMAX_CODE_ICON || '',
       'D:/minimax/MiniMax Code/resources/resources/daemon/browser-plugin/extension/icons/icon128.png',
       join(process.env.LOCALAPPDATA || '', 'Programs', 'MiniMax Code', 'resources', 'resources', 'daemon', 'browser-plugin', 'extension', 'icons', 'icon128.png')
     ]
@@ -91,12 +95,15 @@ export default defineConfig({
         name: 'dev-csp-relax',
         apply: 'serve',
         transformIndexHtml: (html: string) =>
+          // LOW-42: Use regex with negative lookahead to avoid double-replacing
           html.replace(
-            "script-src 'self'",
+            /script-src\s+'self'(?!\s+'unsafe-inline')/,
             "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
           )
       },
-      react()
+      react(),
+      // MED-33: Re-add @tailwindcss/vite plugin for Tailwind CSS v4 processing
+      tailwindcss()
     ]
   }
 })

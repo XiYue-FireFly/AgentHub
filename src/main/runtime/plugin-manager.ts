@@ -313,7 +313,9 @@ function readCodexPackageEntry(packageRoot: string, source: 'local' | 'global', 
 }
 
 function findSkillFiles(root: string, maxDepth = 7): string[] {
-  const realRoot = (() => { try { return realpathSync(root) } catch { return root } })()
+  // LOW-33: If realpathSync fails on root, reject traversal (don't fall back to unresolved path)
+  let realRoot: string
+  try { realRoot = realpathSync(root) } catch { return [] }
   const results: string[] = []
   const visit = (dir: string, depth: number) => {
     if (depth > maxDepth) return
