@@ -57,7 +57,7 @@
     "appId": "dev.agenthub.desktop",
     "productName": "AgentHub",
     "copyright": "Copyright (c) 2026 AgentHubTeam",
-    "buildVersion": "1.1.1",
+    "buildVersion": "1.2.0",
     "files": [
       "out/**/*",
       "package.json",
