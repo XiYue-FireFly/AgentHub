@@ -28,8 +28,8 @@ export function SessionSidebar({
   proxyHost,
   pendingThreadId
 }: {
-  view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
-  setView: (view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows') => void
+  view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows' | 'requirements'
+  setView: (view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows' | 'requirements') => void
   workspaces: WorkspaceItem[]
   workspaceId: string | null
   selectWorkspace: (id: string | null) => void
@@ -187,6 +187,9 @@ export function SessionSidebar({
         </button>
         <button className={view === 'tasks' ? 'active' : ''} onClick={() => setView('tasks')}>
           <Icon d={IC.tasks} size={16} /> {tr('任务', 'Tasks')}
+        </button>
+        <button className={view === 'requirements' ? 'active' : ''} onClick={() => setView('requirements')}>
+          <Icon d={IC.file} size={16} /> {tr('需求', 'Requirements')}
         </button>
         <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
           <Icon d={IC.gear} size={16} /> {tr('设置', 'Settings')}

@@ -24,16 +24,17 @@ function agent(patch: Partial<LocalAgentStatus> & { agentId: string }): LocalAge
 }
 
 describe("buildAgentOptions", () => {
-  it("only exposes dispatch-usable local agents", () => {
+  it("exposes configured or locally installed agents", () => {
     const options = buildAgentOptions([
       agent({ agentId: "codex", configured: true, installed: true, protocol: "stdio-plain", binary: "codex.cmd" }),
-      agent({ agentId: "gemini", configured: false, installed: false, protocol: "stdio-plain", binary: "gemini.cmd", loginState: "not-installed" }),
+      agent({ agentId: "gemini", configured: false, installed: true, protocol: "stdio-plain", binary: "gemini.cmd" }),
       agent({ agentId: "claude", configured: true, installed: true, protocol: "stdio-plain", binary: "claude.cmd", loginState: "needs-login" }),
       agent({ agentId: "zcode", configured: true, installed: true, protocol: "stdio-plain", binary: "" })
     ])
 
     expect(options).toEqual([
-      expect.objectContaining({ agentId: "codex", status: "idle", configured: true, installed: true })
+      expect.objectContaining({ agentId: "codex", status: "idle", configured: true, installed: true }),
+      expect.objectContaining({ agentId: "gemini", status: "idle", configured: false, installed: true })
     ])
   })
 })

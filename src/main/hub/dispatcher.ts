@@ -968,6 +968,31 @@ export class Dispatcher extends EventEmitter {
       .slice(0, limit)
   }
 
+  /** 删除指定任务（幂等操作，不存在也不报错） */
+  deleteTask(taskId: string): void {
+    // 如果任务正在运行，先取消再删除
+    const task = this.tasks.get(taskId)
+    if (task && (task.status === 'running' || task.status === 'pending')) {
+      try { this.cancel(taskId) } catch { /* non-critical */ }
+    }
+    this.tasks.delete(taskId)
+    this.streamMetaByTask.delete(taskId)
+  }
+
+  /** 清除所有已完成/已取消/已失败的终端任务 */
+  clearCompleted(): void {
+    const toDelete: string[] = []
+    for (const [id, task] of this.tasks) {
+      if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+        toDelete.push(id)
+      }
+    }
+    for (const id of toDelete) {
+      this.tasks.delete(id)
+      this.streamMetaByTask.delete(id)
+    }
+  }
+
   /** P2-1: Prune completed/cancelled/failed tasks when the map exceeds the cap. */
   private pruneTasks(maxTasks = 100): void {
     if (this.tasks.size <= maxTasks) return

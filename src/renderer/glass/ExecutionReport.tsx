@@ -53,23 +53,23 @@ function reportTone(stats: ExecutionStats): 'success' | 'warning' | 'failed' | '
 
 function toneColor(tone: ReturnType<typeof reportTone>): string {
   if (tone === 'failed') return 'var(--color-error)'
-  if (tone === 'warning') return 'var(--color-warning, #d97706)'
+  if (tone === 'warning') return 'var(--color-warning)'
   if (tone === 'cancelled') return 'var(--tx-3)'
   return 'var(--color-success)'
 }
 
 function toneBackground(tone: ReturnType<typeof reportTone>): string {
-  if (tone === 'failed') return 'rgba(239,68,68,0.05)'
-  if (tone === 'warning') return 'rgba(245,158,11,0.07)'
-  if (tone === 'cancelled') return 'rgba(107,114,128,0.06)'
-  return 'rgba(16,185,129,0.05)'
+  if (tone === 'failed') return 'color-mix(in srgb, var(--color-error) 5%, transparent)'
+  if (tone === 'warning') return 'color-mix(in srgb, var(--color-warning) 7%, transparent)'
+  if (tone === 'cancelled') return 'color-mix(in srgb, var(--tx-3) 6%, transparent)'
+  return 'color-mix(in srgb, var(--color-success) 5%, transparent)'
 }
 
 function toneBorder(tone: ReturnType<typeof reportTone>): string {
-  if (tone === 'failed') return 'rgba(239,68,68,0.2)'
-  if (tone === 'warning') return 'rgba(245,158,11,0.26)'
-  if (tone === 'cancelled') return 'rgba(107,114,128,0.2)'
-  return 'rgba(16,185,129,0.2)'
+  if (tone === 'failed') return 'color-mix(in srgb, var(--color-error) 20%, transparent)'
+  if (tone === 'warning') return 'color-mix(in srgb, var(--color-warning) 26%, transparent)'
+  if (tone === 'cancelled') return 'color-mix(in srgb, var(--tx-3) 20%, transparent)'
+  return 'color-mix(in srgb, var(--color-success) 20%, transparent)'
 }
 
 function toneLabel(tone: ReturnType<typeof reportTone>): string {

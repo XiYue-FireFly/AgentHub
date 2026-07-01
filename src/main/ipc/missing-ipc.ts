@@ -16,6 +16,8 @@ import { getCapabilityMatrix } from '../agentic/capabilities'
 import { getAgenticConfig } from '../agentic/config'
 import { getApprovalConfig, resolvePendingApproval } from '../agentic/approval'
 import { openWithEditor } from '../runtime/open-target'
+import { takeoverStatus, takeoverApply, takeoverRestore } from '../routing/takeover'
+import { sep } from 'node:path'
 import { getCachedLocalAgentStatuses } from '../runtime/local-agents'
 import { ProviderClient } from '../providers/client'
 import type { AgentRouteBinding, ThinkingConfig } from '../providers/types'
@@ -148,8 +150,6 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   ipcMain.handle("app:readTextFile", async (_e, input: { path: string; workspaceRoot?: string | null }) => {
     try {
       const rawPath = input.path || ''
-      // Check for traversal BEFORE normalization
-      if (rawPath.includes('..')) return { ok: false, error: 'Invalid path: traversal not allowed' }
       // Block sensitive file extensions
       const ext = extname(rawPath).toLowerCase()
       if (SENSITIVE_EXTENSIONS.has(ext)) return { ok: false, error: 'Access to sensitive file type denied' }
@@ -158,12 +158,22 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
       const root = input?.workspaceRoot || ws?.rootPath || app.getPath('userData')
       const resolved = isAbsolute(rawPath) ? normalize(rawPath) : resolve(root, rawPath)
-      // For absolute paths, ensure they're within workspace root or user directory
-      if (isAbsolute(rawPath)) {
-        const home = app.getPath('home')
-        if (!resolved.startsWith(root) && !resolved.startsWith(home + '\\') && !resolved.startsWith(home + '/')) {
-          return { ok: false, error: 'Access denied: path outside allowed directories' }
-        }
+      // Security: verify resolved path is within workspace root or userData (case-insensitive on Windows)
+      const normalizeRoot = normalize(root)
+      const userData = app.getPath('userData')
+      const normalizeUserData = normalize(userData)
+      const isWithin = (target: string, base: string): boolean => {
+        const t = target.toLowerCase()
+        const b = base.toLowerCase()
+        return t === b || t.startsWith(b + sep.toLowerCase())
+      }
+      if (!isWithin(resolved, normalizeRoot) && !isWithin(resolved, normalizeUserData)) {
+        return { ok: false, error: 'Access denied: path outside allowed directories' }
+      }
+      // Additional traversal check: resolved path must not contain '..' segments after normalization
+      const relativeToRoot = normalize(resolved).replace(new RegExp('^' + escapeRegExp(normalizeRoot), 'i'), '')
+      if (relativeToRoot.includes('..')) {
+        return { ok: false, error: 'Invalid path: traversal not allowed' }
       }
       const st = statSync(resolved)
       if (st.size > 1_000_000) return { ok: false, error: 'File too large' }
@@ -195,9 +205,32 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   })
 
   // --- Takeover ---
-  ipcMain.handle("takeover:status", async () => ({ active: false, apps: [] }))
-  ipcMain.handle("takeover:apply", async () => ({ ok: false, error: 'Takeover not supported' }))
-  ipcMain.handle("takeover:restore", async () => ({ ok: false, error: 'Takeover not supported' }))
+  ipcMain.handle("takeover:status", async () => {
+    try {
+      return takeoverStatus()
+    } catch (e: any) {
+      return { error: e?.message || String(e) }
+    }
+  })
+  ipcMain.handle("takeover:apply", async (_e, app: string, modelRef: string) => {
+    try {
+      const proxyOpenAIUrl = proxy?.getUrl?.() || ''
+      const proxyOrigin = proxyOpenAIUrl.replace(/\/v1$/, '')
+      if (!proxy?.isRunning?.()) {
+        return { ok: false, error: 'Proxy is not running. Start the proxy first.' }
+      }
+      return takeoverApply(app, modelRef, proxyOpenAIUrl, proxyOrigin)
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) }
+    }
+  })
+  ipcMain.handle("takeover:restore", async (_e, app: string) => {
+    try {
+      return takeoverRestore(app)
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) }
+    }
+  })
 
   // --- AI Quick Complete ---
   ipcMain.handle("ai:quickComplete", async (_e, input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) => {
@@ -246,12 +279,30 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   })
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function resolveAppPath(pathText: string, workspaceRoot?: string | null): string {
   const p = pathText || ''
   if (p.includes('..')) throw new Error('Invalid path: traversal not allowed')
-  if (isAbsolute(p)) return p
   const activeId = getWorkspaceManager()?.getActive()
   const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
   const root = workspaceRoot || ws?.rootPath || app.getPath('userData')
-  return resolve(root, p)
+  const resolved = isAbsolute(p) ? normalize(p) : resolve(root, p)
+  // 安全检查：绝对路径必须在 workspace root、userData 或 home 目录内
+  const isWithin = (target: string, base: string): boolean => {
+    const t = target.toLowerCase()
+    const b = base.toLowerCase()
+    return t === b || t.startsWith(b + sep.toLowerCase())
+  }
+  const normalizeRoot = normalize(root)
+  const userData = app.getPath('userData')
+  const normalizeUserData = normalize(userData)
+  const home = app.getPath('home')
+  const normalizeHome = normalize(home)
+  if (!isWithin(resolved, normalizeRoot) && !isWithin(resolved, normalizeUserData) && !isWithin(resolved, normalizeHome)) {
+    throw new Error('Access denied: path outside allowed directories')
+  }
+  return resolved
 }

@@ -19,5 +19,5 @@
       "@renderer/*": ["src/renderer/*"]
     }
   },
-  "include": ["src/renderer/**/*", "src/renderer/locales/zh-CN.json", "src/renderer/locales/en-US.json", "src/shared/**/*"]
+  "include": ["src/renderer/**/*", "src/renderer/locales/zh-CN.json", "src/renderer/locales/en-US.json", "src/shared/**/*", "src/main/providers/types.ts", "src/main/runtime/types.ts"]
 }

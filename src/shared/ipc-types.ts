@@ -8,6 +8,14 @@
  * Phase 2: IPC Type Safety — eliminate Promise<any> in ElectronAPI.
  */
 
+// Import types from main process modules
+import type { ThinkingConfig, ProviderCapabilities, ProviderHealth, ProviderModelFetchState, RoutingConfig } from '../main/providers/types'
+import type { WorkbenchAttachment, SchedulePreview, UsageHeatmapDay, UsageModelRow, UsageProviderRow } from '../main/runtime/types'
+
+// Re-export for convenience
+export type { ThinkingConfig, ProviderCapabilities, ProviderHealth, ProviderModelFetchState, RoutingConfig }
+export type { WorkbenchAttachment, SchedulePreview, UsageHeatmapDay, UsageModelRow, UsageProviderRow }
+
 // ============================================================
 // Thread / Turn
 // ============================================================
@@ -36,10 +44,10 @@ export interface TurnCreateInput {
   prompt: string
   mode?: string
   targetAgent?: string | null
-  thinking?: any
+  thinking?: ThinkingConfig
   modelSelection?: ModelSelection
-  attachments?: any[]
-  customSchedule?: any
+  attachments?: WorkbenchAttachment[]
+  customSchedule?: SchedulePreview
 }
 
 // ============================================================
@@ -151,7 +159,7 @@ export interface McpServerConfig {
 export interface McpToolInfo {
   name: string
   description?: string
-  inputSchema?: any
+  inputSchema?: Record<string, unknown>
 }
 
 export interface McpListToolsResult {
@@ -358,9 +366,9 @@ export interface UsageStats {
   contextSavings: number | null
   cacheRate: number | null
   requests: number
-  heatmap: any[]
-  models: any[]
-  providers: any[]
+  heatmap: UsageHeatmapDay[]
+  models: UsageModelRow[]
+  providers: UsageProviderRow[]
 }
 
 // ============================================================
@@ -376,13 +384,13 @@ export interface ProviderDef {
   enabled: boolean
   builtIn: boolean
   models: ModelDef[]
-  capabilities: any
-  defaultThinking: any
-  health?: any
+  capabilities: ProviderCapabilities
+  defaultThinking: ThinkingConfig
+  health?: ProviderHealth
   createdAt?: number
   sortOrder?: number
   modelMapping?: { main?: string; haiku?: string; sonnet?: string; opus?: string }
-  modelFetch?: any
+  modelFetch?: ProviderModelFetchState
 }
 
 export interface ModelDef {
@@ -396,7 +404,7 @@ export interface ModelDef {
 
 export interface ProvidersConfig {
   providers: ProviderDef[]
-  routing: any
+  routing: RoutingConfig
   activeBindingId: string | null
 }
 

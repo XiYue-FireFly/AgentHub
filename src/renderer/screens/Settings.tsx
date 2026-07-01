@@ -9,6 +9,8 @@ import { ApprovalsTab } from './ApprovalsTab'
 import { WorkspacesTab } from './WorkspacesTab'
 import { McpSettingsTab } from './McpSettingsTab'
 import { ShortcutsSettingsTab } from './ShortcutsSettingsTab'
+import { AgentLoopSettingsTab } from './AgentLoopSettingsTab'
+import { RequirementsTab } from './RequirementsTab'
 import { ConnectionSummary, SetupTab } from '../glass/connection-status'
 // Phase 4 lazy loading: SkillsTab loaded on demand
 const SkillsTab = React.lazy(() => import('./Skills').then(m => ({ default: m.SkillsTab })))
@@ -34,9 +36,9 @@ const UsageStatsTabFull = React.lazy(() => import('./UsageStatsDashboard').then(
 
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 
-type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage'
+type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage' | 'agentLoop' | 'requirements'
 const MEMORY_CATEGORIES: MemoryCategory[] = ['preference', 'project', 'style', 'decision', 'correction', 'imported_conversation', 'conversation', 'task', 'skill', 'file', 'system']
-const MEMORY_SCOPES = ['all', 'user', 'workspace', 'project'] as const
+const MEMORY_SCOPES = ['all', 'user', 'workspace', 'project', 'deleted'] as const
 type MemoryScopeFilter = typeof MEMORY_SCOPES[number]
 
 interface SettingsScreenProps {
@@ -82,6 +84,28 @@ NAV_ITEMS.splice(memoryNavInsertIndex >= 0 ? memoryNavInsertIndex : NAV_ITEMS.le
   description: '管理偏好、项目背景、纠正点和导入对话样本。',
   descriptionEn: 'Manage preferences, project context, corrections, and imported conversation samples.',
   icon: IC.brain
+})
+
+// 添加 AgentLoop 导航项
+const agentLoopNavInsertIndex = NAV_ITEMS.findIndex(item => item.value === 'memory')
+NAV_ITEMS.splice(agentLoopNavInsertIndex >= 0 ? agentLoopNavInsertIndex + 1 : NAV_ITEMS.length, 0, {
+  value: 'agentLoop',
+  label: 'Agent Loop',
+  labelEn: 'Agent Loop',
+  description: '多Agent协作自循环系统配置。',
+  descriptionEn: 'Multi-Agent collaboration self-loop system configuration.',
+  icon: IC.bolt
+})
+
+// 添加需求管理导航项
+const requirementsNavInsertIndex = NAV_ITEMS.findIndex(item => item.value === 'agentLoop')
+NAV_ITEMS.splice(requirementsNavInsertIndex >= 0 ? requirementsNavInsertIndex + 1 : NAV_ITEMS.length, 0, {
+  value: 'requirements',
+  label: '需求管理',
+  labelEn: 'Requirements',
+  description: '需求驱动开发，管理需求、计划和验收。',
+  descriptionEn: 'Spec-driven development, manage requirements, plans and verification.',
+  icon: IC.file
 })
 
 const shortcutsNavInsertIndex = NAV_ITEMS.findIndex(item => item.value === 'updates')
@@ -187,6 +211,8 @@ export function SettingsScreen(props: SettingsScreenProps) {
         {visibleTab === 'usage' && <React.Suspense fallback={<div className="wb-muted-box">{tr('加载用量统计...', 'Loading usage stats...')}</div>}><UsageStatsTabFull /></React.Suspense>}
         {visibleTab === 'shortcuts' && <ShortcutsSettingsTab />}
         {visibleTab === 'memory' && <MemorySettingsTab />}
+        {visibleTab === 'agentLoop' && <AgentLoopSettingsTab />}
+        {visibleTab === 'requirements' && <RequirementsTab workspaceId={props.workspaceId ?? null} />}
         {visibleTab === 'updates' && <UpdatesSettingsTab />}
       </section>
     </div>
@@ -369,7 +395,7 @@ function LocalAgentRow({ agent, draft, argsDraft, protocolDraft, busy, setDraft,
           <strong>{localAgentDisplayLabel(agent)}</strong>
           <span>{[agent.version, agent.protocol, agent.loginState !== 'unknown' ? agent.loginState : ''].filter(Boolean).join(' · ') || tr('等待检测', 'Waiting for detection')}</span>
         </div>
-        <span className={agent.configured || agent.installed ? 'ah-chip mint' : 'ah-chip'}>{localAgentStatusLabel(agent, needsPromptArg)}</span>
+        <span className={localAgentStatusChipClass(agent, needsPromptArg)}>{localAgentStatusLabel(agent, needsPromptArg)}</span>
       </div>
       <div className="wb-form-grid two">
         <select className="ah-select" value={draft} onChange={event => setDraft(event.target.value)}>
@@ -417,12 +443,20 @@ function localModelAgentLabel(config: LocalModelConfig): string {
 }
 
 function localAgentStatusLabel(agent: LocalAgentStatus, needsPromptArg: boolean): string {
+  if (agent.diagnostic) return tr('旧路径失效', 'Stale path')
+  if (agent.loginState === 'not-installed') return tr('未安装', 'Not installed')
   if (agent.configured) return tr('可使用', 'Usable')
   if (agent.installed) return tr('已检测', 'Detected')
   if (needsPromptArg) return tr('需要参数', 'Args required')
   if (agent.candidateKind === 'desktop') return tr('桌面候选', 'Desktop candidate')
   if (agent.candidateKind === 'cli') return tr('检测到 CLI，待配置', 'CLI detected, configure to use')
   return tr('候选', 'Candidate')
+}
+
+function localAgentStatusChipClass(agent: LocalAgentStatus, needsPromptArg: boolean): string {
+  if (agent.configured || agent.installed) return 'ah-chip mint'
+  if (agent.diagnostic || needsPromptArg) return 'ah-chip warning'
+  return 'ah-chip'
 }
 
 function localAgentDisplayLabel(agent: LocalAgentStatus): string {
@@ -553,7 +587,7 @@ function ModelsTab({ providers }: { providers: ProviderDef[] }) {
   }
 
   const getProviderStatus = (p: ProviderDef) => {
-    if (!p.enabled) return { color: '#7f8c8d', label: tr('已关闭', 'Off'), statusClass: 'status-off' }
+    if (!p.enabled) return { color: 'var(--wb-muted)', label: tr('已关闭', 'Off'), statusClass: 'status-off' }
     const health = p.health as any
     if (!health) return { color: 'var(--wb-green)', label: tr('启用', 'Enabled'), statusClass: 'status-ok' }
     if (health.reachable && health.status === 'ok') {
@@ -722,7 +756,7 @@ function ModelsTab({ providers }: { providers: ProviderDef[] }) {
                           {activeModel && (
                             <label className="wb-field">
                               <span>{tr('上下文窗口 (API)', 'Context Window (API)')}</span>
-                              <div style={{ display: 'flex', alignItems: 'center', height: '34px', padding: '0 12px', border: '1px solid var(--wb-line)', borderRadius: '6px', background: 'rgba(0,0,0,0.02)', color: 'var(--tx-2)', fontSize: '13px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', height: '34px', padding: '0 12px', border: '1px solid var(--wb-line)', borderRadius: '6px', background: 'var(--bg-task-content)', color: 'var(--tx-2)', fontSize: '13px' }}>
                                 {activeModel.contextWindow ? `${activeModel.contextWindow} (${formatContext(activeModel.contextWindow)})` : tr('未知', 'Unknown')}
                               </div>
                             </label>
@@ -880,15 +914,22 @@ function MemorySettingsTab() {
   useEffect(() => { refresh().catch(() => {}) }, [refresh])
 
   const stats = useMemo(() => {
-    const active = entries.filter(entry => (entry.status || 'approved') === 'approved').length
-    const disabled = entries.filter(entry => entry.status === 'disabled').length
-    const pending = entries.filter(entry => entry.status === 'candidate').length
-    return { active, disabled, pending, total: entries.length }
+    const active = entries.filter(entry => !entry.deletedAt && (entry.status || 'approved') === 'approved').length
+    const disabled = entries.filter(entry => !entry.deletedAt && entry.status === 'disabled').length
+    const pending = entries.filter(entry => !entry.deletedAt && entry.status === 'candidate').length
+    const deleted = entries.filter(entry => entry.deletedAt).length
+    return { active, disabled, pending, deleted, total: entries.length }
   }, [entries])
 
   const visibleEntries = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return entries.filter(entry => {
+      // 已删除筛选
+      if (scopeFilter === 'deleted') {
+        return !!entry.deletedAt
+      }
+      // 其他筛选：排除已删除
+      if (entry.deletedAt) return false
       if (scopeFilter !== 'all' && memoryScopeOf(entry) !== scopeFilter) return false
       if (!needle) return true
       return [entry.title, entry.summary, entry.content, entry.category, entry.source, ...(entry.tags || [])]
@@ -999,10 +1040,15 @@ function MemorySettingsTab() {
   }
 
   const deleteMemory = async (id: string) => {
-    const ok = await styledConfirm({ message: tr('删除这条记忆？此操作不可撤销。', 'Delete this memory? This cannot be undone.'), danger: true })
+    const ok = await styledConfirm({ message: tr('删除这条记忆？', 'Delete this memory?'), danger: true })
     if (!ok) return
     await window.electronAPI.memory.delete(id)
     if (editing?.id === id) closeEditor()
+    await refresh()
+  }
+
+  const restoreMemory = async (id: string) => {
+    await window.electronAPI.memory.restore(id)
     await refresh()
   }
 
@@ -1044,6 +1090,7 @@ function MemorySettingsTab() {
           <div className="wb-memory-kun-stats">
             <div><span>{tr('活跃', 'Active')}</span><strong>{stats.active}</strong></div>
             <div><span>{tr('待确认', 'Pending')}</span><strong>{stats.pending}</strong></div>
+            <div><span>{tr('已删除', 'Deleted')}</span><strong>{stats.deleted}</strong></div>
             <div><span>{tr('状态', 'Status')}</span><strong>{enabled ? tr('开启', 'On') : tr('关闭', 'Off')}</strong></div>
           </div>
         </div>
@@ -1133,7 +1180,7 @@ function MemorySettingsTab() {
                 <span>{tr('暂无记忆记录。助手会在了解你的偏好后自动创建，也可以手动添加。', 'No memory records yet. AgentHub will create them as it learns your preferences, or you can add one manually.')}</span>
               </div>
             ) : visibleEntries.slice(0, 80).map(entry => (
-              <MemorySettingsRow key={entry.id} entry={entry} onEdit={openEdit} onApprove={approveCandidate} onDisable={disableMemory} onDelete={deleteMemory} onTogglePinned={togglePinned} />
+              <MemorySettingsRow key={entry.id} entry={entry} onEdit={openEdit} onApprove={approveCandidate} onDisable={disableMemory} onDelete={deleteMemory} onRestore={restoreMemory} onTogglePinned={togglePinned} />
             ))}
           </div>
         </div>
@@ -1143,28 +1190,36 @@ function MemorySettingsTab() {
   )
 }
 
-function MemorySettingsRow({ entry, onEdit, onApprove, onDisable, onDelete, onTogglePinned }: {
+function MemorySettingsRow({ entry, onEdit, onApprove, onDisable, onDelete, onRestore, onTogglePinned }: {
   entry: MemoryEntry
   onEdit: (entry: MemoryEntry) => void
   onApprove: (id: string) => void
   onDisable: (id: string) => void
   onDelete: (id: string) => void
+  onRestore: (id: string) => void
   onTogglePinned: (entry: MemoryEntry) => void
 }) {
   const pinned = !!(entry.metadata?.pinned || entry.metadata?.pin)
+  const deleted = !!entry.deletedAt
   return (
-    <div className={'wb-memory-kun-row wb-memory-settings-row' + (pinned ? ' pinned' : '')}>
+    <div className={'wb-memory-kun-row wb-memory-settings-row' + (pinned ? ' pinned' : '') + (deleted ? ' deleted' : '')}>
       <div className="wb-memory-kun-row-main">
-        <strong>{pinned && <span className="wb-memory-pin">{tr('置顶', 'Pinned')}</span>}{entry.title || entry.category || entry.id}<span className="wb-memory-category-badge">{memoryCategoryLabel(entry.category)}</span></strong>
+        <strong>{pinned && <span className="wb-memory-pin">{tr('置顶', 'Pinned')}</span>}{deleted && <span className="wb-memory-deleted-badge">{tr('已删除', 'Deleted')}</span>}{entry.title || entry.category || entry.id}<span className="wb-memory-category-badge">{memoryCategoryLabel(entry.category)}</span></strong>
         <small>{String(entry.summary || entry.content || entry.title || '').slice(0, 220)}</small>
         <div className="wb-memory-kun-row-meta">{memoryMeta(entry)}</div>
       </div>
       <div className="wb-tool-actions">
-        <button onClick={() => onEdit(entry)}>{tr('编辑', 'Edit')}</button>
-        <button onClick={() => onTogglePinned(entry)}>{pinned ? tr('取消置顶', 'Unpin') : tr('置顶', 'Pin')}</button>
-        {entry.status === 'candidate' && <button onClick={() => onApprove(entry.id)}>{tr('批准', 'Approve')}</button>}
-        {entry.status !== 'disabled' && <button onClick={() => onDisable(entry.id)}>{tr('禁用', 'Disable')}</button>}
-        <button className="danger" onClick={() => onDelete(entry.id)}>{tr('删除', 'Delete')}</button>
+        {deleted ? (
+          <button onClick={() => onRestore(entry.id)}>{tr('恢复', 'Restore')}</button>
+        ) : (
+          <>
+            <button onClick={() => onEdit(entry)}>{tr('编辑', 'Edit')}</button>
+            <button onClick={() => onTogglePinned(entry)}>{pinned ? tr('取消置顶', 'Unpin') : tr('置顶', 'Pin')}</button>
+            {entry.status === 'candidate' && <button onClick={() => onApprove(entry.id)}>{tr('批准', 'Approve')}</button>}
+            {entry.status !== 'disabled' && <button onClick={() => onDisable(entry.id)}>{tr('禁用', 'Disable')}</button>}
+            <button className="danger" onClick={() => onDelete(entry.id)}>{tr('删除', 'Delete')}</button>
+          </>
+        )}
       </div>
     </div>
   )
@@ -1441,7 +1496,8 @@ function memoryScopeLabel(scope: MemoryScopeFilter): string {
     all: tr('全部', 'All'),
     user: tr('用户', 'User'),
     workspace: tr('工作区', 'Workspace'),
-    project: tr('项目', 'Project')
+    project: tr('项目', 'Project'),
+    deleted: tr('已删除', 'Deleted')
   } as Record<MemoryScopeFilter, string>)[scope]
 }
 

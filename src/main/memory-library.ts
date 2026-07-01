@@ -41,6 +41,7 @@ export interface MemoryEntry extends MemoryEntryInput {
   tags: string[]
   createdAt: string
   updatedAt: string
+  deletedAt?: string
 }
 
 export interface RuntimeMemoryState {
@@ -122,7 +123,7 @@ export class MemoryLibrary {
 
   listEntries(category?: MemoryCategory): MemoryEntry[] {
     if (!this.getSettings().enabled) return []
-    const entries = this.getCatalog().entries.filter(entry => (entry.status || 'approved') === 'approved')
+    const entries = this.getCatalog().entries.filter(entry => (entry.status || 'approved') === 'approved' && !entry.deletedAt)
     return category ? entries.filter(entry => entry.category === category) : entries
   }
 
@@ -208,14 +209,25 @@ export class MemoryLibrary {
 
   deleteEntry(id: string): boolean {
     const index = this.readIndex()
-    const before = index.entries.length
-    index.entries = index.entries.filter(entry => entry.id !== id)
+    const existing = index.entries.find(entry => entry.id === id)
+    if (!existing) return false
+    existing.deletedAt = new Date().toISOString()
     this.writeIndex(index)
-    return before !== index.entries.length
+    return true
+  }
+
+  restoreEntry(id: string): MemoryEntry | null {
+    const index = this.readIndex()
+    const existing = index.entries.find(entry => entry.id === id)
+    if (!existing) return null
+    existing.deletedAt = undefined
+    existing.updatedAt = new Date().toISOString()
+    this.writeIndex(index)
+    return existing
   }
 
   listCandidates(): MemoryEntry[] {
-    return this.getCatalog().entries.filter(entry => entry.status === 'candidate')
+    return this.getCatalog().entries.filter(entry => entry.status === 'candidate' && !entry.deletedAt)
   }
 
   approveCandidate(id: string): MemoryEntry | null {

@@ -37,8 +37,16 @@ export const GUARDED_TOOLS: GuardedTool[] = ['write', 'exec']
 
 /** 把工具内部名映射到受管类别；只读工具（fs_read/fs_list）→ null（永不门禁）。 */
 export function guardedToolFor(name: string): GuardedTool | null {
+  // 原有工具映射
   if (name === 'fs_write') return 'write'
   if (name === 'exec') return 'exec'
+
+  // MCP 系统工具自动映射：shell_exec -> exec 类别
+  if (name === 'shell_exec') return 'exec'
+  // fs_delete, fs_move, fs_copy -> write 类别
+  if (name === 'fs_delete' || name === 'fs_move' || name === 'fs_copy') return 'write'
+
+  // 只读工具（fs_read, fs_list, system_info）→ null（永不门禁）
   return null
 }
 

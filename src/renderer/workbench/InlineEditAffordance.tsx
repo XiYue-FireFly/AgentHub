@@ -51,8 +51,8 @@ export function InlineEditAffordance({ code, filePath, startLine, endLine, works
 
       // Send the prompt to the active model and get a real replacement.
       const result = await window.electronAPI.ai.quickComplete({ prompt })
-      if (result.error) {
-        setError(result.error)
+      if (!result?.ok || result.error) {
+        setError(result?.error || tr('AI 请求失败', 'AI request failed'))
         return
       }
       // Models often wrap code in markdown fences; strip a single outer fence
@@ -62,7 +62,7 @@ export function InlineEditAffordance({ code, filePath, startLine, endLine, works
         const fence = /^```[^\n]*\n([\s\S]*?)\n```$/.exec(trimmed)
         return fence ? fence[1] : trimmed
       }
-      const replacement = stripFence(result.content)
+      const replacement = stripFence(result.content || '')
       if (!replacement) {
         setError(tr('模型返回了空内容', 'Model returned empty content'))
         return

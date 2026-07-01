@@ -57,6 +57,9 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
   const [toolsList, setToolsList] = useState<{ name: string; description?: string }[]>([])
   const [toolsLoading, setToolsLoading] = useState(false)
   const [toolsError, setToolsError] = useState<string | null>(null)
+  // MCP 系统级控制状态
+  const [systemConfig, setSystemConfig] = useState<McpSystemConfig | null>(null)
+  const [systemLoading, setSystemLoading] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -71,6 +74,27 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
   }, [workspaceId])
 
   useEffect(() => { refresh().catch(() => {}) }, [refresh])
+
+  // 加载 MCP 系统配置
+  useEffect(() => {
+    window.electronAPI.mcp.getSystemConfig().then(config => {
+      setSystemConfig(config)
+    }).catch(() => {})
+  }, [])
+
+  const toggleSystemEnabled = async () => {
+    if (!systemConfig) return
+    setSystemLoading(true)
+    try {
+      const newEnabled = !systemConfig.enabled
+      await window.electronAPI.mcp.setSystemEnabled(newEnabled)
+      setSystemConfig({ ...systemConfig, enabled: newEnabled })
+    } catch (err: any) {
+      setError(err?.message || tr('更新系统配置失败', 'Failed to update system config'))
+    } finally {
+      setSystemLoading(false)
+    }
+  }
 
   const add = async () => {
     if (!draft.name.trim()) return
@@ -130,6 +154,31 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
 
   return (
     <div className="wb-settings-stack wb-mcp-clean">
+      {/* MCP 系统级控制卡片 */}
+      <section className="glass wb-mcp-clean-card">
+        <div className="wb-mcp-clean-head">
+          <div>
+            <strong>{tr('MCP 系统底层控制', 'MCP System Control')}</strong>
+            <span>{tr('为 Agent 提供全盘文件系统读写、Shell 执行、系统信息查询能力。', 'Provides agents with full disk filesystem read/write, shell execution, and system info queries.')}</span>
+          </div>
+          <div className="wb-card-actions">
+            <Switch
+              on={systemConfig?.enabled ?? true}
+              onChange={toggleSystemEnabled}
+              disabled={systemLoading}
+            />
+          </div>
+        </div>
+        {systemConfig && (
+          <div className="wb-mcp-clean-stats">
+            <div><span>{tr('状态', 'Status')}</span><strong>{systemConfig.enabled ? tr('已启用', 'Enabled') : tr('已禁用', 'Disabled')}</strong></div>
+            <div><span>{tr('默认策略', 'Default Policy')}</span><strong>{systemConfig.defaultPolicy}</strong></div>
+            <div><span>{tr('超时', 'Timeout')}</span><strong>{Math.round(systemConfig.timeoutMs / 1000)}s</strong></div>
+          </div>
+        )}
+      </section>
+
+      {/* MCP 服务管理卡片 */}
       <section className="glass wb-mcp-clean-card">
         <div className="wb-mcp-clean-head">
           <div>

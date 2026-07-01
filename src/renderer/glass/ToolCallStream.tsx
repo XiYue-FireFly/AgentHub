@@ -26,10 +26,10 @@ interface ToolCallStreamProps {
 
 /** 状态 → CSS 变量映射（参照 codex GuardianRiskLevel + ccgui token 纪律） */
 const STATUS_STYLES: Record<ToolCall['status'], { border: string; bg: string; text: string; badge: string; icon: string }> = {
-  started:   { border: 'var(--color-info)',    bg: 'rgba(59,130,246,0.06)',  text: 'var(--color-info)',    badge: 'rgba(59,130,246,0.15)',  icon: '▶' },
-  succeeded: { border: 'var(--color-success)', bg: 'rgba(16,185,129,0.06)',  text: 'var(--color-success)', badge: 'rgba(16,185,129,0.15)', icon: '✓' },
-  failed:    { border: 'var(--color-error)',   bg: 'rgba(239,68,68,0.06)',   text: 'var(--color-error)',   badge: 'rgba(239,68,68,0.15)',  icon: '✗' },
-  declined:  { border: 'var(--tx-3)',          bg: 'rgba(107,114,128,0.06)', text: 'var(--tx-3)',          badge: 'rgba(107,114,128,0.15)', icon: '⊘' }
+  started:   { border: 'var(--color-info)',    bg: 'color-mix(in srgb, var(--color-info) 6%, transparent)',    text: 'var(--color-info)',    badge: 'color-mix(in srgb, var(--color-info) 15%, transparent)',    icon: '▶' },
+  succeeded: { border: 'var(--color-success)', bg: 'color-mix(in srgb, var(--color-success) 6%, transparent)', text: 'var(--color-success)', badge: 'color-mix(in srgb, var(--color-success) 15%, transparent)', icon: '✓' },
+  failed:    { border: 'var(--color-error)',   bg: 'color-mix(in srgb, var(--color-error) 6%, transparent)',   text: 'var(--color-error)',   badge: 'color-mix(in srgb, var(--color-error) 15%, transparent)',   icon: '✗' },
+  declined:  { border: 'var(--tx-3)',          bg: 'color-mix(in srgb, var(--tx-3) 6%, transparent)',          text: 'var(--tx-3)',          badge: 'color-mix(in srgb, var(--tx-3) 15%, transparent)',          icon: '⊘' }
 }
 
 function formatDuration(ms: number): string {

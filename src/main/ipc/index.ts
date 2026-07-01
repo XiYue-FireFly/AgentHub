@@ -11,6 +11,7 @@ import { registerProviderIpc } from './provider-ipc'
 import { registerMcpIpc } from './mcp-ipc'
 import { registerWorkflowIpc } from './workflow-ipc'
 import { registerTerminalIpc } from './terminal-ipc'
+import { registerTerminalPtyIpc } from './terminal-pty-ipc'
 import { registerBrowserIpc } from './browser-ipc'
 import { registerConversationIpc } from './conversation-ipc'
 import { registerPluginsIpc } from './plugins-ipc'
@@ -18,7 +19,9 @@ import { registerWorkspaceIpc } from './workspace-ipc'
 import { registerPassthroughIpc } from './passthrough-ipc'
 import { registerHubThreadsIpc } from './hub-threads-ipc'
 import { registerMissingIpc } from './missing-ipc'
-import { BrowserWindow } from 'electron'
+import { registerAgentLoopIpc } from './agent-loop-ipc'
+import { registerSddIpc } from './sdd-ipc'
+import { BrowserWindow, dialog, ipcMain } from 'electron'
 
 interface IpcRegistrationDeps {
   memory: () => any
@@ -56,6 +59,12 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
   // MCP operations (7 handlers)
   registerMcpIpc()
 
+  // Agent Loop operations (4 handlers)
+  registerAgentLoopIpc(deps.registry)
+
+  // SDD (Spec Driven Development) operations
+  registerSddIpc()
+
   // Workflow/Feature operations (40+ handlers)
   registerWorkflowIpc({
     resolveAppVersionFromMain: deps.resolveAppVersionFromMain,
@@ -68,6 +77,9 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
 
   // Terminal operations (6 handlers)
   registerTerminalIpc()
+
+  // Terminal PTY sessions (4 handlers) - Kun-inspired persistent terminal
+  registerTerminalPtyIpc(deps.getMainWindow)
 
   // Browser operations (5 handlers)
   registerBrowserIpc()
@@ -117,5 +129,14 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
     hub: deps.hub,
     getMainWindow: deps.getMainWindow,
     memory: deps.memory
+  })
+
+  // Dialog operations
+  ipcMain.handle('dialog:selectDirectory', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
   })
 }

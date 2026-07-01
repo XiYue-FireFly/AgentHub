@@ -23,7 +23,7 @@ function agent(patch: Partial<LocalAgentStatus> & { agentId: string }): LocalAge
 }
 
 describe("localAgentOptions", () => {
-  it("only exposes configured and dispatch-safe local agents", () => {
+  it("exposes configured or locally installed dispatch-safe agents", () => {
     const ready = agent({
       agentId: "codex",
       configured: true,
@@ -34,8 +34,9 @@ describe("localAgentOptions", () => {
     const candidate = agent({
       agentId: "gemini",
       configured: false,
-      installed: false,
+      installed: true,
       candidateKind: "cli",
+      binary: "gemini.cmd",
       candidates: [{ source: "terminal", label: "Gemini", path: "gemini.cmd" }]
     })
     const needsLogin = agent({
@@ -66,11 +67,11 @@ describe("localAgentOptions", () => {
     })
 
     expect(isUsableLocalAgent(ready)).toBe(true)
-    expect(isUsableLocalAgent(candidate)).toBe(false)
+    expect(isUsableLocalAgent(candidate)).toBe(true)
     expect(isUsableLocalAgent(needsLogin)).toBe(false)
     expect(isUsableLocalAgent(missingBinary)).toBe(false)
     expect(isUsableLocalAgent(unsafeManual)).toBe(false)
-    expect(localAgentOptions([ready, candidate, needsLogin, missingBinary, unsafeManual, ready])).toEqual(["codex"])
+    expect(localAgentOptions([ready, candidate, needsLogin, missingBinary, unsafeManual, ready])).toEqual(["codex", "gemini"])
   })
 
   it("allows manual agents when ACP or prompt args make them non-interactive", () => {

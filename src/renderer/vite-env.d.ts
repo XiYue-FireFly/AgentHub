@@ -77,6 +77,7 @@ interface ElectronAPI {
     updateEntry: (id: string, patch: Partial<MemoryEntry>) => Promise<MemoryEntry | null>
     disableEntry: (id: string) => Promise<MemoryEntry | null>
     delete: (id: string) => Promise<boolean>
+    restore: (id: string) => Promise<MemoryEntry | null>
     loadState: () => Promise<{ messages?: any[]; tasks?: any[] }>
     saveState: (state: { messages: any[]; tasks: any[] }) => Promise<any>
   }
@@ -97,6 +98,9 @@ interface ElectronAPI {
     remove: (id: string) => Promise<boolean>
     getActive: () => Promise<string | null>
     setActive: (id: string | null) => Promise<string | null>
+  }
+  dialog: {
+    selectDirectory: () => Promise<string | null>
   }
   threads: {
     list: (workspaceId?: string | null) => Promise<WorkbenchThread[]>
@@ -192,6 +196,10 @@ interface ElectronAPI {
     setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => Promise<McpServerConfig | null>
     test: (id: string, workspaceId?: string | null) => Promise<McpServerConfig>
     listTools: (id: string, workspaceId?: string | null) => Promise<{ ok: boolean; tools: { name: string; description?: string }[]; error?: string }>
+    // MCP 系统级控制配置
+    getSystemConfig: () => Promise<McpSystemConfig>
+    setSystemConfig: (config: Partial<McpSystemConfig>) => Promise<void>
+    setSystemEnabled: (enabled: boolean) => Promise<void>
   }
   worktrees: {
     list: (parentWorkspaceId?: string | null) => Promise<WorktreeItem[]>
@@ -314,6 +322,10 @@ interface ElectronAPI {
     list: (rootPath: string, max?: number) => Promise<Array<{ path: string; relativePath: string; name: string; extension: string; isDirectory: boolean; sizeBytes: number }>>
     search: (rootPath: string, query: string, max?: number) => Promise<Array<{ path: string; relativePath: string; name: string; extension: string; isDirectory: boolean; sizeBytes: number }>>
     preview: (filePath: string, maxLines?: number) => Promise<{ ok: boolean; content?: string; error?: string }>
+    read: (workspaceRoot: string, relPath: string) => Promise<{ ok: boolean; content: string; path: string; error?: string }>
+    write: (workspaceRoot: string, relPath: string, content: string) => Promise<{ ok: boolean; error?: string }>
+    readImage: (workspaceRoot: string, relPath: string) => Promise<{ ok: boolean; dataUrl: string; mimeType: string; size: number; error?: string }>
+    listDirectory: (workspaceRoot: string, relPath: string) => Promise<{ ok: boolean; entries: Array<{ name: string; type: 'file' | 'directory'; path: string }>; error?: string }>
   }
   github: {
     checkCli: () => Promise<{ available: boolean; authenticated: boolean; version?: string; error?: string }>
@@ -341,7 +353,7 @@ interface ElectronAPI {
   }
   ai: {
     quickComplete: (input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) =>
-      Promise<{ content: string; error?: string }>
+      Promise<{ ok: boolean; content?: string; error?: string }>
   }
   models: {
     list: (providers?: any[]) => Promise<ModelRouteInfo[]>
@@ -377,6 +389,27 @@ interface ElectronAPI {
   release: {
     checks: () => Promise<any>
   }
+  agentLoop: {
+    getConfig: () => Promise<{ maxSteps: number; timeoutMs: number; enableDelegation: boolean; mode: 'auto' | 'single' }>
+    getStatus: () => Promise<{ available: boolean; activeTasks: number }>
+    getAgents: () => Promise<Array<{ id: string; name: string; role: string; capabilities: string[]; version?: string; path?: string }>>
+    refreshAgents: () => Promise<Array<{ id: string; name: string; role: string; capabilities: string[]; version?: string; path?: string }>>
+    getRouteInfo: (prompt: string) => Promise<{ taskType: string; selectedAgent: string; confidence: number; reasoning: string; suggestedRole: string }>
+  }
+  sdd: {
+    createDraft: (workspaceRoot: string, title: string, template?: string) => Promise<SddDraft>
+    getDraft: (workspaceRoot: string, draftId: string) => Promise<SddDraft | null>
+    updateDraft: (workspaceRoot: string, draftId: string, content: string) => Promise<void>
+    updateDesignContext: (workspaceRoot: string, draftId: string, designContext: SddDesignContext) => Promise<void>
+    deleteDraft: (workspaceRoot: string, draftId: string) => Promise<void>
+    listDrafts: (workspaceRoot: string) => Promise<SddDraftMeta[]>
+    parseBlocks: (content: string) => Promise<SddRequirementBlock[]>
+    parsePlanCovers: (planMarkdown: string) => Promise<SddPlanItem[]>
+    computeTrace: (workspaceRoot: string, draftId: string, planMarkdown?: string) => Promise<SddTrace | null>
+    saveTrace: (workspaceRoot: string, draftId: string, trace: SddTrace) => Promise<void>
+    getTrace: (workspaceRoot: string, draftId: string) => Promise<SddTrace | null>
+    exists: (workspaceRoot: string, draftId: string) => Promise<boolean>
+  }
   platform: string
 }
 
@@ -398,6 +431,8 @@ interface MemoryEntry {
   metadata?: Record<string, any>
   createdAt: string
   updatedAt: string
+  deletedAt?: string
+  disabledAt?: string
 }
 
 interface WorkbenchAttachment {
@@ -542,6 +577,7 @@ interface RuntimeEvent {
   agentId?: string
   payload: any
   createdAt: number
+  ts?: number  // 别名，用于向后兼容
 }
 
 interface WorkbenchSnapshot {
@@ -621,6 +657,14 @@ interface McpServerConfig {
   sourcePath?: string
   status?: 'unknown' | 'ok' | 'error'
   error?: string
+}
+
+interface McpSystemConfig {
+  version: number
+  enabled: boolean
+  allowedCategories: ('read' | 'write' | 'exec')[]
+  defaultPolicy: 'allow' | 'ask' | 'deny'
+  timeoutMs: number
 }
 
 type UsageRange = 'all' | '90d' | '30d' | '7d'
@@ -969,6 +1013,7 @@ interface LocalAgentStatus {
   loginState: 'unknown' | 'ready' | 'needs-login' | 'not-installed'
   candidates: Array<{ source: 'desktop' | 'terminal'; label: string; path: string }>
   workspaceSession: 'per-dispatch' | 'persistent'
+  diagnostic?: { code: string; message: string; action?: string }
   error?: string
 }
 
@@ -996,6 +1041,70 @@ interface WorkflowDefinition {
   updatedAt: string
   useCount: number
   pinned?: boolean
+}
+
+// ============================================================
+// SDD (Spec Driven Development) Types
+// ============================================================
+
+type SddStatus = 'draft' | 'planned' | 'building' | 'done' | 'verified'
+
+interface SddAcceptanceCriterion {
+  text: string
+  checked: boolean
+}
+
+interface SddRequirementBlock {
+  id: string
+  title: string
+  status: SddStatus
+  description: string
+  acceptanceCriteria: SddAcceptanceCriterion[]
+  lineNumber: number
+}
+
+interface SddDesignContext {
+  designType?: 'brand' | 'product'
+  brandColor?: string
+  tone?: string[]
+}
+
+interface SddDraft {
+  id: string
+  workspaceRoot: string
+  relativePath: string
+  title: string
+  content: string
+  designContext?: SddDesignContext
+  createdAt: string
+  updatedAt: string
+}
+
+interface SddDraftMeta {
+  id: string
+  workspaceRoot: string
+  relativePath: string
+  title: string
+  createdAt: string
+  updatedAt: string
+}
+
+interface SddPlanItem {
+  id: string
+  text: string
+  covers: string[]
+  status: 'pending' | 'in_progress' | 'completed'
+  lineNumber: number
+}
+
+interface SddTrace {
+  draftId: string
+  requirementBlocks: SddRequirementBlock[]
+  planItems: SddPlanItem[]
+  coverage: Record<string, string[]>
+  derivedStatuses: Record<string, SddStatus>
+  uncoveredRequirementIds: string[]
+  timestamp: string
 }
 
 interface Window {

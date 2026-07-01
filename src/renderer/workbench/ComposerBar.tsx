@@ -786,7 +786,7 @@ export function ComposerBar({
               />
             )}
             {queue.length > 0 && (
-              <span style={{ fontSize: 11, color: 'var(--color-info)', padding: '2px 6px', borderRadius: 10, background: 'rgba(59,130,246,0.1)' }}>
+              <span style={{ fontSize: 11, color: 'var(--color-info)', padding: '2px 6px', borderRadius: 10, background: 'color-mix(in srgb, var(--color-info) 10%, transparent)' }}>
                 {queue.length} {tr('排队', 'queued')}
               </span>
             )}

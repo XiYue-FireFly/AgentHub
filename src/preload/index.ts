@@ -31,6 +31,9 @@ const api = {
   agents: {
     locate: () => ipcRenderer.invoke('agents:locate')
   },
+  dialog: {
+    selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory')
+  },
   win: {
     minimize: () => ipcRenderer.invoke('win:minimize'),
     maximizeToggle: () => ipcRenderer.invoke('win:maximizeToggle'),
@@ -92,6 +95,7 @@ const api = {
     updateEntry: (id: string, patch: Record<string, unknown>) => ipcRenderer.invoke('memory:updateEntry', id, patch),
     disableEntry: (id: string) => ipcRenderer.invoke('memory:disableEntry', id),
     delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
+    restore: (id: string) => ipcRenderer.invoke('memory:restore', id),
     loadState: () => ipcRenderer.invoke('memory:loadState'),
     saveState: (state: any) => ipcRenderer.invoke('memory:saveState', state)
   },
@@ -205,6 +209,27 @@ const api = {
     cancel: (runId: string) => ipcRenderer.invoke('terminal:cancel', runId),
     history: () => ipcRenderer.invoke('terminal:history')
   },
+  // --- Terminal PTY Sessions (Kun-inspired) ---
+  terminalPty: {
+    create: (payload: { sessionId: string; cwd?: string; cols?: number; rows?: number }) =>
+      ipcRenderer.invoke('terminal:create', payload),
+    write: (payload: { sessionId: string; data: string }) =>
+      ipcRenderer.invoke('terminal:write', payload),
+    resize: (payload: { sessionId: string; cols: number; rows: number }) =>
+      ipcRenderer.invoke('terminal:resize', payload),
+    dispose: (sessionId: string) =>
+      ipcRenderer.invoke('terminal:dispose', sessionId),
+    onData: (handler: (payload: { sessionId: string; data: string }) => void) => {
+      const wrapped = (_event: any, payload: any) => handler(payload)
+      ipcRenderer.on('terminal:data', wrapped)
+      return () => ipcRenderer.removeListener('terminal:data', wrapped)
+    },
+    onExit: (handler: (payload: { sessionId: string; exitCode: number }) => void) => {
+      const wrapped = (_event: any, payload: any) => handler(payload)
+      ipcRenderer.on('terminal:exit', wrapped)
+      return () => ipcRenderer.removeListener('terminal:exit', wrapped)
+    }
+  },
   tasks: {
     delete: (taskId: string) => ipcRenderer.invoke('tasks:delete', taskId),
     clearCompleted: () => ipcRenderer.invoke('tasks:clearCompleted')
@@ -241,7 +266,11 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke('mcp:remove', id),
     setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => ipcRenderer.invoke('mcp:setEnabled', id, enabled, workspaceId),
     test: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:test', id, workspaceId),
-    listTools: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:listTools', id, workspaceId)
+    listTools: (id: string, workspaceId?: string | null) => ipcRenderer.invoke('mcp:listTools', id, workspaceId),
+    // MCP 系统级控制配置
+    getSystemConfig: () => ipcRenderer.invoke('mcp:getSystemConfig'),
+    setSystemConfig: (config: Record<string, unknown>) => ipcRenderer.invoke('mcp:setSystemConfig', config),
+    setSystemEnabled: (enabled: boolean) => ipcRenderer.invoke('mcp:setSystemEnabled', enabled)
   },
   worktrees: {
     list: (parentWorkspaceId?: string | null) => ipcRenderer.invoke('worktrees:list', parentWorkspaceId),
@@ -376,7 +405,11 @@ const api = {
   workspaceFiles: {
     list: (rootPath: string, max?: number) => ipcRenderer.invoke('workspaceFiles:list', rootPath, max),
     search: (rootPath: string, query: string, max?: number) => ipcRenderer.invoke('workspaceFiles:search', rootPath, query, max),
-    preview: (filePath: string, maxLines?: number) => ipcRenderer.invoke('workspaceFiles:preview', filePath, maxLines)
+    preview: (filePath: string, maxLines?: number) => ipcRenderer.invoke('workspaceFiles:preview', filePath, maxLines),
+    read: (workspaceRoot: string, relPath: string) => ipcRenderer.invoke('workspaceFiles:read', workspaceRoot, relPath),
+    write: (workspaceRoot: string, relPath: string, content: string) => ipcRenderer.invoke('workspaceFiles:write', workspaceRoot, relPath, content),
+    readImage: (workspaceRoot: string, relPath: string) => ipcRenderer.invoke('workspaceFiles:readImage', workspaceRoot, relPath),
+    listDirectory: (workspaceRoot: string, relPath: string) => ipcRenderer.invoke('workspaceFiles:listDirectory', workspaceRoot, relPath)
   },
   // --- GitHub Integration ---
   github: {
@@ -496,6 +529,41 @@ const api = {
   // --- P4-F8: Diagnostics Suite ---
   diagnosticsSuite: {
     run: () => ipcRenderer.invoke('diagnostics:runSuite')
+  },
+  // --- Agent Loop ---
+  agentLoop: {
+    getConfig: () => ipcRenderer.invoke('agentLoop:getConfig'),
+    getStatus: () => ipcRenderer.invoke('agentLoop:getStatus'),
+    getAgents: () => ipcRenderer.invoke('agentLoop:getAgents'),
+    refreshAgents: () => ipcRenderer.invoke('agentLoop:refreshAgents'),
+    getRouteInfo: (prompt: string) => ipcRenderer.invoke('agentLoop:getRouteInfo', prompt)
+  },
+  // --- SDD (Spec Driven Development) ---
+  sdd: {
+    createDraft: (workspaceRoot: string, title: string, template?: string) =>
+      ipcRenderer.invoke('sdd:createDraft', workspaceRoot, title, template),
+    getDraft: (workspaceRoot: string, draftId: string) =>
+      ipcRenderer.invoke('sdd:getDraft', workspaceRoot, draftId),
+    updateDraft: (workspaceRoot: string, draftId: string, content: string) =>
+      ipcRenderer.invoke('sdd:updateDraft', workspaceRoot, draftId, content),
+    updateDesignContext: (workspaceRoot: string, draftId: string, designContext: Record<string, unknown>) =>
+      ipcRenderer.invoke('sdd:updateDesignContext', workspaceRoot, draftId, designContext),
+    deleteDraft: (workspaceRoot: string, draftId: string) =>
+      ipcRenderer.invoke('sdd:deleteDraft', workspaceRoot, draftId),
+    listDrafts: (workspaceRoot: string) =>
+      ipcRenderer.invoke('sdd:listDrafts', workspaceRoot),
+    parseBlocks: (content: string) =>
+      ipcRenderer.invoke('sdd:parseBlocks', content),
+    parsePlanCovers: (planMarkdown: string) =>
+      ipcRenderer.invoke('sdd:parsePlanCovers', planMarkdown),
+    computeTrace: (workspaceRoot: string, draftId: string, planMarkdown?: string) =>
+      ipcRenderer.invoke('sdd:computeTrace', workspaceRoot, draftId, planMarkdown),
+    saveTrace: (workspaceRoot: string, draftId: string, trace: Record<string, unknown>) =>
+      ipcRenderer.invoke('sdd:saveTrace', workspaceRoot, draftId, trace),
+    getTrace: (workspaceRoot: string, draftId: string) =>
+      ipcRenderer.invoke('sdd:getTrace', workspaceRoot, draftId),
+    exists: (workspaceRoot: string, draftId: string) =>
+      ipcRenderer.invoke('sdd:exists', workspaceRoot, draftId),
   },
   // --- P1-2: Firefly State Machine ---
   firefly: {

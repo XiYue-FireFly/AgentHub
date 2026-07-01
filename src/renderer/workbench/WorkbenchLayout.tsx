@@ -21,6 +21,10 @@ import { CommandPalette, PaletteCommand } from './CommandPalette'
 import { ErrorBoundary } from '../ErrorBoundary'
 import { styledConfirm } from '../lib/confirm'
 import { GitBranchControl } from './GitBranchControl'
+import { FileTreePanel } from './FileTreePanel'
+import { SubagentDetailPanel } from './SubagentDetailPanel'
+import { SideConversationPanel } from './SideConversationPanel'
+import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
@@ -35,9 +39,9 @@ import {
   shortcutDisplay
 } from '../keyboard-shortcuts'
 
-type ViewMode = 'chat' | 'write' | 'tasks' | 'settings' | 'workflows'
-type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage'
-type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | null
+type ViewMode = 'chat' | 'write' | 'tasks' | 'requirements' | 'settings' | 'workflows'
+type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage' | 'agentLoop' | 'requirements'
+type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | 'files' | 'side-chat' | null
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
 type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 
@@ -127,6 +131,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [projectDraft, setProjectDraft] = useState({ name: '', rootPath: '' })
   const [projectError, setProjectError] = useState<string | null>(null)
   const [rightPanel, setRightPanel] = useState<RightPanel>(null)
+  const [selectedAgentDetail, setSelectedAgentDetail] = useState<{ agentId: string; turnId: string } | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
 
   useEffect(() => { setSendError(null) }, [view])
@@ -1317,6 +1322,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
             </ErrorBoundary>
           )}
 
+          {view === 'requirements' && (
+            <ErrorBoundary label="Requirements">
+            <div className="wb-scroll-surface">
+              <SddRequirementsList workspaceRoot={activeWorkspace?.rootPath ?? null} />
+            </div>
+            </ErrorBoundary>
+          )}
+
           {view === 'settings' && (
             <ErrorBoundary label="Settings">
             <div className="wb-scroll-surface wb-settings-surface">
@@ -1370,6 +1383,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
               onClose={() => setRightPanel(null)}
             >
               {rightPanel === 'runs' ? (
+                selectedAgentDetail ? (
+                  <SubagentDetailPanel
+                    agentId={selectedAgentDetail.agentId}
+                    turnId={selectedAgentDetail.turnId}
+                    events={activeEvents}
+                    onClose={() => setSelectedAgentDetail(null)}
+                  />
+                ) : (
                 <RunTimeline
                   events={activeEvents}
                   turns={activeTurns}
@@ -1384,6 +1405,25 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
                   onClose={() => setRightPanel(null)}
                   terminalRuns={terminalRuns}
                   setTerminalRuns={setTerminalRuns}
+                  onSelectAgent={(agentId, turnId) => setSelectedAgentDetail({ agentId, turnId })}
+                />
+                )
+              ) : rightPanel === 'files' ? (
+                <FileTreePanel
+                  workspaceRoot={workspaceId ? activeWorkspace?.rootPath ?? null : null}
+                  workspaceId={workspaceId}
+                  onClose={() => setRightPanel(null)}
+                  onFileSelect={(path) => {
+                    // Open file in external editor
+                    window.electronAPI.app.openPath({ path, target: 'editor' }).catch(() => {})
+                  }}
+                />
+              ) : rightPanel === 'side-chat' ? (
+                <SideConversationPanel
+                  parentThreadId={activeThreadId}
+                  parentTurnId={activeTurns.length > 0 ? activeTurns[activeTurns.length - 1].id : null}
+                  workspaceId={workspaceId}
+                  onClose={() => setRightPanel(null)}
                 />
               ) : rightPanel === 'terminal' ? (
                 <TerminalPanel
@@ -1721,6 +1761,8 @@ function WorkbenchChatTopBar({
   const todoRef = useRef<HTMLDivElement | null>(null)
   const openTodos = todos.filter(todo => todo.status !== 'completed')
   const completedTodos = todos.filter(todo => todo.status === 'completed')
+  const inProgressTodos = todos.filter(todo => todo.status === 'in_progress')
+  const pendingCount = Math.max(0, todos.length - completedTodos.length - inProgressTodos.length)
 
   useEffect(() => {
     if (!todoOpen) return
@@ -1780,6 +1822,22 @@ function WorkbenchChatTopBar({
                 </div>
                 <button className="ah-btn sm" type="button" onClick={openTasks}>{tr('完整任务页', 'Task page')}</button>
               </div>
+              {todos.length > 0 && (
+                <div className="wb-top-todo-stats">
+                  <div className="wb-top-todo-stat">
+                    <strong>{pendingCount}</strong>
+                    <span>{tr('待处理', 'Pending')}</span>
+                  </div>
+                  <div className="wb-top-todo-stat">
+                    <strong>{inProgressTodos.length}</strong>
+                    <span>{tr('进行中', 'In Progress')}</span>
+                  </div>
+                  <div className="wb-top-todo-stat">
+                    <strong>{completedTodos.length}</strong>
+                    <span>{tr('已完成', 'Done')}</span>
+                  </div>
+                </div>
+              )}
               <div className="wb-top-todo-list">
                 {todos.length === 0 && (
                   <div className="wb-top-todo-empty">
@@ -1836,15 +1894,29 @@ function TodoPopoverRow({
       >
         {todo.status === 'completed' && <Icon d={IC.check} size={12} />}
       </button>
-      <button
-        className="wb-top-todo-content"
-        type="button"
-        onClick={() => onStatus(todo, todo.status === 'in_progress' ? 'pending' : 'in_progress')}
-        title={todo.content}
-      >
-        <span>{todo.content}</span>
-        <small>{todo.status === 'in_progress' ? tr('进行中', 'In progress') : todo.status === 'completed' ? tr('已完成', 'Done') : tr('待处理', 'Pending')}</small>
-      </button>
+      <div className="wb-top-todo-body">
+        <button
+          className="wb-top-todo-content"
+          type="button"
+          onClick={() => onStatus(todo, todo.status === 'in_progress' ? 'pending' : 'in_progress')}
+          title={todo.content}
+        >
+          <span>{todo.content}</span>
+        </button>
+        <div className="wb-top-todo-status-btns">
+          {(['pending', 'in_progress', 'completed'] as ThreadTodoStatus[]).map(status => (
+            <button
+              key={status}
+              className={'wb-top-todo-status-btn' + (todo.status === status ? ' active' : '')}
+              type="button"
+              onClick={() => onStatus(todo, status)}
+              title={status === 'pending' ? tr('待处理', 'Pending') : status === 'in_progress' ? tr('进行中', 'In progress') : tr('已完成', 'Done')}
+            >
+              {status === 'pending' ? tr('待办', 'Todo') : status === 'in_progress' ? tr('进行', 'WIP') : tr('完成', 'Done')}
+            </button>
+          ))}
+        </div>
+      </div>
       <button className="wb-top-todo-delete" type="button" onClick={() => onDelete(todo.id)} title={tr('删除', 'Delete')}>
         <Icon d={IC.x} size={12} />
       </button>
@@ -1963,6 +2035,7 @@ function WorkbenchBottomDock({
 function inspectorItems(workspaceId: string | null): Array<{ id: Exclude<RightPanel, null>; label: string; icon: React.ReactNode; disabled: boolean }> {
   return [
     { id: 'runs', label: tr('运行', 'Runs'), icon: IC.tasks, disabled: false },
+    { id: 'files', label: tr('文件', 'Files'), icon: IC.file, disabled: !workspaceId },
     { id: 'git', label: 'Git', icon: IC.git, disabled: !workspaceId },
     { id: 'worktrees', label: tr('工作树', 'Worktrees'), icon: IC.folder, disabled: !workspaceId },
     { id: 'browser', label: tr('浏览器', 'Browser'), icon: IC.search, disabled: false }
@@ -1971,6 +2044,8 @@ function inspectorItems(workspaceId: string | null): Array<{ id: Exclude<RightPa
 
 function ToolPanelBar({ activePanel, setPanel, workspaceId, iconOnly = false }: { activePanel: RightPanel; setPanel: (panel: RightPanel) => void; workspaceId: string | null; iconOnly?: boolean }) {
   const items: Array<{ id: Exclude<RightPanel, null | 'runs'>; label: string; icon: React.ReactNode; requiresWorkspace?: boolean }> = [
+    { id: 'files', label: tr('文件', 'Files'), icon: IC.file, requiresWorkspace: true },
+    { id: 'side-chat', label: tr('旁支对话', 'Side Chat'), icon: IC.chat },
     { id: 'git', label: 'Git', icon: IC.git, requiresWorkspace: true },
     { id: 'worktrees', label: tr('工作树', 'Worktrees'), icon: IC.folder, requiresWorkspace: true },
     { id: 'browser', label: tr('浏览器', 'Browser'), icon: IC.search }
@@ -2047,7 +2122,7 @@ function WorkbenchToolPanel({
   onBrowserUrlConsumed,
   onAttachBrowserCapture
 }: {
-  panel: Exclude<RightPanel, null | 'runs'>
+  panel: Exclude<RightPanel, null | 'runs' | 'files' | 'terminal' | 'side-chat'>
   workspaceId: string | null
   onClose: () => void
   browserUrl?: string | null
@@ -2212,7 +2287,7 @@ function BrowserPanelV2({
           canGoBack: !!webview.canGoBack?.(),
           canGoForward: !!webview.canGoForward?.()
         })
-      } catch {}
+      } catch { /* webview API 调用可能失败，忽略 */ }
     }
     const start = () => { setLoading(true); setLoadError(null); syncNav() }
     const stop = () => {
@@ -2221,7 +2296,7 @@ function BrowserPanelV2({
       try {
         const currentUrl = webview.getURL?.()
         if (currentUrl) setUrl(currentUrl)
-      } catch {}
+      } catch { /* webview API 调用可能失败，忽略 */ }
     }
     const fail = (event: any) => {
       setLoading(false)

@@ -1,9 +1,9 @@
 import { AGENT_META } from '../glass/meta'
 
 export function isUsableLocalAgent(agent: LocalAgentStatus): boolean {
-  if (!agent.agentId || !agent.configured) return false
+  if (!agent.agentId || (!agent.configured && !agent.installed)) return false
   if (agent.loginState === 'needs-login' || agent.loginState === 'not-installed') return false
-  if ((agent.protocol === 'stdio-plain' || agent.protocol === 'acp') && !agent.binary?.trim()) return false
+  if (agent.configured && (agent.protocol === 'stdio-plain' || agent.protocol === 'acp') && !agent.binary?.trim()) return false
   if (agent.manualOnly && agent.requiresPromptArg && agent.protocol !== 'acp' && !/\{prompt\}/i.test(agent.args || '')) return false
   return true
 }

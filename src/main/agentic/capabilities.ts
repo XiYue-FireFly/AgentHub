@@ -17,9 +17,9 @@ import { getProviderManager } from '../providers/manager'
 import { getAgenticConfig } from './config'
 import { AGENTS, agentName } from '../hub/agents'
 
-export type AgentCapability = 'fs-read' | 'fs-write' | 'exec' | 'agentic-loop' | 'skills'
+export type AgentCapability = 'fs-read' | 'fs-write' | 'exec' | 'agentic-loop' | 'skills' | 'system-control'
 
-export const ALL_CAPABILITIES: AgentCapability[] = ['fs-read', 'fs-write', 'exec', 'agentic-loop', 'skills']
+export const ALL_CAPABILITIES: AgentCapability[] = ['fs-read', 'fs-write', 'exec', 'agentic-loop', 'skills', 'system-control']
 
 /** codex/claude：stdio 直连时走各自 CLI 的原生 agentic */
 const NATIVE_CLI_AGENTS = new Set(['codex', 'claude'])
@@ -41,6 +41,10 @@ export function capabilitiesFor(protocol: 'http' | 'stdio-plain' | 'acp', httpAg
   // stdio-plain / acp 天然在工作区动手；http 需开启 executor（agentic）才有
   if (protocol === 'stdio-plain' || protocol === 'acp' || httpAgentic) {
     caps.push('fs-read', 'fs-write', 'exec', 'agentic-loop')
+  }
+  // system-control 能力：MCP 系统级控制
+  if (protocol === 'acp' || httpAgentic) {
+    caps.push('system-control')
   }
   return caps
 }

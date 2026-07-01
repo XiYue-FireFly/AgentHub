@@ -24,7 +24,7 @@ export function buildAgentOptions(localAgents: LocalAgentStatus[] = []): AgentOp
       label: local?.label || (agentId === "minimax-code" ? "OpenCode" : meta?.name || agentId),
       installed,
       configured,
-      status: configured ? "idle" : "off"
+      status: configured || installed ? "idle" : "off"
     }
   })
 }

@@ -22,10 +22,11 @@ import { ChatCompletionMessage } from "./providers/types"
 import { getWorkbenchRuntimeStore } from "./runtime/store"
 import { DispatchPreset, ModelSelection, SchedulePreview, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
 import { getCachedLocalAgentStatuses } from "./runtime/local-agents"
-import { resolveGuardApproval, cancelGuardApprovalsForTurn } from "./runtime/guard-approval-service"
+import { resolveGuardApproval, cancelGuardApprovalsForTurn, clearAllGuardApprovals } from "./runtime/guard-approval-service"
 import { getWorkbenchGoal, promptWithGoalContext } from "./runtime/goals"
 import { buildAgentOptions } from "./runtime/agent-options"
 import { getTerminalRuntime } from "./runtime/terminal"
+import { disposeAllTerminalSessions } from "./ipc/terminal-pty-ipc"
 import { upsertThreadTodo } from "./runtime/todos"
 import { buildContextProjection } from "./runtime/context-ledger"
 import { optimizePromptForDispatch } from "./runtime/prompt-optimizer"
@@ -922,28 +923,35 @@ app.whenReady().then(async () => {
   providerMgr.unlockSecrets()   // app ready 后解密落盘的 apiKey 到内存（safeStorage 此时可用）
   createWindow()
   createTray()
+  let hubInitOk = false
   try {
     await initHub()
+    hubInitOk = true
   } catch (e: any) {
     console.error('[AgentHub] initHub failed:', e?.message || String(e))
   }
 
   // Register domain-specific IPC handlers (extracted from monolithic index.ts)
-  registerAllIpcHandlers({
-    memory: memory,
-    providerMgr: providerMgr,
-    registerAgentsFromBindings: registerAgentsFromBindings,
-    resolveAppVersionFromMain,
-    getWorkspaceManager,
-    store,
-    registry,
-    runtimeStore,
-    dispatcher,
-    hub,
-    router,
-    proxy,
-    getMainWindow: () => mainWindow
-  })
+  // 如果 initHub 失败导致 dispatcher 为 null，跳过 IPC 注册以避免下游 crash
+  if (!hubInitOk || !dispatcher) {
+    console.error('[AgentHub] Skipping IPC registration: dispatcher not initialized (initHub failed)')
+  } else {
+    registerAllIpcHandlers({
+      memory: memory,
+      providerMgr: providerMgr,
+      registerAgentsFromBindings: registerAgentsFromBindings,
+      resolveAppVersionFromMain,
+      getWorkspaceManager,
+      store,
+      registry,
+      runtimeStore,
+      dispatcher,
+      hub,
+      router,
+      proxy,
+      getMainWindow: () => mainWindow
+    })
+  }
 
   if (pendingDeepLink) {
     mainWindow?.webContents.once("did-finish-load", () => {
@@ -980,6 +988,10 @@ app.on("will-quit", (event) => {
   const cleanup = async (): Promise<void> => {
     // Kill any still-running terminal children so we don't orphan shell processes.
     try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
+    // 清理所有 PTY 终端会话
+    try { disposeAllTerminalSessions() } catch { /* non-critical */ }
+    // 清理所有待处理的 guard approvals，避免 Promise 和 timer 泄漏
+    try { clearAllGuardApprovals() } catch { /* non-critical */ }
     // registry.stopAll 可能卡在 stdio agent 不响应；加超时防止阻塞退出
     await Promise.race([
       registry.stopAll().catch(() => {}),

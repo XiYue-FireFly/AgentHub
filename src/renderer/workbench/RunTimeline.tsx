@@ -19,7 +19,8 @@ export function RunTimeline({
   openSetup,
   onClose,
   terminalRuns,
-  setTerminalRuns
+  setTerminalRuns,
+  onSelectAgent
 }: {
   events: RuntimeEvent[]
   turns: WorkbenchTurn[]
@@ -34,6 +35,7 @@ export function RunTimeline({
   onClose: () => void
   terminalRuns?: TerminalRun[]
   setTerminalRuns?: (runs: TerminalRun[]) => void
+  onSelectAgent?: (agentId: string, turnId: string) => void
 }) {
   const schedule = currentSchedule || schedules.find(s => s.preset === mode)
   const timelineEvents = events.filter(event => event.kind !== 'memory:candidate')

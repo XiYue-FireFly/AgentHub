@@ -73,13 +73,14 @@ const SKILL_CATEGORIES: Array<{ id: SkillCategoryId; zh: string; en: string; hin
   { id: 'general', zh: '通用', en: 'General', hint: '未归类或通用技能' }
 ]
 
-const CAP_ORDER = ['fs-read', 'fs-write', 'exec', 'agentic-loop', 'skills'] as const
+const CAP_ORDER = ['fs-read', 'fs-write', 'exec', 'agentic-loop', 'skills', 'system-control'] as const
 const CAP_LABEL: Record<string, { zh: string; en: string }> = {
   'fs-read': { zh: '读文件', en: 'Read files' },
   'fs-write': { zh: '写文件', en: 'Write files' },
   'exec': { zh: '执行命令', en: 'Run commands' },
   'agentic-loop': { zh: '多步自驱', en: 'Agentic loop' },
-  'skills': { zh: '技能', en: 'Skills' }
+  'skills': { zh: '技能', en: 'Skills' },
+  'system-control': { zh: '系统控制', en: 'System control' }
 }
 
 const api = () => (window as any).electronAPI
