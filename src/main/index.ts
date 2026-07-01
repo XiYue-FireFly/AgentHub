@@ -21,7 +21,6 @@ import { ChatCompletionMessage } from "./providers/types"
 // --- /AgentHub skills + native agentic ---
 import { getWorkbenchRuntimeStore } from "./runtime/store"
 import { DispatchPreset, ModelSelection, SchedulePreview, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
-import { fireflyFiveRoleTemplate } from "./runtime/schedules"
 import { getCachedLocalAgentStatuses } from "./runtime/local-agents"
 import { resolveGuardApproval, cancelGuardApprovalsForTurn } from "./runtime/guard-approval-service"
 import { getWorkbenchGoal, promptWithGoalContext } from "./runtime/goals"
@@ -29,6 +28,8 @@ import { buildAgentOptions } from "./runtime/agent-options"
 import { getTerminalRuntime } from "./runtime/terminal"
 import { upsertThreadTodo } from "./runtime/todos"
 import { buildContextProjection } from "./runtime/context-ledger"
+import { optimizePromptForDispatch } from "./runtime/prompt-optimizer"
+import { applyRouteDecisionToPlan, planDispatch } from "./runtime/dispatch-planner"
 // keyboard-shortcuts imports moved to src/main/ipc/workflow-ipc.ts
 // diagnostics, backup imports moved to src/main/ipc/workflow-ipc.ts
 // notifications, onboarding imports moved to src/main/ipc/workflow-ipc.ts
@@ -558,14 +559,6 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
   const localDirect = !!directTarget
   const directRun = providerDirect || localDirect
   const turnModelSelection = providerDirect ? payload.modelSelection : directTarget ? undefined : payload.modelSelection
-  const effectiveMode = directRun ? "auto" : mode
-  const dispatchMode = directRun ? "auto" : runtimeStore.dispatcherMode(mode)
-  const fireflyAgentIds = !directRun && mode === "firefly-custom" ? dispatchableLocalAgentIds() : []
-  const scheduleForTurn = directRun
-    ? undefined
-    : mode === "firefly-custom"
-    ? payload.customSchedule || fireflyFiveRoleTemplate(fireflyAgentIds)
-    : payload.customSchedule
   const existingThread = payload.threadId ? runtimeStore.getThread(payload.threadId) : undefined
   const workspaceId = existingThread
     ? existingThread.workspaceId
@@ -573,6 +566,24 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
   const attachments = materializeAttachments(Array.isArray(payload.attachments) ? payload.attachments : [], workspaceId)
   const activeGoal = existingThread ? getWorkbenchGoal(existingThread.id) : null
   const dispatchUserPrompt = promptWithGoalContext(payload.prompt, activeGoal)
+  const promptOptimization = optimizePromptForDispatch({
+    prompt: dispatchUserPrompt,
+    workspaceRoot: workspaceId ? getWorkspaceManager().getById(workspaceId)?.rootPath : null,
+    attachments
+  })
+  const dispatchPlanBase = planDispatch({
+    requestedMode: mode,
+    directRun,
+    directTarget,
+    customSchedule: payload.customSchedule,
+    availableAgentIds: dispatchableLocalAgentIds(),
+    attachments,
+    optimization: promptOptimization
+  })
+  const effectiveMode = dispatchPlanBase.effectiveMode
+  const dispatchMode = dispatchPlanBase.dispatchMode
+  const scheduleForTurn = dispatchPlanBase.schedule
+  const optimizedDispatchUserPrompt = promptOptimization.optimizedPrompt
   const { thread, turn } = runtimeStore.createTurn({
     threadId: payload.threadId ?? null,
     workspaceId,
@@ -585,19 +596,39 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
     contextProjection: buildContextProjection({
       thread: existingThread,
       workspaceId,
-      prompt: payload.prompt,
+      prompt: optimizedDispatchUserPrompt,
       attachments,
       snapshot: runtimeStore.snapshot(undefined),
       events: existingThread ? runtimeStore.eventsSince(existingThread.id, 0) : [],
-      memories: memory().selectContextEntries(payload.prompt, { limit: 8, tokenBudget: 3_000 })
+      memories: memory().selectContextEntries(optimizedDispatchUserPrompt, { limit: 8, tokenBudget: 3_000 }),
+      pinnedBlocks: [promptOptimization.contextBlock]
     }),
     customSchedule: scheduleForTurn
   })
-  const routeDecision = !directRun && mode === "firefly-custom"
-    ? makeRouteDecision(thread.id, turn.id, dispatchUserPrompt, fireflyAgentIds)
+  runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "prompt-optimizer", {
+    intent: promptOptimization.intent,
+    matchedSkills: promptOptimization.matchedSkills,
+    matchedPlugins: promptOptimization.matchedPlugins
+  })
+  const routeDecision = !directRun && dispatchPlanBase.routeAgentIds?.length
+    ? makeRouteDecision(thread.id, turn.id, optimizedDispatchUserPrompt, dispatchPlanBase.routeAgentIds)
     : undefined
-  const messages = modelMessagesForTurn(thread.id, dispatchUserPrompt, attachments)
-  const dispatchPrompt = messages[messages.length - 1]?.content || promptWithAttachments(dispatchUserPrompt, attachments)
+  const dispatchPlan = applyRouteDecisionToPlan(dispatchPlanBase, routeDecision)
+  runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "dispatch-planner", {
+    strategy: dispatchPlan.strategy,
+    requestedMode: mode,
+    effectiveMode: dispatchPlan.effectiveMode,
+    dispatchMode: dispatchPlan.dispatchMode,
+    schedule: dispatchPlan.schedule ? {
+      preset: dispatchPlan.schedule.preset,
+      label: dispatchPlan.schedule.label,
+      steps: dispatchPlan.schedule.steps.map(step => ({ id: step.id, role: step.role, agentId: step.agentId, dependsOn: step.dependsOn }))
+    } : undefined,
+    reasons: dispatchPlan.reasons,
+    selectedAgentId: routeDecision?.selectedAgentId
+  })
+  const messages = modelMessagesForTurn(thread.id, optimizedDispatchUserPrompt, attachments)
+  const dispatchPrompt = messages[messages.length - 1]?.content || promptWithAttachments(optimizedDispatchUserPrompt, attachments)
   const runner = providerDirect && turnModelSelection
     ? activeDispatcher.dispatchProviderDirect(
       dispatchPrompt,
@@ -704,30 +735,58 @@ ipcMain.handle("turns:retry", async (_event, turnId: string) => {
   const retryProviderDirect = !retryTargetAgent && isProviderDirectSelection(turn.modelSelection)
   const retryDirectRun = retryProviderDirect || !!retryTargetAgent
   const retryModelSelection = retryProviderDirect ? turn.modelSelection : retryTargetAgent ? undefined : turn.modelSelection
+  const retryUserPrompt = promptWithGoalContext(turn.prompt, getWorkbenchGoal(thread.id))
+  const retryOptimization = optimizePromptForDispatch({
+    prompt: retryUserPrompt,
+    workspaceRoot: thread.workspaceId ? getWorkspaceManager().getById(thread.workspaceId)?.rootPath : null,
+    attachments: turn.attachments ?? []
+  })
+  const retryPlanBase = planDispatch({
+    requestedMode: turn.mode,
+    directRun: retryDirectRun,
+    directTarget: retryTargetAgent,
+    customSchedule: turn.customSchedule,
+    availableAgentIds: dispatchableLocalAgentIds(),
+    attachments: turn.attachments ?? [],
+    optimization: retryOptimization
+  })
   const created = runtimeStore.createTurn({
     threadId: thread.id,
     workspaceId: thread.workspaceId,
     prompt: turn.prompt,
-    mode: retryDirectRun ? "auto" : turn.mode,
+    mode: retryPlanBase.effectiveMode,
     targetAgent: retryTargetAgent || null,
     attachments: turn.attachments ?? [],
     modelSelection: retryModelSelection,
     thinking: turn.thinking,
     contextProjection: turn.contextProjection,
-    customSchedule: retryDirectRun ? undefined : turn.customSchedule
+    customSchedule: retryPlanBase.schedule
   })
-  const retryUserPrompt = promptWithGoalContext(turn.prompt, getWorkbenchGoal(thread.id))
-  const retryMessages = modelMessagesForTurn(thread.id, retryUserPrompt, turn.attachments, turn.id)
-  const retryPrompt = retryMessages[retryMessages.length - 1]?.content || promptWithAttachments(retryUserPrompt, turn.attachments)
-  const retryFireflyAgentIds = !retryDirectRun && turn.mode === "firefly-custom" ? dispatchableLocalAgentIds() : []
-  const retrySchedule = retryDirectRun
-    ? undefined
-    : turn.mode === "firefly-custom"
-    ? turn.customSchedule || fireflyFiveRoleTemplate(retryFireflyAgentIds)
-    : turn.customSchedule
-  const retryRouteDecision = !retryDirectRun && turn.mode === "firefly-custom"
-    ? makeRouteDecision(thread.id, created.turn.id, retryUserPrompt, retryFireflyAgentIds)
+  runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "prompt-optimizer", {
+    intent: retryOptimization.intent,
+    matchedSkills: retryOptimization.matchedSkills,
+    matchedPlugins: retryOptimization.matchedPlugins
+  })
+  const retryRouteDecision = !retryDirectRun && retryPlanBase.routeAgentIds?.length
+    ? makeRouteDecision(thread.id, created.turn.id, retryOptimization.optimizedPrompt, retryPlanBase.routeAgentIds)
     : undefined
+  const retryPlan = applyRouteDecisionToPlan(retryPlanBase, retryRouteDecision)
+  runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "dispatch-planner", {
+    strategy: retryPlan.strategy,
+    requestedMode: turn.mode,
+    effectiveMode: retryPlan.effectiveMode,
+    dispatchMode: retryPlan.dispatchMode,
+    schedule: retryPlan.schedule ? {
+      preset: retryPlan.schedule.preset,
+      label: retryPlan.schedule.label,
+      steps: retryPlan.schedule.steps.map(step => ({ id: step.id, role: step.role, agentId: step.agentId, dependsOn: step.dependsOn }))
+    } : undefined,
+    reasons: retryPlan.reasons,
+    selectedAgentId: retryRouteDecision?.selectedAgentId
+  })
+  const retryMessages = modelMessagesForTurn(thread.id, retryOptimization.optimizedPrompt, turn.attachments, turn.id)
+  const retryPrompt = retryMessages[retryMessages.length - 1]?.content || promptWithAttachments(retryOptimization.optimizedPrompt, turn.attachments)
+  const retrySchedule = retryPlan.schedule
   const retryRunner = retryProviderDirect && retryModelSelection
     ? activeDispatcher.dispatchProviderDirect(retryPrompt, retryModelSelection, {
       workspaceId: thread.workspaceId,
@@ -754,7 +813,7 @@ ipcMain.handle("turns:retry", async (_event, turnId: string) => {
         recentUserMessages: recentUserPrompts(thread.id, created.turn.id),
         emitMemoryCandidates
       })
-    : activeDispatcher.dispatch(retryPrompt, retryTargetAgent ? "auto" : runtimeStore.dispatcherMode(turn.mode), retryTargetAgent, {
+    : activeDispatcher.dispatch(retryPrompt, retryTargetAgent ? "auto" : retryPlan.dispatchMode, retryTargetAgent, {
       workspaceId: thread.workspaceId,
       turnId: created.turn.id,
       threadId: thread.id,

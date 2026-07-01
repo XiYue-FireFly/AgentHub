@@ -62,23 +62,29 @@ function manualAgentDispatchReady(agent: { manualOnly?: boolean; requiresPromptA
 }
 
 function readVersion(binary?: string, args: string[] = ["--version"]): string | undefined {
-  if (!binary) return undefined
+  const result = probeBinary(binary, args)
+  return result.output
+}
+
+function probeBinary(binary?: string, args: string[] = ["--version"]): { available: boolean; output?: string; reason?: "empty" | "unsafe-command" | "missing" | "failed" } {
+  if (!binary) return { available: false, reason: "empty" }
 
   const cmd = binary.trim()
   const safeCommands = ['claude', 'gemini', 'codebuddy', 'antigravity', 'mimocode', 'zcode', 'reasonix', 'npx', 'npm', 'node', 'python', 'python3']
 
   if (!isAbsolute(cmd) && !safeCommands.includes(cmd.toLowerCase())) {
-    return undefined
+    return { available: false, reason: "unsafe-command" }
   }
 
   if (isAbsolute(cmd) && !existsSync(cmd)) {
-    return undefined
+    return { available: false, reason: "missing" }
   }
 
   try {
-    return execFileSync(cmd, args, { encoding: "utf-8", timeout: 2500, windowsHide: true }).trim().split(/\r?\n/)[0]
+    const output = execFileSync(cmd, args, { encoding: "utf-8", timeout: 2500, windowsHide: true }).trim().split(/\r?\n/)[0]
+    return { available: true, output }
   } catch {
-    return undefined
+    return { available: false, reason: "failed" }
   }
 }
 
@@ -91,12 +97,22 @@ export function detectLocalAgentStatuses(): LocalAgentStatus[] {
     const binary = (binding?.binary || candidates[0]?.path || "").trim() || undefined
     const isLocalProtocol = binding?.protocol === "stdio-plain" || binding?.protocol === "acp"
     const manualDispatchReady = manualAgentDispatchReady(agent, binding)
-    const userConfigured = !!binding && isLocalProtocol && !!binding.binary && manualDispatchReady
+    const configuredProbe = binding?.binary ? probeBinary(binding.binary, agent.versionArgs) : undefined
+    const configuredBinaryAvailable = configuredProbe?.available === true
+    const userConfigured = !!binding && isLocalProtocol && !!binding.binary && manualDispatchReady && configuredBinaryAvailable
     const candidateInstalled = !agent.manualOnly && candidates.some(candidate => candidate.verification !== "manual")
     const installed = candidateInstalled || userConfigured
-    const configured = userConfigured || (!agent.manualOnly && !!binding && isLocalProtocol && candidates.length > 0)
+    const configured = userConfigured || (!agent.manualOnly && !!binding && isLocalProtocol && !binding.binary && candidates.length > 0)
     const agentNote = "note" in agent && typeof agent.note === "string" ? agent.note : undefined
     const candidateNote = candidates.find(candidate => typeof candidate.note === "string")?.note
+    const staleConfiguredBinary = !!binding && isLocalProtocol && !!binding.binary && !configuredBinaryAvailable
+    const diagnostic = staleConfiguredBinary
+      ? {
+          code: configuredProbe?.reason === "missing" ? "configured-binary-missing" : "configured-binary-unavailable",
+          message: "Configured executable was not found or no longer responds. Reconfigure this local agent.",
+          action: "reconfigure"
+        }
+      : undefined
     return {
       agentId: agent.agentId,
       label: agent.label,
@@ -105,16 +121,17 @@ export function detectLocalAgentStatuses(): LocalAgentStatus[] {
       protocol: binding?.protocol || (binding ? "http" : undefined),
       binary,
       args: binding?.args,
-      version: installed ? readVersion(binary, agent.versionArgs) : undefined,
+      version: installed ? configuredProbe?.output || readVersion(binary, agent.versionArgs) : undefined,
       manualOnly: agent.manualOnly,
       candidateKind: "candidateKind" in agent ? agent.candidateKind : undefined,
       requiresPromptArg: "requiresPromptArg" in agent ? agent.requiresPromptArg : false,
-      note: agent.manualOnly && binding?.binary && !manualDispatchReady
+      note: diagnostic?.message || (agent.manualOnly && binding?.binary && !manualDispatchReady
         ? "This desktop/manual candidate needs non-interactive args with {prompt}, or ACP protocol, before it can be dispatched."
-        : agentNote || candidateNote,
+        : agentNote || candidateNote),
       loginState: installed ? "unknown" : "not-installed",
       candidates,
-      workspaceSession: "per-dispatch"
+      workspaceSession: "per-dispatch",
+      diagnostic
     }
   })
 }

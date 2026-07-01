@@ -1,6 +1,19 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
 
 const bindings: any[] = []
+const existingBinaries = new Set(["C:/bin/codex.cmd", "C:/bin/opencode.exe", "C:/bin/hermes.exe", "C:/bin/gemini.cmd", "C:/bin/codebuddy.exe", "C:/bin/antigravity.exe"])
+const failingBinaries = new Set<string>()
+
+vi.mock("node:fs", () => ({
+  existsSync: (path: string) => existingBinaries.has(path)
+}))
+
+vi.mock("node:child_process", () => ({
+  execFileSync: (binary: string) => {
+    if (failingBinaries.has(binary)) throw new Error("not available")
+    return `${binary} 1.0.0\n`
+  }
+}))
 
 vi.mock("../../hub/agent-locator", () => ({
   locateAgentCandidates: () => ({
@@ -28,6 +41,14 @@ vi.mock("../../providers/manager", () => ({
 describe("local agent statuses", () => {
   beforeEach(() => {
     bindings.length = 0
+    existingBinaries.clear()
+    existingBinaries.add("C:/bin/codex.cmd")
+    existingBinaries.add("C:/bin/opencode.exe")
+    existingBinaries.add("C:/bin/hermes.exe")
+    existingBinaries.add("C:/bin/gemini.cmd")
+    existingBinaries.add("C:/bin/codebuddy.exe")
+    existingBinaries.add("C:/bin/antigravity.exe")
+    failingBinaries.clear()
   })
 
   it("reports installed and configured local agents", async () => {
@@ -134,5 +155,31 @@ describe("local agent statuses", () => {
     expect(cached.find(s => s.agentId === "gemini")?.configured).toBe(first.find(s => s.agentId === "gemini")?.configured)
     const refreshed = mod.refreshLocalAgentStatusCache()
     expect(refreshed.find(s => s.agentId === "gemini")?.configured).toBe(true)
+  })
+
+  it("marks stale configured local binaries unavailable", async () => {
+    existingBinaries.delete("C:/bin/gemini.cmd")
+    bindings.push({ agentId: "gemini", providerId: "local-cli", modelId: "local", protocol: "stdio-plain", binary: "C:/bin/gemini.cmd" })
+    const { detectLocalAgentStatuses, isUsableLocalAgentStatus } = await import("../local-agents")
+
+    const gemini = detectLocalAgentStatuses().find(s => s.agentId === "gemini")
+
+    expect(gemini?.installed).toBe(false)
+    expect(gemini?.configured).toBe(false)
+    expect(gemini?.loginState).toBe("not-installed")
+    expect(gemini?.diagnostic?.code).toBe("configured-binary-missing")
+    expect(isUsableLocalAgentStatus(gemini!)).toBe(false)
+  })
+
+  it("marks configured commands unavailable when version probing fails", async () => {
+    failingBinaries.add("gemini")
+    bindings.push({ agentId: "gemini", providerId: "local-cli", modelId: "local", protocol: "stdio-plain", binary: "gemini" })
+    const { detectLocalAgentStatuses } = await import("../local-agents")
+
+    const gemini = detectLocalAgentStatuses().find(s => s.agentId === "gemini")
+
+    expect(gemini?.installed).toBe(false)
+    expect(gemini?.configured).toBe(false)
+    expect(gemini?.diagnostic?.code).toBe("configured-binary-unavailable")
   })
 })

@@ -10037,6 +10037,27 @@ button, input, textarea, select { letter-spacing: 0; }
   color: var(--wb-muted);
 }
 
+.wb-window-actions {
+  align-items: center;
+}
+
+.wb-window-actions button,
+.wb-timeline-head-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0;
+  line-height: 1;
+}
+
+.wb-window-actions button svg,
+.wb-timeline-head-actions button svg {
+  display: block;
+  flex: none;
+  margin: 0;
+}
+
 .wb-menu:hover,
 .wb-menu.active,
 .wb-window-actions button:hover,
