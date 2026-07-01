@@ -90,7 +90,7 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
     }
     setChecking(current => ({ ...current, [providerId]: true }))
     try {
-      const result = await window.electronAPI.providers.fetchModels(providerId, { baseUrl, apiKey, kind: provider.kind })
+      const result = await window.electronAPI.providers.fetchModels(providerId, { baseUrl, apiKey: providerRequestApiKey(provider), kind: provider.kind })
       const nextProviders: ProviderDef[] = result.config?.providers || []
       const nextProvider = nextProviders.find(provider => provider.id === providerId)
       if (nextProvider?.models?.length) {
@@ -117,6 +117,24 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
     return (keys[provider.id] ?? provider.apiKey ?? '').trim()
   }
 
+  const isMaskedProviderApiKey = (value: string): boolean => {
+    const trimmed = value.trim()
+    return /^[•*]+$/.test(trimmed) || trimmed.includes('鈥⑩€')
+  }
+
+  const providerRequestApiKey = (provider: ProviderDef): string | undefined => {
+    const pending = keys[provider.id]?.trim()
+    if (pending && !isMaskedProviderApiKey(pending)) return pending
+    const saved = (provider.apiKey || '').trim()
+    return saved && !isMaskedProviderApiKey(saved) ? saved : undefined
+  }
+
+  const commitProviderApiKey = (provider: ProviderDef) => {
+    const next = keys[provider.id] ?? provider.apiKey ?? ''
+    if (isMaskedProviderApiKey(next)) return
+    onSetKey(provider.id, next)
+  }
+
   const providerInputBaseUrl = (provider: ProviderDef): string => {
     return (urls[provider.id] ?? provider.baseUrl ?? '').trim().replace(/\/+$/, '')
   }
@@ -127,7 +145,8 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
       const apiKey = providerInputApiKey(provider)
       const baseUrl = providerInputBaseUrl(provider)
       if (!apiKey || !baseUrl || checking[provider.id]) continue
-      const signature = `${provider.id}:${provider.kind}:${baseUrl}:${apiKey}:${provider.models?.length ?? 0}:${provider.modelFetch?.lastSuccessCount ?? -1}`
+      const requestKey = providerRequestApiKey(provider) || (apiKey ? 'saved-key' : '')
+      const signature = `${provider.id}:${provider.kind}:${baseUrl}:${requestKey}:${provider.models?.length ?? 0}:${provider.modelFetch?.lastSuccessCount ?? -1}`
       if (autoFetchSignaturesRef.current.has(signature)) continue
       autoFetchSignaturesRef.current.add(signature)
       // LOW-18: LRU cleanup — prevent unbounded growth of fetch signatures
@@ -149,13 +168,13 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
     const nextKey = pendingKey ?? provider.apiKey ?? ''
     const nextUrl = (pendingUrl ?? provider.baseUrl).trim().replace(/\/$/, '')
     const urlChanged = !!pendingUrl && !!nextUrl && nextUrl !== provider.baseUrl
-    const keyChanged = pendingKey != null && nextKey !== (provider.apiKey ?? '')
+    const keyChanged = pendingKey != null && !isMaskedProviderApiKey(nextKey) && nextKey !== (provider.apiKey ?? '')
     if (!urlChanged && !keyChanged) return
     await window.electronAPI.providers.upsert({
       ...provider,
       baseUrl: urlChanged ? nextUrl : provider.baseUrl,
-      apiKey: nextKey,
-      enabled: provider.enabled || !!nextKey
+      apiKey: keyChanged ? nextKey : provider.apiKey,
+      enabled: provider.enabled || !!(keyChanged ? nextKey : provider.apiKey)
     })
   }
 
@@ -311,8 +330,8 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
             value={keys[provider.id] ?? provider.apiKey ?? ''}
             placeholder={tr('粘贴 API Key', 'Paste API key')}
             onChange={event => setKeys(current => ({ ...current, [provider.id]: event.target.value }))}
-            onBlur={() => onSetKey(provider.id, keys[provider.id] ?? provider.apiKey ?? '')}
-            onKeyDown={event => { if (event.key === 'Enter') onSetKey(provider.id, keys[provider.id] ?? provider.apiKey ?? '') }}
+            onBlur={() => commitProviderApiKey(provider)}
+            onKeyDown={event => { if (event.key === 'Enter') commitProviderApiKey(provider) }}
           />
         </label>
 

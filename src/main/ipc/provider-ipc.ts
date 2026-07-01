@@ -13,6 +13,12 @@ interface ProviderIpcDeps {
 }
 
 /** Strip sensitive API keys from config before sending to renderer. */
+function isMaskedApiKey(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  return /^[•*]+$/.test(trimmed) || trimmed.includes('鈥⑩€')
+}
+
 function stripApiKeys(config: any): any {
   if (!config || typeof config !== 'object') return config
   const clone = JSON.parse(JSON.stringify(config))
@@ -30,10 +36,17 @@ export function registerProviderIpc(deps: ProviderIpcDeps): void {
   const { providerMgr, registerAgentsFromBindings } = deps
 
   ipcMain.handle("providers:get", async () => stripApiKeys(providerMgr.getConfig()))
-  ipcMain.handle("providers:upsert", async (_e, p) => { providerMgr.upsertProvider(p); registerAgentsFromBindings(); return stripApiKeys(providerMgr.getConfig()) })
+  ipcMain.handle("providers:upsert", async (_e, p) => {
+    const existing = p?.id ? providerMgr.getProvider(p.id) : null
+    const next = p && isMaskedApiKey(p.apiKey) && existing ? { ...p, apiKey: existing.apiKey } : p
+    providerMgr.upsertProvider(next)
+    registerAgentsFromBindings()
+    return stripApiKeys(providerMgr.getConfig())
+  })
   ipcMain.handle("providers:delete", async (_e, id) => { const ok = providerMgr.deleteProvider(id); if (ok) registerAgentsFromBindings(); return ok })
   ipcMain.handle("providers:setEnabled", async (_e, id, enabled) => { providerMgr.setProviderEnabled(id, enabled); return stripApiKeys(providerMgr.getConfig()) })
   ipcMain.handle("providers:setKey", async (_e, id, key) => {
+    if (isMaskedApiKey(key)) return stripApiKeys(providerMgr.getConfig())
     providerMgr.setProviderApiKey(id, key)
     if (key) await providerMgr.fetchModels(id).catch(() => null)
     registerAgentsFromBindings()
