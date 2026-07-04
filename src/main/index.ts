@@ -926,8 +926,6 @@ app.whenReady().then(async () => {
   registerProviderIpc({ providerMgr, registerAgentsFromBindings })
   registerModelsIpc({ providerMgr })
   providerMgr.unlockSecrets()   // app ready 后解密落盘的 apiKey 到内存（safeStorage 此时可用）
-  createWindow()
-  createTray()
   let hubInitOk = false
   try {
     await initHub()
@@ -957,6 +955,9 @@ app.whenReady().then(async () => {
       getMainWindow: () => mainWindow
     })
   }
+
+  createWindow()
+  createTray()
 
   if (pendingDeepLink) {
     mainWindow?.webContents.once("did-finish-load", () => {
