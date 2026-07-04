@@ -188,7 +188,6 @@ describe("workbench slash command behavior", () => {
     const modelUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/modelUtils.ts"), "utf8")
     const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
     const main = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
-    const hubThreads = readFileSync(join(process.cwd(), "src/main/ipc/hub-threads-ipc.ts"), "utf8")
     const dispatcher = readFileSync(join(process.cwd(), "src/main/hub/dispatcher.ts"), "utf8")
 
     expect(layout).toContain("selectedProviderDirect")
@@ -199,8 +198,8 @@ describe("workbench slash command behavior", () => {
     expect(main).toContain("dispatcher.dispatchProviderDirect")
     expect(main).toContain("retryProviderDirect")
     expect(main).toContain("const directTarget = payload.targetAgent?.trim()")
-    expect(hubThreads).toContain("return dispatcher.dispatchProviderDirect(payload.text, payload.modelSelection")
     expect(main).toContain("await dispatcher.dispatchProviderDirect(message.payload.text, modelSelection")
+    expect(main).toContain("activeDispatcher.dispatchProviderDirect(")
     expect(main).toContain("const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)")
     expect(main).toContain("const turnModelSelection = providerDirect ? payload.modelSelection : directTarget ? undefined : payload.modelSelection")
     expect(main).not.toContain("isProviderDirectSelection(payload.modelSelection, directTarget)")

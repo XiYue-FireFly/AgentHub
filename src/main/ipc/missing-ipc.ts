@@ -42,12 +42,6 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
 
   // --- Turns (turns:create/cancel/cancelAgent/resolveGuard/retry are in index.ts) ---
 
-  // --- Hub Cancel ---
-  ipcMain.handle("hub:cancel", async (_event, taskId: string) => {
-    if (dispatcher) dispatcher.cancel(taskId)
-    return true
-  })
-
   // --- Tasks ---
   ipcMain.handle("tasks:delete", async (_event, taskId: string) => {
     runtimeStore?.deleteTask?.(taskId)

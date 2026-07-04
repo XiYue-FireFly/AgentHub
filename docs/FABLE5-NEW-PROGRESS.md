@@ -123,6 +123,18 @@
     Electron `webContents.send`
   - intentionally kept `hub.broadcast("chat:response", ...)` for the external
     HubServer/WebSocket compatibility path
+- Continued fable5 1.3.0 runtime-pipeline consolidation:
+  - removed renderer-facing legacy invoke APIs from `preload/index.ts` and
+    `vite-env.d.ts`: `hub.dispatch`, `hub.cancel`, `hub.routePreview`,
+    `memory.loadState`, and `memory.saveState`
+  - removed matching retired IPC registrations: `hub:dispatch`,
+    `hub:cancel`, `hub:routePreview`, `memory:loadState`, and
+    `memory:saveState`
+  - kept provider-direct dispatch in the current `turns:create` and retry
+    paths, and kept `MemoryLibrary.loadRuntimeState/saveRuntimeState` as
+    internal/tested storage helpers without renderer IPC exposure
+  - added an architecture guard preventing retired renderer invoke channels
+    from returning through preload or `ipcMain.handle`
 
 ## Validation Log
 
@@ -334,12 +346,28 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 161 files and 1052 tests.
   - `npm run build` passed.
+- Retired invoke API cleanup validation:
+  - Static search confirmed the retired channel strings only remain in guard
+    assertions after the patch.
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/slash-command-behavior.test.ts src/main/__tests__/architecture-guards.test.ts src/main/__tests__/ipc-registration-uniqueness.test.ts src/main/ipc/__tests__/missing-ipc-tasks.test.ts src/main/memory-library.test.ts`
+    with 5 files and 44 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed preload/main/type/test files passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    task cancellation now goes through `turns.cancel`, provider-direct still
+    routes through `turns:create`, and runtime-state memory methods are no
+    longer exposed over IPC.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 161 files and 1053 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 runtime-pipeline consolidation in small verified
   batches.
-- Next likely candidates: evaluate whether legacy `hub:dispatch`/`hub:cancel`
-  invoke APIs and memory runtime-state IPC can be retired, or continue the
-  Workbench decomposition and store migration from fable5 3.3.
+- Next likely candidates: continue Workbench decomposition and store migration
+  from fable5 3.3, or address remaining `hub:status` legacy task payload
+  cleanup after confirming no external compatibility dependency.
 - Re-run full validation after the next patch batch before commit.

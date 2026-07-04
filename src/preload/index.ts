@@ -9,11 +9,7 @@ interface ModelSelection {
 
 const api = {
   hub: {
-    getStatus: () => ipcRenderer.invoke('hub:status'),
-    routePreview: (text: string) => ipcRenderer.invoke('hub:routePreview', text),
-    dispatch: (text: string, mode?: string, targetAgent?: string, opts?: { thinking?: any; modelSelection?: ModelSelection; workspaceId?: string | null }) =>
-      ipcRenderer.invoke('hub:dispatch', { text, mode: mode || 'auto', targetAgent, thinking: opts?.thinking, modelSelection: opts?.modelSelection, workspaceId: opts?.workspaceId ?? null }),
-    cancel: (taskId: string) => ipcRenderer.invoke('hub:cancel', taskId)
+    getStatus: () => ipcRenderer.invoke('hub:status')
   },
   proxy: {
     info: () => ipcRenderer.invoke('proxy:info')
@@ -82,9 +78,7 @@ const api = {
     updateEntry: (id: string, patch: Record<string, unknown>) => ipcRenderer.invoke('memory:updateEntry', id, patch),
     disableEntry: (id: string) => ipcRenderer.invoke('memory:disableEntry', id),
     delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
-    restore: (id: string) => ipcRenderer.invoke('memory:restore', id),
-    loadState: () => ipcRenderer.invoke('memory:loadState'),
-    saveState: (state: any) => ipcRenderer.invoke('memory:saveState', state)
+    restore: (id: string) => ipcRenderer.invoke('memory:restore', id)
   },
   app: {
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),

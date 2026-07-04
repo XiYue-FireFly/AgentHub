@@ -27,8 +27,6 @@ export function registerMemoryIpc(memory: MemoryAccessor): void {
   ipcMain.handle("memory:disableEntry", async (_event, id: string) => memory().disableEntry(id))
   ipcMain.handle("memory:delete", (_event, id: string) => memory().deleteEntry(id))
   ipcMain.handle("memory:restore", (_event, id: string) => memory().restoreEntry(id))
-  ipcMain.handle("memory:loadState", async () => memory().loadRuntimeState())
-  ipcMain.handle("memory:saveState", async (_event, state) => memory().saveRuntimeState(state))
   ipcMain.handle("memory:graph", (_e, entries: any[]) => buildMemoryGraph(entries))
   ipcMain.handle("memory:cleanupSuggestions", (_e, graph: any) => suggestCleanup(graph))
 }

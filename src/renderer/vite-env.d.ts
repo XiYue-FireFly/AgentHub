@@ -10,8 +10,6 @@
 interface ElectronAPI {
   hub: {
     getStatus: () => Promise<any>
-    dispatch: (text: string, mode?: string, targetAgent?: string, opts?: { thinking?: any; modelSelection?: ModelSelection; workspaceId?: string | null }) => Promise<any>
-    cancel: (taskId: string) => Promise<boolean>
   }
   providers: {
     get: () => Promise<any> // ProvidersConfig — typed in shared/ipc-types.ts
@@ -73,8 +71,6 @@ interface ElectronAPI {
     disableEntry: (id: string) => Promise<MemoryEntry | null>
     delete: (id: string) => Promise<boolean>
     restore: (id: string) => Promise<MemoryEntry | null>
-    loadState: () => Promise<{ messages?: any[]; tasks?: any[] }>
-    saveState: (state: { messages: any[]; tasks: any[] }) => Promise<any>
   }
   app: {
     openExternal: (url: string) => Promise<void>

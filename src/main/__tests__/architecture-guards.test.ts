@@ -79,4 +79,20 @@ describe('architecture guards', () => {
       expect(mainIndex).not.toContain(`webContents.send('${channel}'`)
     }
   })
+
+  it('keeps retired renderer invoke channels out of preload and main IPC registrations', () => {
+    const retiredChannels = ['hub:dispatch', 'hub:cancel', 'hub:routePreview', 'memory:loadState', 'memory:saveState']
+    const preload = readFileSync(join(SRC_ROOT, 'preload', 'index.ts'), 'utf-8')
+    const ipcFiles = [
+      readFileSync(join(SRC_ROOT, 'main', 'ipc', 'hub-threads-ipc.ts'), 'utf-8'),
+      readFileSync(join(SRC_ROOT, 'main', 'ipc', 'missing-ipc.ts'), 'utf-8'),
+      readFileSync(join(SRC_ROOT, 'main', 'ipc', 'memory-ipc.ts'), 'utf-8')
+    ].join('\n')
+
+    for (const channel of retiredChannels) {
+      expect(preload).not.toContain(channel)
+      expect(ipcFiles).not.toContain(`ipcMain.handle("${channel}"`)
+      expect(ipcFiles).not.toContain(`ipcMain.handle('${channel}'`)
+    }
+  })
 })

@@ -112,7 +112,6 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
     hub: deps.hub,
     dispatcher: deps.dispatcher,
     registry: deps.registry,
-    router: deps.router,
     runtimeStore: deps.runtimeStore,
     memory: deps.memory,
     proxy: deps.proxy,
