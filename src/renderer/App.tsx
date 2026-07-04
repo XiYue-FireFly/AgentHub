@@ -14,7 +14,6 @@ import { MotionLevel } from './screens/Settings'
 import { useLang } from './glass/i18n'
 import { applyOrchestrateEvent } from './glass/orchestrate-reducer'
 import { upsertStep } from './glass/chat-transcript'
-import { ApprovalItem } from './glass/approval-dialog'
 import { WorkbenchLayout } from './workbench/WorkbenchLayout'
 import { applyAppearance, loadAppearance, readAppearanceLocal, subscribeSystemTheme } from './appearance'
 import { styledConfirm } from './lib/confirm'
@@ -52,7 +51,6 @@ function AppInner() {
   const [tasks, setTasks] = useState<TaskItem[]>([])
   const [runtimeRefreshNonce, setRuntimeRefreshNonce] = useState(0)
   const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [approvals, setApprovals] = useState<ApprovalItem[]>([])  // 写/执行待审批队列（'ask' 策略）
   const [appearance, setAppearance] = useState(readAppearanceLocal)
   const [motion, setMotion] = useState<MotionLevel>(() => {
     try { return readAppearanceLocal().motion || (localStorage.getItem('ah-motion') as MotionLevel) || 'rich' } catch { return 'rich' }
@@ -284,14 +282,6 @@ function AppInner() {
       const tid: string = e.taskId
       if (!tid || ignoredTasks.current.has(tid)) return
 
-      // 写/执行审批请求：交给全局覆盖层弹窗，不依赖消息簿记（不入 msgId 流程）
-      if (e.kind === 'approval' && e.request) {
-        const req = e.request
-        setApprovals(qs => qs.some(q => q.id === req.id) ? qs
-          : [...qs, { id: req.id, taskId: tid, agentId: e.agentId, tool: req.tool, toolName: req.toolName, label: req.label, detail: req.detail }])
-        return
-      }
-
       if (e.__runtimeTurnId || e.turnId) return
 
       let msgId = taskToMsg.current.get(tid)
@@ -378,12 +368,6 @@ function AppInner() {
   }, [])
 
   /* ---------- 派发 ---------- */
-  const onApprovalDecide = useCallback((item: ApprovalItem, approved: boolean, remember: boolean) => {
-    if (remember) window.electronAPI?.agentic?.setApprovalOverride?.(item.agentId, item.tool, approved ? 'allow' : 'deny').catch(() => {})
-    window.electronAPI?.agentic?.resolveApproval?.(item.id, approved).catch(() => {})
-    setApprovals(qs => qs.filter(q => q.id !== item.id))
-  }, [])
-
   const onDeleteTask = useCallback(async (id: string) => {
     const ok = await styledConfirm({ message: '删除这条任务历史？对应的运行详情也会从当前会话记录中移除。', danger: true })
     if (!ok) return
@@ -490,9 +474,7 @@ function AppInner() {
       providers={providers}
       bindings={bindings}
       fallbackChain={fallbackChain}
-      approvals={approvals}
       runtimeRefreshNonce={runtimeRefreshNonce}
-      onApprovalDecide={onApprovalDecide}
       onDeleteTask={onDeleteTask}
       onClearCompletedTasks={onClearCompletedTasks}
       providerActions={{

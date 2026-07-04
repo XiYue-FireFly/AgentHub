@@ -89,4 +89,15 @@ describe("Workbench runtime event loading", () => {
     expect(pendingReturnIndex).toBeGreaterThan(-1)
     expect(taskHistoryCacheIndex).toBeLessThan(pendingReturnIndex)
   })
+
+  it("drives approval requests from runtime events instead of legacy dispatch stream", () => {
+    const app = readFileSync(join(process.cwd(), "src/renderer/App.tsx"), "utf8")
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+
+    expect(layout).toContain("appendApprovalFromRuntimeEvent(event)")
+    expect(layout).toContain("approvalItemFromRuntimeEvent(event)")
+    expect(layout).toContain("<ApprovalDialog items={approvals} onDecide={onApprovalDecide} />")
+    expect(app).not.toContain("e.kind === 'approval'")
+    expect(app).not.toContain("setApprovals")
+  })
 })

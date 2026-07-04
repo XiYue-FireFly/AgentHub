@@ -38,6 +38,7 @@ import { mergeRuntimeEventLists, isBufferedRuntimeEvent, isTaskHistoryEvent, sho
 import { parseSlashInput, parseLoopLimit, stripLoopFlags } from './utils/slashCommandUtils'
 import { selectableModelOptions, isSelectableModel, resolveModelCommand, reasoningFromCommand, reasoningLabel, type WorkbenchThinking } from './utils/modelUtils'
 import { deriveTaskItems, type RuntimeTaskEventsByThread } from './utils/taskItems'
+import { approvalItemFromRuntimeEvent } from './utils/approvalEvents'
 import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
@@ -66,9 +67,7 @@ interface WorkbenchLayoutProps {
   providers: ProviderDef[]
   bindings: BindingDef[]
   fallbackChain: string[]
-  approvals: ApprovalItem[]
   runtimeRefreshNonce?: number
-  onApprovalDecide: (item: ApprovalItem, approved: boolean, remember: boolean) => void
   onDeleteTask: (id: string) => void
   onClearCompletedTasks: () => void
   providerActions: {
@@ -95,6 +94,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [allThreads, setAllThreads] = useState<WorkbenchThread[]>([])
   const [events, setEvents] = useState<RuntimeEvent[]>([])
   const [taskEventsByThread, setTaskEventsByThread] = useState<RuntimeTaskEventsByThread>({})
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([])
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [pendingActiveThreadId, setPendingActiveThreadId] = useState<string | null>(null)
@@ -224,6 +224,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       ...prev,
       [threadId]: mergeRuntimeEventLists(prev[threadId] || [], nextEvents)
     }))
+  }, [])
+
+  const appendApprovalFromRuntimeEvent = useCallback((event: RuntimeEvent) => {
+    const item = approvalItemFromRuntimeEvent(event)
+    if (!item) return
+    setApprovals(prev => prev.some(existing => existing.id === item.id) ? prev : [...prev, item])
   }, [])
 
   const flushRuntimeEvents = useCallback(() => {
@@ -418,6 +424,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     const unsubscribe = window.electronAPI.runtime.onEvent(event => {
       const isPendingThreadEvent = pendingActiveThreadId !== null && event.threadId === loadingThreadIdRef.current
       const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current
+      appendApprovalFromRuntimeEvent(event)
 
       if (isPendingThreadEvent) {
         appendTaskRuntimeEvents(event.threadId, [event])
@@ -470,7 +477,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       clearRuntimeEventBuffer()
     }
-  }, [activeThreadId, pendingActiveThreadId, workspaceId, refreshThreadTodos, appendRuntimeEvents, appendTaskRuntimeEvents, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+  }, [activeThreadId, pendingActiveThreadId, workspaceId, refreshThreadTodos, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+
+  const onApprovalDecide = useCallback((item: ApprovalItem, approved: boolean, remember: boolean) => {
+    if (remember) {
+      window.electronAPI.agentic.setApprovalOverride(item.agentId, item.tool, approved ? 'allow' : 'deny').catch(() => {})
+    }
+    window.electronAPI.agentic.resolveApproval(item.id, approved).catch(() => {})
+    setApprovals(prev => prev.filter(existing => existing.id !== item.id))
+  }, [])
 
   useEffect(() => {
     refreshThreadTodos().catch(() => {})
@@ -1615,7 +1630,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         </div>
       )}
 
-      <ApprovalDialog items={props.approvals} onDecide={props.onApprovalDecide} />
+      <ApprovalDialog items={approvals} onDecide={onApprovalDecide} />
       {commandPaletteOpen && (
         <CommandPalette
           commands={paletteCommands}

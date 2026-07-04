@@ -95,6 +95,13 @@
     events are still cached before the pending-switch early return
   - kept legacy `dispatch:stream` renderer subscription in place for the
     remaining chat-bubble and approval path; this is the next 3.1 slice
+- Continued fable5 1.3.0 runtime-pipeline consolidation:
+  - moved approval queue handling from `App.tsx` legacy `dispatch:stream`
+    handling into `WorkbenchLayout` runtime event handling
+  - added `src/renderer/workbench/utils/approvalEvents.ts` to convert
+    `agent:approval` runtime events into `ApprovalDialog` items
+  - kept legacy `hub.onStream` only for the remaining old chat-bubble
+    compatibility path; approvals no longer depend on it
 
 ## Validation Log
 
@@ -258,12 +265,26 @@
     - `npm run lint` passed with 0 errors and 36 existing warnings.
     - `npm test` passed with 160 files and 1046 tests.
     - `npm run build` passed.
+- Runtime approval queue validation:
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    that `App.tsx` no longer consumes legacy `approval` stream events,
+    `WorkbenchLayout` queues `agent:approval` before visibility branching,
+    duplicates are deduped by approval id, malformed approval payloads are
+    ignored, and remember/resolve still calls the agentic IPC methods.
+  - Targeted tests passed:
+    `npx vitest run src/renderer/workbench/__tests__/approvalEvents.test.ts src/renderer/workbench/__tests__/workbench-runtime-events.test.ts`
+    with 2 files and 9 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed renderer approval/runtime files passed.
+  - `git diff --check` passed.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 161 files and 1049 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 runtime-pipeline consolidation in small verified
   batches.
-- Next likely candidates: move approval requests from legacy `dispatch:stream`
-  into runtime events, then remove the renderer `hub.onStream` subscription and
+- Next likely candidates: remove the renderer `hub.onStream` subscription and
   legacy `messages/tasks` memory persistence from `App.tsx`.
 - Re-run full validation after the next patch batch before commit.
