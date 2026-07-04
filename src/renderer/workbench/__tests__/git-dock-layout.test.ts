@@ -17,10 +17,11 @@ describe("workbench git dock layout", () => {
 
   it("keeps secondary panel dispatch and terminal polling outside WorkbenchLayout", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const panelContent = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchRightPanelContent.tsx"), "utf8")
     const toolPanel = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchToolPanel.tsx"), "utf8")
     const terminalWatcher = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/terminalRunWatcher.ts"), "utf8")
 
-    expect(layout).toContain("import { WorkbenchToolPanel } from './WorkbenchToolPanel'")
+    expect(panelContent).toContain("import { WorkbenchToolPanel } from './WorkbenchToolPanel'")
     expect(layout).toContain("import { watchTerminalRun } from './utils/terminalRunWatcher'")
     expect(layout).not.toContain("function WorkbenchToolPanel")
     expect(layout).not.toContain("async function watchTerminalRun")
@@ -29,6 +30,22 @@ describe("workbench git dock layout", () => {
     expect(terminalWatcher).toContain("while (!signal?.aborted)")
     expect(terminalWatcher).toContain("Math.min(5000")
     expect(terminalWatcher).not.toContain("i < 24")
+  })
+
+  it("keeps non-Git right panel content routing outside WorkbenchLayout", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const panelContent = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchRightPanelContent.tsx"), "utf8")
+
+    expect(layout).toContain("import { WorkbenchRightPanelContent } from './WorkbenchRightPanelContent'")
+    expect(layout).toContain("<WorkbenchRightPanelContent")
+    expect(layout).not.toContain("rightPanel === 'side-chat' ?")
+    expect(layout).not.toContain("rightPanel === 'terminal' ?")
+    expect(panelContent).toContain("export function WorkbenchRightPanelContent")
+    expect(panelContent).toContain("panel === 'runs'")
+    expect(panelContent).toContain("panel === 'files'")
+    expect(panelContent).toContain("panel === 'side-chat'")
+    expect(panelContent).toContain("panel === 'terminal'")
+    expect(panelContent).toContain("<WorkbenchToolPanel")
   })
 
   it("keeps workspace creation dialog logic outside WorkbenchLayout", () => {

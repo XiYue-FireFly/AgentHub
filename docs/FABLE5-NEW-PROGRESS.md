@@ -170,6 +170,14 @@
   - preserved modal classes, backdrop close behavior, setup buttons, and the
     "Got it" close action
   - reduced `WorkbenchLayout.tsx` from 1577 lines to 1534 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved non-Git right-panel content routing into
+    `src/renderer/workbench/WorkbenchRightPanelContent.tsx`
+  - kept the non-Git inspector container/scrim and Git bottom dock in
+    `WorkbenchLayout.tsx`
+  - preserved runs, files, side-chat, terminal, and browser/worktree fallback
+    panel behavior
+  - reduced `WorkbenchLayout.tsx` from 1534 lines to 1496 lines
 
 ## Validation Log
 
@@ -449,6 +457,20 @@
     setup navigation, and action buttons.
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 162 files and 1058 tests.
+  - `npm run build` passed.
+- Workbench non-Git right panel content extraction validation:
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/git-dock-layout.test.ts src/renderer/workbench/__tests__/workbench-runtime-events.test.ts src/renderer/workbench/__tests__/workbench-copy.test.ts src/renderer/workbench/__tests__/paletteCommands.test.ts`
+    with 4 files and 18 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed Workbench panel files passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for the inspector container, Git bottom dock, run detail
+    branch, RunTimeline props, files openPath behavior, side chat, terminal,
+    and tool panel fallback.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 162 files and 1059 tests.
   - `npm run build` passed.
 
 ## Pending

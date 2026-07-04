@@ -5,18 +5,16 @@ import { SettingsScreen } from '../screens/Settings'
 type MotionLevel = 'off' | 'subtle' | 'rich'
 // Phase 3.2 lazy loading: secondary heavy views loaded on demand
 const WorkflowsPanel = React.lazy(() => import('./WorkflowsPanel').then(m => ({ default: m.WorkflowsPanel })))
-import { TerminalPanel } from './TerminalPanel'
 import { TasksScreen } from '../screens/Tasks'
 import { SetupTab, summarizeAgentConnections } from '../glass/connection-status'
 import { tr } from '../glass/i18n'
 import { SessionSidebar } from './SessionSidebar'
 import { ThreadView } from './ThreadView'
 import { ComposerBar } from './ComposerBar'
-import { RunTimeline } from './RunTimeline'
 import { WorkbenchChatTopBar } from './WorkbenchChatTopBar'
 import { WorkbenchAnnouncementModal } from './WorkbenchAnnouncementModal'
 import { CreateWorkspaceDialog } from './CreateWorkspaceDialog'
-import { WorkbenchToolPanel } from './WorkbenchToolPanel'
+import { WorkbenchRightPanelContent } from './WorkbenchRightPanelContent'
 import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
@@ -25,9 +23,6 @@ import { NativeTitlebar, type WorkbenchRightPanel } from './NativeTitlebar'
 import { DEFAULT_INSPECTOR_WIDTH, WorkbenchBottomDock, WorkbenchInspector, clampInspectorWidth } from './WorkbenchPanels'
 import { ErrorBoundary } from '../ErrorBoundary'
 import { GitBranchControl } from './GitBranchControl'
-import { FileTreePanel } from './FileTreePanel'
-import { SubagentDetailPanel } from './SubagentDetailPanel'
-import { SideConversationPanel } from './SideConversationPanel'
 import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
 import { localAgentOptions } from './localAgentOptions'
 import { isWorkbenchViewMode, type ViewMode } from './viewModes'
@@ -1419,64 +1414,31 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
               workspaceId={workspaceId}
               onClose={() => setRightPanel(null)}
             >
-              {rightPanel === 'runs' ? (
-                selectedAgentDetail ? (
-                  <SubagentDetailPanel
-                    agentId={selectedAgentDetail.agentId}
-                    turnId={selectedAgentDetail.turnId}
-                    events={activeEvents}
-                    onClose={() => setSelectedAgentDetail(null)}
-                  />
-                ) : (
-                <RunTimeline
-                  events={activeEvents}
-                  turns={activeTurns}
-                  localAgents={localAgents}
-                  setLocalAgents={setLocalAgents}
-                  schedules={schedules}
-                  mode={mode}
-                  setMode={setMode}
-                  currentSchedule={scheduleForMode(mode)}
-                  setScheduleForMode={setScheduleForMode}
-                  openSetup={openSetup}
-                  onClose={() => setRightPanel(null)}
-                  terminalRuns={terminalRuns}
-                  setTerminalRuns={setTerminalRuns}
-                  onSelectAgent={(agentId, turnId) => setSelectedAgentDetail({ agentId, turnId })}
-                />
-                )
-              ) : rightPanel === 'files' ? (
-                <FileTreePanel
-                  workspaceRoot={workspaceId ? activeWorkspace?.rootPath ?? null : null}
-                  workspaceId={workspaceId}
-                  onClose={() => setRightPanel(null)}
-                  onFileSelect={(path) => {
-                    // Open file in external editor
-                    window.electronAPI.app.openPath({ path, target: 'editor' }).catch(() => {})
-                  }}
-                />
-              ) : rightPanel === 'side-chat' ? (
-                <SideConversationPanel
-                  parentThreadId={activeThreadId}
-                  parentTurnId={activeTurns.length > 0 ? activeTurns[activeTurns.length - 1].id : null}
-                  workspaceId={workspaceId}
-                  onClose={() => setRightPanel(null)}
-                />
-              ) : rightPanel === 'terminal' ? (
-                <TerminalPanel
-                  workspaceRoot={workspaceId ? activeWorkspace?.rootPath : undefined}
-                  onClose={() => setRightPanel(null)}
-                />
-              ) : (
-                <WorkbenchToolPanel
-                  panel={rightPanel}
-                  workspaceId={workspaceId}
-                  onClose={() => setRightPanel(null)}
-                  browserUrl={pendingBrowserUrl}
-                  onBrowserUrlConsumed={() => setPendingBrowserUrl(null)}
-                  onAttachBrowserCapture={attachment => setPendingComposerAttachments([attachment])}
-                />
-              )}
+              <WorkbenchRightPanelContent
+                panel={rightPanel}
+                workspaceId={workspaceId}
+                workspaceRoot={workspaceId ? activeWorkspace?.rootPath ?? null : null}
+                parentThreadId={activeThreadId}
+                parentTurnId={activeTurns.length > 0 ? activeTurns[activeTurns.length - 1].id : null}
+                activeEvents={activeEvents}
+                activeTurns={activeTurns}
+                localAgents={localAgents}
+                setLocalAgents={setLocalAgents}
+                schedules={schedules}
+                mode={mode}
+                setMode={setMode}
+                scheduleForMode={scheduleForMode}
+                setScheduleForMode={setScheduleForMode}
+                openSetup={openSetup}
+                terminalRuns={terminalRuns}
+                setTerminalRuns={setTerminalRuns}
+                selectedAgentDetail={selectedAgentDetail}
+                onSelectAgentDetail={setSelectedAgentDetail}
+                onClose={() => setRightPanel(null)}
+                browserUrl={pendingBrowserUrl}
+                onBrowserUrlConsumed={() => setPendingBrowserUrl(null)}
+                onAttachBrowserCapture={attachment => setPendingComposerAttachments([attachment])}
+              />
             </WorkbenchInspector>
           </>
         )}
