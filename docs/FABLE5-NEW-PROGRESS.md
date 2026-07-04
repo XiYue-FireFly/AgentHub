@@ -69,6 +69,12 @@
   - kept the fixed `watchTerminalRun` implementation local because the older
     utility version still has the pre-fix 24-poll cap
   - reduced `WorkbenchLayout.tsx` to 1695 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - connected `WorkbenchLayout.tsx` to the extracted
+    `src/renderer/workbench/components/TodoPopoverRow.tsx`
+  - removed the duplicate inline Todo row component from `WorkbenchLayout.tsx`
+  - changed the extracted Todo row to use the renderer global `ThreadTodo` and
+    `ThreadTodoStatus` types instead of a narrowed local copy
 
 ## Validation Log
 
@@ -170,10 +176,22 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 158 files and 1038 tests.
   - `npm run build` passed.
+- Workbench TodoPopoverRow extraction validation:
+  - `npm run typecheck` passed.
+  - Targeted eslint for `WorkbenchLayout.tsx` and `components/TodoPopoverRow.tsx`
+    passed.
+  - Targeted tests passed with 3 files and 8 tests:
+    `workbench-runtime-events`, `thread-switching-layout`, and `workbench-copy`.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    JSX behavior parity plus valid ambient Todo types.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 158 files and 1038 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 Workbench decomposition in small verified batches.
-- Next likely candidates: remove now-redundant older workbench component shards
-  if unused, or extract top-bar/Todo UI components with direct smoke coverage.
+- Next likely candidates: extract `WorkbenchChatTopBar` as a component, remove
+  now-redundant older workbench component shards if unused, or start a guarded
+  store migration design slice.
 - Re-run full validation after the next patch batch before commit.

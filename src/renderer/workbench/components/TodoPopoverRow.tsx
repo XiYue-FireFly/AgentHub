@@ -2,15 +2,6 @@ import React from 'react'
 import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
 
-export type ThreadTodoStatus = 'pending' | 'in_progress' | 'completed'
-
-export interface ThreadTodo {
-  id: string
-  content: string
-  status: ThreadTodoStatus
-  threadId: string
-}
-
 interface TodoPopoverRowProps {
   todo: ThreadTodo
   onStatus: (todo: ThreadTodo, status: ThreadTodoStatus) => void
