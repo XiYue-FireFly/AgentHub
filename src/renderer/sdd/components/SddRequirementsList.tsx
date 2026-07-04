@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
+import { styledConfirm } from '../../lib/confirm'
 import { useSddDraftStore } from '../sdd-draft-store'
 import { listDrafts, createNewDraft, deleteDraft, loadDraft, saveDraftToDisk, parseRequirementBlocks } from '../sdd-draft-actions'
 import { buildAssistantPrompt } from '../sdd-assistant-prompt'
@@ -68,6 +69,7 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
     if (!workspaceRoot || !newTitle.trim()) return
     try {
       const draft = await createNewDraft(workspaceRoot, newTitle.trim())
+      if (!draft) return
       setNewTitle('')
       setShowCreateDialog(false)
       await refreshDrafts()
@@ -81,6 +83,11 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
   // Delete draft
   const handleDelete = async (draftId: string) => {
     if (!workspaceRoot) return
+    const ok = await styledConfirm({
+      message: tr('删除这个需求草稿？该操作会移除需求文档、聊天记录和追踪快照。', 'Delete this requirement draft? This removes the requirement document, chat history, and trace snapshot.'),
+      danger: true
+    })
+    if (!ok) return
     try {
       await deleteDraft(workspaceRoot, draftId)
       if (activeDraft?.id === draftId) {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { getDefaultTemplate } from '../sdd-store'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { createSddStore, getDefaultTemplate } from '../sdd-store'
 
 describe('SDD default template selection', () => {
   it('uses the Chinese template for Chinese environments', () => {
@@ -13,5 +16,65 @@ describe('SDD default template selection', () => {
 
     expect(template).toContain('# Untitled requirement')
     expect(template).toContain('## Acceptance criteria')
+  })
+})
+
+describe('SDD draft persistence', () => {
+  it('persists the requested title and timestamps in metadata', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agenthub-sdd-'))
+    const store = createSddStore(workspace)
+
+    const draft = await store.createDraft({ workspaceRoot: workspace, title: 'Checkout Flow' })
+    const reloaded = await store.getDraft(draft.id)
+    const listed = await store.listDrafts()
+
+    expect(reloaded?.title).toBe('Checkout Flow')
+    expect(reloaded?.content.startsWith('# Checkout Flow')).toBe(true)
+    expect(reloaded?.createdAt).toBe(draft.createdAt)
+    expect(listed[0]?.title).toBe('Checkout Flow')
+    expect(listed[0]?.createdAt).toBe(draft.createdAt)
+  })
+
+  it('updates draft metadata and trace snapshots with atomic writes', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agenthub-sdd-'))
+    const store = createSddStore(workspace)
+    const draft = await store.createDraft({ workspaceRoot: workspace, title: 'Initial' })
+
+    await store.updateDraft(draft.id, { content: '# Revised\n\nBody' })
+    const updated = await store.getDraft(draft.id)
+    expect(updated?.title).toBe('Revised')
+    expect(new Date(updated?.updatedAt || 0).getTime()).toBeGreaterThanOrEqual(new Date(draft.updatedAt).getTime())
+
+    const trace = {
+      draftId: draft.id,
+      requirementBlocks: [],
+      planItems: [],
+      coverage: {},
+      derivedStatuses: {},
+      uncoveredRequirementIds: [],
+      timestamp: new Date().toISOString()
+    }
+    await store.saveTrace(draft.id, trace)
+    await expect(store.getTrace(draft.id)).resolves.toEqual(trace)
+  })
+
+  it('preserves title and createdAt when only design context changes', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agenthub-sdd-'))
+    const store = createSddStore(workspace)
+    const draft = await store.createDraft({ workspaceRoot: workspace, title: 'Context Only' })
+
+    await store.updateDraft(draft.id, {
+      designContext: {
+        designType: 'product',
+        brandColor: '#2563eb',
+        tone: ['professional']
+      }
+    })
+    const updated = await store.getDraft(draft.id)
+
+    expect(updated?.title).toBe('Context Only')
+    expect(updated?.createdAt).toBe(draft.createdAt)
+    expect(updated?.designContext?.designType).toBe('product')
+    expect(updated?.designContext?.brandColor).toBe('#2563eb')
   })
 })

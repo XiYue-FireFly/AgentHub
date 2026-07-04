@@ -21,6 +21,13 @@ import {
   SDD_IMG_DIR_NAME
 } from './sdd-types'
 
+type DraftMetaFile = {
+  title?: string
+  designContext?: SddDraft['designContext']
+  createdAt?: string
+  updatedAt?: string
+}
+
 // ============================================================
 // 路径工具
 // ============================================================
@@ -49,6 +56,10 @@ function buildImgDirPath(workspaceRoot: string, draftId: string): string {
   return path.join(buildDraftDirPath(workspaceRoot, draftId), SDD_IMG_DIR_NAME)
 }
 
+function buildMetaFilePath(workspaceRoot: string, draftId: string): string {
+  return path.join(buildDraftDirPath(workspaceRoot, draftId), 'meta.json')
+}
+
 function generateDraftId(): string {
   return crypto.randomUUID()
 }
@@ -62,6 +73,59 @@ function extractTitleFromContent(content: string): string {
     }
   }
   return 'Untitled Requirement'
+}
+
+function normalizeTitle(value: string | undefined): string {
+  const title = (value || '').trim()
+  return title || 'Untitled Requirement'
+}
+
+function applyTitleToContent(content: string, title: string): string {
+  const heading = `# ${normalizeTitle(title)}`
+  if (!content.trim()) return `${heading}\n`
+  if (/^# .*(?:\r?\n|$)/.test(content)) {
+    return content.replace(/^# .*(?:\r?\n|$)/, `${heading}\n`)
+  }
+  return `${heading}\n\n${content}`
+}
+
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  await fs.writeFile(tmpPath, content, 'utf-8')
+  await fs.rename(tmpPath, filePath)
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf-8')) as T
+  } catch {
+    return null
+  }
+}
+
+async function readDraftMetaFile(workspaceRoot: string, draftId: string): Promise<DraftMetaFile> {
+  return await readJsonFile<DraftMetaFile>(buildMetaFilePath(workspaceRoot, draftId)) ?? {}
+}
+
+async function writeDraftMetaFile(workspaceRoot: string, draftId: string, meta: DraftMetaFile): Promise<void> {
+  await writeFileAtomic(buildMetaFilePath(workspaceRoot, draftId), JSON.stringify(meta, null, 2))
+}
+
+async function readDraftTitleFromFile(filePath: string): Promise<string | null> {
+  try {
+    const handle = await fs.open(filePath, 'r')
+    try {
+      const buffer = Buffer.alloc(4096)
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+      const title = extractTitleFromContent(buffer.subarray(0, bytesRead).toString('utf-8'))
+      return title === 'Untitled Requirement' ? null : title
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return null
+  }
 }
 
 // ============================================================
@@ -127,8 +191,9 @@ export class SddStore {
   async createDraft(options: SddCreateOptions): Promise<SddDraft> {
     const draftId = generateDraftId()
     const now = new Date().toISOString()
-    const content = options.template === 'blank' ? '' : getDefaultTemplate()
-    const title = options.title || extractTitleFromContent(content)
+    const baseContent = options.template === 'blank' ? '' : getDefaultTemplate()
+    const title = normalizeTitle(options.title || extractTitleFromContent(baseContent))
+    const content = applyTitleToContent(baseContent, title)
 
     const draft: SddDraft = {
       id: draftId,
@@ -148,7 +213,13 @@ export class SddStore {
     await fs.mkdir(path.join(dirPath, SDD_IMG_DIR_NAME), { recursive: true })
 
     // 写入需求文件
-    await fs.writeFile(buildDraftFilePath(this.workspaceRoot, draftId), content, 'utf-8')
+    await writeFileAtomic(buildDraftFilePath(this.workspaceRoot, draftId), content)
+    await writeDraftMetaFile(this.workspaceRoot, draftId, {
+      title,
+      designContext: options.designContext,
+      createdAt: now,
+      updatedAt: now
+    })
 
     return draft
   }
@@ -162,6 +233,7 @@ export class SddStore {
     try {
       const content = await fs.readFile(filePath, 'utf-8')
       const stat = await fs.stat(filePath)
+      const meta = await readDraftMetaFile(this.workspaceRoot, draftId)
 
       // 读取设计上下文（保存在 meta.json 中）
       let designContext: SddDraft['designContext']
@@ -178,11 +250,11 @@ export class SddStore {
         id: draftId,
         workspaceRoot: this.workspaceRoot,
         relativePath: buildDraftRelativePath(draftId),
-        title: extractTitleFromContent(content),
+        title: normalizeTitle(meta.title || extractTitleFromContent(content)),
         content,
-        designContext,
-        createdAt: stat.birthtime.toISOString(),
-        updatedAt: stat.mtime.toISOString()
+        designContext: meta.designContext ?? designContext,
+        createdAt: meta.createdAt || stat.birthtime.toISOString(),
+        updatedAt: meta.updatedAt || stat.mtime.toISOString()
       }
     } catch {
       return null
@@ -201,16 +273,17 @@ export class SddStore {
         content = await fs.readFile(filePath, 'utf-8')
       }
 
-      await fs.writeFile(filePath, content, 'utf-8')
+      await writeFileAtomic(filePath, content)
 
-      // 保存设计上下文
-      if (options.designContext) {
-        const metaPath = path.join(buildDraftDirPath(this.workspaceRoot, draftId), 'meta.json')
-        await fs.writeFile(metaPath, JSON.stringify({
-          designContext: options.designContext,
-          updatedAt: new Date().toISOString()
-        }, null, 2), 'utf-8')
-      }
+      const previousMeta = await readDraftMetaFile(this.workspaceRoot, draftId)
+      const now = new Date().toISOString()
+      await writeDraftMetaFile(this.workspaceRoot, draftId, {
+        ...previousMeta,
+        title: extractTitleFromContent(content),
+        designContext: options.designContext ?? previousMeta.designContext,
+        createdAt: previousMeta.createdAt || now,
+        updatedAt: now
+      })
     } catch (error) {
       throw new Error(`Failed to update draft ${draftId}: ${error}`)
     }
@@ -243,16 +316,21 @@ export class SddStore {
         if (!entry.isDirectory()) continue
 
         const draftId = entry.name
-        const draft = await this.getDraft(draftId)
-        if (draft) {
+        const filePath = buildDraftFilePath(this.workspaceRoot, draftId)
+        try {
+          const stat = await fs.stat(filePath)
+          const meta = await readDraftMetaFile(this.workspaceRoot, draftId)
+          const title = normalizeTitle(meta.title || await readDraftTitleFromFile(filePath) || undefined)
           drafts.push({
-            id: draft.id,
-            workspaceRoot: draft.workspaceRoot,
-            relativePath: draft.relativePath,
-            title: draft.title,
-            createdAt: draft.createdAt,
-            updatedAt: draft.updatedAt
+            id: draftId,
+            workspaceRoot: this.workspaceRoot,
+            relativePath: buildDraftRelativePath(draftId),
+            title,
+            createdAt: meta.createdAt || stat.birthtime.toISOString(),
+            updatedAt: meta.updatedAt || stat.mtime.toISOString()
           })
+        } catch {
+          // Ignore incomplete draft directories.
         }
       }
 
@@ -277,7 +355,7 @@ export class SddStore {
       savedAt: new Date().toISOString()
     }
 
-    await fs.writeFile(filePath, JSON.stringify(snapshot, null, 2), 'utf-8')
+    await writeFileAtomic(filePath, JSON.stringify(snapshot, null, 2))
   }
 
   /**

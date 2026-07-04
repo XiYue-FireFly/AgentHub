@@ -5,16 +5,19 @@
  */
 
 import { ipcMain } from 'electron'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import { createSddStore } from '../sdd/sdd-store'
 import { parseRequirementBlocks, parsePlanCovers, computeTrace } from '../sdd/sdd-trace'
 import type { SddCreateOptions, SddUpdateOptions } from '../sdd/sdd-types'
+import { getWorkspaceManager } from '../hub/workspace'
 
 /** 验证 workspaceRoot 是合法路径且 draftId 不包含路径遍历字符 */
 function validateSddPaths(workspaceRoot: string, draftId?: string): boolean {
   if (!workspaceRoot || typeof workspaceRoot !== 'string') return false
-  // workspaceRoot 必须是绝对路径
   if (!isAbsolute(workspaceRoot)) return false
+  const resolvedRoot = resolve(workspaceRoot)
+  const registered = getWorkspaceManager().list().some(workspace => resolve(workspace.rootPath) === resolvedRoot)
+  if (!registered) return false
   // draftId 必须是简单的标识符（UUID 格式），不允许路径分隔符或 ..
   if (draftId !== undefined) {
     if (!draftId || typeof draftId !== 'string') return false

@@ -4,7 +4,7 @@
  * 在设置页面中显示需求管理功能
  */
 
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
 
 interface RequirementsTabProps {
@@ -12,5 +12,22 @@ interface RequirementsTabProps {
 }
 
 export function RequirementsTab({ workspaceId }: RequirementsTabProps) {
-  return <SddRequirementsList workspaceRoot={workspaceId} />
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    if (!workspaceId) {
+      setWorkspaceRoot(null)
+      return () => { alive = false }
+    }
+    window.electronAPI.workspaces.list()
+      .then(workspaces => {
+        if (!alive) return
+        setWorkspaceRoot(workspaces.find(workspace => workspace.id === workspaceId)?.rootPath ?? null)
+      })
+      .catch(() => { if (alive) setWorkspaceRoot(null) })
+    return () => { alive = false }
+  }, [workspaceId])
+
+  return <SddRequirementsList workspaceRoot={workspaceRoot} />
 }
