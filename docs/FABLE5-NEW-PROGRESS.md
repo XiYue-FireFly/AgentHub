@@ -75,6 +75,12 @@
   - removed the duplicate inline Todo row component from `WorkbenchLayout.tsx`
   - changed the extracted Todo row to use the renderer global `ThreadTodo` and
     `ThreadTodoStatus` types instead of a narrowed local copy
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved the chat top bar and Todo popover shell into
+    `src/renderer/workbench/WorkbenchChatTopBar.tsx`
+  - removed the inline `WorkbenchChatTopBar` implementation from
+    `WorkbenchLayout.tsx`
+  - reduced `WorkbenchLayout.tsx` to 1502 lines
 
 ## Validation Log
 
@@ -187,11 +193,27 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 158 files and 1038 tests.
   - `npm run build` passed.
+- WorkbenchChatTopBar extraction validation:
+  - `npm run typecheck` passed.
+  - Targeted eslint for `WorkbenchLayout.tsx`, `WorkbenchChatTopBar.tsx`, and
+    `TodoPopoverRow.tsx` passed.
+  - Initial targeted tests passed with 3 files and 5 tests:
+    `thread-switching-layout`, `workbench-copy`, and `git-dock-layout`.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for workspace selection, editor opening, tool panel bar,
+    runs toggle, and Todo popover interactions.
+  - Full `npm test` initially failed because `open-editor-actions.test.ts`
+    still inspected `WorkbenchLayout.tsx` for code that moved into
+    `WorkbenchChatTopBar.tsx`; the test was updated to inspect the new component.
+  - Follow-up targeted tests passed with 4 files and 7 tests:
+    `open-editor-actions`, `thread-switching-layout`, `workbench-copy`, and
+    `git-dock-layout`.
+  - `npm test` passed with 158 files and 1038 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 Workbench decomposition in small verified batches.
-- Next likely candidates: extract `WorkbenchChatTopBar` as a component, remove
-  now-redundant older workbench component shards if unused, or start a guarded
-  store migration design slice.
+- Next likely candidates: remove now-redundant older workbench component shards
+  if unused, or start a guarded store migration design slice.
 - Re-run full validation after the next patch batch before commit.

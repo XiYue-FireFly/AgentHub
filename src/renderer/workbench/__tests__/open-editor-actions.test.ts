@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest"
 
 describe("open editor actions", () => {
   it("uses a real editor target for the workbench open-editor button", () => {
-    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchChatTopBar.tsx"), "utf8")
 
     expect(source).toContain("window.electronAPI.app.openPath({ path: workspaceRoot, target: 'editor' })")
     expect(source).not.toContain("openPath({ path: workspaceRoot, target: readAppearanceLocal().defaultOpenTarget })")
