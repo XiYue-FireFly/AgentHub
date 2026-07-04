@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 describe("Workbench provider/local routing state", () => {
   it("clears provider model selection when a local agent is selected", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const mainContent = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchMainContent.tsx"), "utf8")
 
     expect(source).toContain("const selectTargetAgent = useCallback")
     expect(source).toContain("if (agentId) {")
@@ -15,9 +16,10 @@ describe("Workbench provider/local routing state", () => {
     expect(source).toContain("const nextMode = selectedProviderDirect || selectedLocalDirect ? 'auto'")
     expect(source).toContain("const rawCustomSchedule = selectedProviderDirect || selectedLocalDirect")
     expect(source).toContain("customSchedule: selectedProviderDirect || selectedLocalDirect ? undefined : safeCustomSchedule")
-    expect(source).toContain("setTargetAgent={selectTargetAgent}")
+    expect(source).toContain("selectTargetAgent={selectTargetAgent}")
+    expect(mainContent).toContain("setTargetAgent={selectTargetAgent}")
     expect(source).toContain("selectTargetAgent(agentId)")
-    expect(source).toContain("goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}")
+    expect(mainContent).toContain("goChat={agentId => { selectTargetAgent(agentId); setView('chat') }}")
     expect(source).not.toContain("selectionForAgentBinding(targetAgent")
   })
 

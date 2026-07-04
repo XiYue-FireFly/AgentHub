@@ -178,6 +178,14 @@
   - preserved runs, files, side-chat, terminal, and browser/worktree fallback
     panel behavior
   - reduced `WorkbenchLayout.tsx` from 1534 lines to 1496 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved main view content routing into
+    `src/renderer/workbench/WorkbenchMainContent.tsx`
+  - kept state, effects, dispatch, runtime event handling, and side-panel
+    containers in `WorkbenchLayout.tsx`
+  - preserved write, chat, tasks, requirements, settings, and workflows view
+    rendering, including the static Settings import behavior
+  - reduced `WorkbenchLayout.tsx` from 1496 lines to 1361 lines
 
 ## Validation Log
 
@@ -471,6 +479,24 @@
     and tool panel fallback.
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 162 files and 1059 tests.
+  - `npm run build` passed.
+- Workbench main content extraction validation:
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/provider-routing-state.test.ts src/renderer/workbench/__tests__/settings-chunk.test.ts src/renderer/workbench/__tests__/git-dock-layout.test.ts`
+    with 3 files and 15 tests after updating static structure tests to inspect
+    `WorkbenchMainContent.tsx`.
+  - Earlier targeted Workbench set passed:
+    `npx vitest run src/renderer/workbench/__tests__/git-dock-layout.test.ts src/renderer/workbench/__tests__/workbench-runtime-events.test.ts src/renderer/workbench/__tests__/workbench-copy.test.ts src/renderer/workbench/__tests__/paletteCommands.test.ts`
+    with 4 files and 19 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed main-content/workbench tests passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for config error, write/chat/tasks/requirements/settings/
+    workflows view branches, chat props, Settings props, and static Settings
+    import behavior.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 162 files and 1060 tests.
   - `npm run build` passed.
 
 ## Pending

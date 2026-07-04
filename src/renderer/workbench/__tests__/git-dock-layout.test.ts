@@ -48,6 +48,22 @@ describe("workbench git dock layout", () => {
     expect(panelContent).toContain("<WorkbenchToolPanel")
   })
 
+  it("keeps main view content routing outside WorkbenchLayout", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const mainContent = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchMainContent.tsx"), "utf8")
+
+    expect(layout).toContain("import { WorkbenchMainContent } from './WorkbenchMainContent'")
+    expect(layout).toContain("<WorkbenchMainContent")
+    expect(layout).not.toContain("view === 'settings'")
+    expect(layout).not.toContain("view === 'requirements'")
+    expect(mainContent).toContain("export function WorkbenchMainContent")
+    expect(mainContent).toContain("view === 'chat'")
+    expect(mainContent).toContain("<ComposerBar")
+    expect(mainContent).toContain("<SettingsScreen")
+    expect(mainContent).toContain("<SddRequirementsList")
+    expect(mainContent).toContain("<WorkflowsPanel")
+  })
+
   it("keeps workspace creation dialog logic outside WorkbenchLayout", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
     const dialog = readFileSync(join(process.cwd(), "src/renderer/workbench/CreateWorkspaceDialog.tsx"), "utf8")

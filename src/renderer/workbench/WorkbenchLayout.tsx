@@ -1,29 +1,19 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BindingDef, ProviderDef } from '../glass/meta'
 import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
-import { SettingsScreen } from '../screens/Settings'
 type MotionLevel = 'off' | 'subtle' | 'rich'
-// Phase 3.2 lazy loading: secondary heavy views loaded on demand
-const WorkflowsPanel = React.lazy(() => import('./WorkflowsPanel').then(m => ({ default: m.WorkflowsPanel })))
-import { TasksScreen } from '../screens/Tasks'
 import { SetupTab, summarizeAgentConnections } from '../glass/connection-status'
 import { tr } from '../glass/i18n'
 import { SessionSidebar } from './SessionSidebar'
-import { ThreadView } from './ThreadView'
-import { ComposerBar } from './ComposerBar'
-import { WorkbenchChatTopBar } from './WorkbenchChatTopBar'
+import { WorkbenchMainContent } from './WorkbenchMainContent'
 import { WorkbenchAnnouncementModal } from './WorkbenchAnnouncementModal'
 import { CreateWorkspaceDialog } from './CreateWorkspaceDialog'
 import { WorkbenchRightPanelContent } from './WorkbenchRightPanelContent'
-import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
 import { CommandPalette } from './CommandPalette'
 import { NativeTitlebar, type WorkbenchRightPanel } from './NativeTitlebar'
 import { DEFAULT_INSPECTOR_WIDTH, WorkbenchBottomDock, WorkbenchInspector, clampInspectorWidth } from './WorkbenchPanels'
-import { ErrorBoundary } from '../ErrorBoundary'
-import { GitBranchControl } from './GitBranchControl'
-import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
 import { localAgentOptions } from './localAgentOptions'
 import { isWorkbenchViewMode, type ViewMode } from './viewModes'
 import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
@@ -1213,193 +1203,68 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           proxyHost={props.proxyHost}
         />
 
-        <main className="wb-main">
-          {props.configLoadError && (
-            <div className="wb-config-error" role="alert">
-              <span>{props.configLoadError}</span>
-              <button type="button" onClick={props.providerActions.onReload}>{tr('重试', 'Retry')}</button>
-            </div>
-          )}
-
-          {view === 'write' && (
-            <ErrorBoundary label="Write">
-            <WriteWorkspace
-              workspace={activeWorkspace}
-              hasWorkspace={!!workspaceId}
-              targetAgent={targetAgent}
-              setTargetAgent={selectTargetAgent}
-              agents={props.agents}
-              localAgents={localAgents}
-              sending={sending}
-              onSend={sendPrompt}
-              onCancel={cancelLatest}
-              onCreateProject={openCreateProject}
-              openChat={() => setView('chat')}
-              thread={activeThread}
-              turns={activeTurns}
-              events={activeEvents}
-            />
-            </ErrorBoundary>
-          )}
-
-          {view === 'chat' && (
-            <ErrorBoundary label="Chat">
-            <>
-              <div className="wb-chat-head">
-                <WorkbenchChatTopBar
-                  title={title}
-                  workspaceName={workspaceName}
-                  workspaceTitle={activeWorkspace?.rootPath || tr('添加工作目录', 'Add working folder')}
-                  openWorkspace={workspaceId ? () => selectWorkspace(workspaceId) : openCreateProject}
-                  workspaceRoot={activeWorkspace?.rootPath ?? null}
-                  activePanel={rightPanel}
-                  setPanel={setRightPanel}
-                  workspaceId={workspaceId}
-                  readyLocalAgents={readyLocalAgents}
-                  todos={threadTodos}
-                  activeThreadId={activeThreadId}
-                  openTasks={() => setView('tasks')}
-                  updateTodoStatus={updateThreadTodoStatus}
-                  deleteTodo={deleteThreadTodo}
-                />
-              </div>
-
-              {activeGoal && (
-                <div className="wb-goal-strip">
-                  <div>
-                    <strong>{tr('当前目标', 'Current goal')}</strong>
-                    <span>{activeGoal.goal}</span>
-                    <small>{tr(`Loop 上限 ${activeGoal.loopLimit} 轮`, `Loop limit ${activeGoal.loopLimit}`)}</small>
-                  </div>
-                  <button className="ah-btn sm" onClick={() => runSlashCommand({ text: `/loop --limit ${activeGoal.loopLimit}` })}>
-                    {tr('启动 Loop', 'Run loop')}
-                  </button>
-                  <button className="ah-btn sm" onClick={() => runSlashCommand({ text: '/goal clear' })}>
-                    {tr('清除', 'Clear')}
-                  </button>
-                </div>
-              )}
-
-              <ThreadView
-                thread={activeThread}
-                turns={activeTurns}
-                events={activeEvents}
-                onRetry={retryTurn}
-                onCancelAgent={cancelAgent}
-                onResolveGuard={resolveGuard}
-                openSetup={openSetup}
-                onCreateProject={openCreateProject}
-                onCreateThread={createThread}
-                hasWorkspace={!!workspaceId}
-                workspaceRoot={activeWorkspace?.rootPath ?? null}
-                scrollRef={threadScrollRef}
-                onScroll={handleThreadScroll}
-              />
-
-              {sendError && <div className="wb-send-error">{sendError}</div>}
-
-              <ComposerBar
-                mode={mode}
-                setMode={setMode}
-                providers={props.providers}
-                bindings={props.bindings}
-                modelSelection={modelSelection}
-                setModelSelection={setModelSelection}
-                thinking={thinking}
-                setThinking={setThinking}
-                schedules={schedules}
-                sending={sending}
-                onSend={sendPrompt}
-                onCancel={cancelLatest}
-                workspaceId={workspaceId}
-                workspaces={workspaces}
-                setWorkspaceId={selectWorkspace}
-                onCreateProject={openCreateProject}
-                localAgents={localAgents}
-                targetAgent={targetAgent}
-                setTargetAgent={selectTargetAgent}
-                agents={props.agents}
-                onRunCommand={runSlashCommand}
-                onOpenProviderSettings={() => openSetup('providers')}
-                onRefreshProviders={props.providerActions.onReload}
-                externalAttachments={pendingComposerAttachments}
-                onExternalAttachmentsConsumed={() => setPendingComposerAttachments([])}
-                gitBranchNode={
-                  <GitBranchControl
-                    workspaceId={workspaceId}
-                    onOpenGit={() => setRightPanel('git')}
-                    compact
-                  />
-                }
-                threadId={activeThread?.id ?? null}
-                turns={activeTurns}
-                events={activeEvents}
-              />
-            </>
-            </ErrorBoundary>
-          )}
-
-          {view === 'tasks' && (
-            <ErrorBoundary label="Tasks">
-            <div className="wb-scroll-surface">
-              <TasksScreen
-                tasks={runtimeTasks}
-                search={search}
-                onCancelTask={cancelRuntimeTask}
-                onDeleteTask={deleteRuntimeTask}
-                onClearCompleted={clearCompletedRuntimeTasks}
-                openSetup={openSetup}
-              />
-            </div>
-            </ErrorBoundary>
-          )}
-
-          {view === 'requirements' && (
-            <ErrorBoundary label="Requirements">
-            <div className="wb-scroll-surface">
-              <SddRequirementsList workspaceRoot={activeWorkspace?.rootPath ?? null} />
-            </div>
-            </ErrorBoundary>
-          )}
-
-          {view === 'settings' && (
-            <ErrorBoundary label="Settings">
-            <div className="wb-scroll-surface wb-settings-surface">
-              <React.Suspense fallback={<div className="wb-muted-box">{tr('加载设置...', 'Loading settings...')}</div>}>
-              <SettingsScreen
-                providers={props.providers}
-                bindings={props.bindings}
-                onSetEnabled={props.providerActions.onSetEnabled}
-                onSetKey={props.providerActions.onSetKey}
-                onSetBinding={props.providerActions.onSetBinding}
-                fallbackChain={props.fallbackChain}
-                onSetFallback={props.providerActions.onSetFallback}
-                onReload={props.providerActions.onReload}
-                onUpsertProvider={props.providerActions.onUpsertProvider}
-                onDeleteProvider={props.providerActions.onDeleteProvider}
-                onReorderProvidersForClaude={props.providerActions.onReorderProvidersForClaude}
-                motion={props.motion}
-                setMotion={props.setMotion}
-                initialTab={settingsTab}
-                workspaceId={workspaceId}
-                connectionSummary={connectionSummary}
-                goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}
-                openSetup={openSetup}
-              />
-              </React.Suspense>
-            </div>
-            </ErrorBoundary>
-          )}
-          {view === 'workflows' && (
-            <ErrorBoundary label="Workflows">
-            <div className="wb-scroll-surface wb-settings-surface">
-              <React.Suspense fallback={<div className="wb-muted-box">{tr('加载工作流...', 'Loading workflows...')}</div>}>
-              <WorkflowsPanel onClose={() => setView('chat')} />
-              </React.Suspense>
-            </div>
-            </ErrorBoundary>
-          )}
-        </main>
+        <WorkbenchMainContent
+          view={view}
+          setView={setView}
+          configLoadError={props.configLoadError}
+          onReloadConfig={props.providerActions.onReload}
+          activeWorkspace={activeWorkspace}
+          workspaceId={workspaceId}
+          activeThreadId={activeThreadId}
+          activeThread={activeThread}
+          activeTurns={activeTurns}
+          activeEvents={activeEvents}
+          activeGoal={activeGoal}
+          threadTodos={threadTodos}
+          readyLocalAgents={readyLocalAgents}
+          title={title}
+          workspaceName={workspaceName}
+          sendError={sendError}
+          rightPanel={rightPanel}
+          setRightPanel={setRightPanel}
+          selectWorkspace={selectWorkspace}
+          selectTargetAgent={selectTargetAgent}
+          targetAgent={targetAgent}
+          agents={props.agents}
+          localAgents={localAgents}
+          sending={sending}
+          sendPrompt={sendPrompt}
+          cancelLatest={cancelLatest}
+          openCreateProject={openCreateProject}
+          openSetup={openSetup}
+          updateTodoStatus={updateThreadTodoStatus}
+          deleteTodo={deleteThreadTodo}
+          runSlashCommand={runSlashCommand}
+          retryTurn={retryTurn}
+          cancelAgent={cancelAgent}
+          resolveGuard={resolveGuard}
+          createThread={createThread}
+          handleThreadScroll={handleThreadScroll}
+          threadScrollRef={threadScrollRef}
+          search={search}
+          runtimeTasks={runtimeTasks}
+          cancelRuntimeTask={cancelRuntimeTask}
+          deleteRuntimeTask={deleteRuntimeTask}
+          clearCompletedRuntimeTasks={clearCompletedRuntimeTasks}
+          providers={props.providers}
+          bindings={props.bindings}
+          fallbackChain={props.fallbackChain}
+          providerActions={props.providerActions}
+          motion={props.motion}
+          setMotion={props.setMotion}
+          settingsTab={settingsTab}
+          connectionSummary={connectionSummary}
+          mode={mode}
+          setMode={setMode}
+          modelSelection={modelSelection}
+          setModelSelection={setModelSelection}
+          thinking={thinking}
+          setThinking={setThinking}
+          schedules={schedules}
+          workspaces={workspaces}
+          pendingComposerAttachments={pendingComposerAttachments}
+          onExternalAttachmentsConsumed={() => setPendingComposerAttachments([])}
+        />
 
         {rightPanel && rightPanel !== 'git' && (
           <>
