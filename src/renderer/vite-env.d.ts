@@ -12,8 +12,6 @@ interface ElectronAPI {
     getStatus: () => Promise<any>
     dispatch: (text: string, mode?: string, targetAgent?: string, opts?: { thinking?: any; modelSelection?: ModelSelection; workspaceId?: string | null }) => Promise<any>
     cancel: (taskId: string) => Promise<boolean>
-    onStatus: (callback: (data: { running: boolean }) => void) => () => void
-    onStream: (callback: (data: any) => void) => () => void
   }
   providers: {
     get: () => Promise<any> // ProvidersConfig — typed in shared/ipc-types.ts
@@ -56,10 +54,6 @@ interface ElectronAPI {
     isMaximized: () => Promise<boolean>
     close: () => Promise<void>
     onMaximized: (callback: (maximized: boolean) => void) => () => void
-  }
-  // LOW-24: Moved onChatResponse into chat namespace
-  chat: {
-    onResponse: (callback: (data: any) => void) => () => void
   }
   store: {
     get: (key: string) => Promise<any>

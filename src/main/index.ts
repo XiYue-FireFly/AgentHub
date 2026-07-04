@@ -525,9 +525,6 @@ async function initHub(): Promise<void> {
       runtimeStore.appendStreamEvent(turnId, event)
       ;(event as any).__runtimeTurnId = turnId
     }
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("dispatch:stream", event)
-    }
   })
 
   try {

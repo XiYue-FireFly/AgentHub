@@ -67,4 +67,16 @@ describe('architecture guards', () => {
 
     expect(offenders).toEqual([])
   })
+
+  it('keeps legacy renderer stream channels out of preload and main window sends', () => {
+    const forbiddenChannels = ['dispatch:stream', 'hub:status-update', 'chat:response']
+    const preload = readFileSync(join(SRC_ROOT, 'preload', 'index.ts'), 'utf-8')
+    const mainIndex = readFileSync(join(SRC_ROOT, 'main', 'index.ts'), 'utf-8')
+
+    for (const channel of forbiddenChannels) {
+      expect(preload).not.toContain(channel)
+      expect(mainIndex).not.toContain(`webContents.send("${channel}"`)
+      expect(mainIndex).not.toContain(`webContents.send('${channel}'`)
+    }
+  })
 })

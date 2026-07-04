@@ -113,6 +113,16 @@
     longer depend on the 8 second `hub.getStatus()` polling interval
   - kept the renderer off legacy `dispatch:stream`; busy, approvals, chat, and
     task history now use `runtime:event` for this batch
+- Continued fable5 1.3.0 runtime-pipeline consolidation:
+  - removed dead renderer-facing legacy event APIs from `preload/index.ts` and
+    `vite-env.d.ts`: `hub.onStatus`, `hub.onStream`, and `chat.onResponse`
+  - removed the Electron `webContents.send("dispatch:stream", ...)` broadcast
+    from `main/index.ts` while preserving `runtimeStore.appendStreamEvent`
+  - added an architecture guard preventing `dispatch:stream`,
+    `hub:status-update`, and `chat:response` from returning through preload or
+    Electron `webContents.send`
+  - intentionally kept `hub.broadcast("chat:response", ...)` for the external
+    HubServer/WebSocket compatibility path
 
 ## Validation Log
 
@@ -308,12 +318,28 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 161 files and 1051 tests.
   - `npm run build` passed.
+- Legacy renderer stream API cleanup validation:
+  - Targeted validation passed:
+    `npx vitest run src/main/__tests__/architecture-guards.test.ts src/renderer/workbench/__tests__/workbench-runtime-events.test.ts`
+    with 2 files and 13 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed preload/main/type files passed.
+  - `git diff --check` passed.
+  - Initial read-only subagent review returned `BLOCKED` because the guard only
+    blocked `dispatch:stream` in `webContents.send`; the guard was expanded to
+    block all three legacy renderer event channels through `webContents.send`.
+  - Follow-up read-only subagent review returned `APPROVE` with no blockers and
+    confirmed no live renderer references to `hub.onStatus`, `hub.onStream`, or
+    `chat.onResponse`.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 161 files and 1052 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 runtime-pipeline consolidation in small verified
   batches.
-- Next likely candidates: remove dead preload/main legacy stream APIs
-  (`hub.onStream`/`chat.onResponse` and matching broadcasts) where no renderer
-  code still consumes them.
+- Next likely candidates: evaluate whether legacy `hub:dispatch`/`hub:cancel`
+  invoke APIs and memory runtime-state IPC can be retired, or continue the
+  Workbench decomposition and store migration from fable5 3.3.
 - Re-run full validation after the next patch batch before commit.

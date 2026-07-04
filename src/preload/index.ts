@@ -13,17 +13,7 @@ const api = {
     routePreview: (text: string) => ipcRenderer.invoke('hub:routePreview', text),
     dispatch: (text: string, mode?: string, targetAgent?: string, opts?: { thinking?: any; modelSelection?: ModelSelection; workspaceId?: string | null }) =>
       ipcRenderer.invoke('hub:dispatch', { text, mode: mode || 'auto', targetAgent, thinking: opts?.thinking, modelSelection: opts?.modelSelection, workspaceId: opts?.workspaceId ?? null }),
-    cancel: (taskId: string) => ipcRenderer.invoke('hub:cancel', taskId),
-    onStatus: (callback: (data: any) => void) => {
-      const handler = (_event: any, data: any) => callback(data)
-      ipcRenderer.on('hub:status-update', handler)
-      return () => ipcRenderer.removeListener('hub:status-update', handler)
-    },
-    onStream: (callback: (data: any) => void) => {
-      const handler = (_event: any, data: any) => callback(data)
-      ipcRenderer.on('dispatch:stream', handler)
-      return () => ipcRenderer.removeListener('dispatch:stream', handler)
-    }
+    cancel: (taskId: string) => ipcRenderer.invoke('hub:cancel', taskId)
   },
   proxy: {
     info: () => ipcRenderer.invoke('proxy:info')
@@ -74,14 +64,6 @@ const api = {
     setBindingThinking: (agentId: string, t: any) => ipcRenderer.invoke('routing:setBindingThinking', agentId, t),
     setProviderThinking: (id: string, t: any) => ipcRenderer.invoke('routing:setProviderThinking', id, t),
     activeBinding: (agentId: string) => ipcRenderer.invoke('routing:activeBinding', agentId)
-  },
-  // LOW-24: Moved onChatResponse into chat namespace for cleaner API surface
-  chat: {
-    onResponse: (callback: (data: any) => void) => {
-      const handler = (_event: any, data: any) => callback(data)
-      ipcRenderer.on('chat:response', handler)
-      return () => ipcRenderer.removeListener('chat:response', handler)
-    }
   },
   store: {
     get: (key: string) => ipcRenderer.invoke('store:get', key),
