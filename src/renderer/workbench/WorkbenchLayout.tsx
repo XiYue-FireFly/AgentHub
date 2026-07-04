@@ -28,6 +28,7 @@ import { approvalItemFromRuntimeEvent } from './utils/approvalEvents'
 import { watchTerminalRun } from './utils/terminalRunWatcher'
 import { buildPaletteCommands, resolvePaletteExtraAction } from './utils/paletteCommands'
 import { resolveShortcutCommandAction } from './utils/shortcutCommands'
+import { resolveWorkbenchMenuCommand } from './utils/menuCommands'
 import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
@@ -747,20 +748,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   useEffect(() => {
     return window.electronAPI.app.onMenuCommand?.((link) => {
-      const action = link?.action
-      const params = link?.params || {}
-      if (action === 'new-thread') void createThread()
-      else if (action === 'open-project') openCreateProject()
-      else if (action === 'view') {
-        if (isWorkbenchViewMode(params.view)) setView(params.view)
-      } else if (action === 'open-panel') {
-        const panel = params.panel
-        if (panel === 'runs' || panel === 'git' || panel === 'worktrees' || panel === 'browser') setRightPanel(panel)
-      } else if (action === 'setup') {
-        openSetup(params.tab as SettingsTabKey)
-      }
+      const action = resolveWorkbenchMenuCommand(link)
+      if (!action) return
+      if (action.type === 'new-thread') void createThread()
+      else if (action.type === 'open-project') openCreateProject()
+      else if (action.type === 'set-view') setView(action.view)
+      else if (action.type === 'set-panel') setRightPanel(action.panel)
+      else if (action.type === 'setup') openSetup(action.tab as SettingsTabKey)
     })
-  }, [createThread, openCreateProject, setView, openSetup])
+  }, [createThread, openCreateProject, setView, setRightPanel, openSetup])
 
   const shortcutBindings = useMemo(() => resolveKeyboardShortcutBindings(keyboardShortcuts), [keyboardShortcuts])
 

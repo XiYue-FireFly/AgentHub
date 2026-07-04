@@ -196,6 +196,16 @@
   - added direct shortcut resolver coverage plus a guard that every registered
     keyboard shortcut command maps to an action
   - reduced `WorkbenchLayout.tsx` from 1361 lines to 1355 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved native desktop menu command parsing into
+    `src/renderer/workbench/utils/menuCommands.ts`
+  - kept `WorkbenchLayout.tsx` responsible only for executing resolved menu
+    side effects
+  - preserved the menu whitelist for runs/git/worktrees/browser panels and the
+    default setup-tab behavior when a menu setup command omits `tab`
+  - added direct menu resolver coverage and a structure guard scoped to the
+    native menu effect
+  - reduced `WorkbenchLayout.tsx` from 1355 lines to 1352 lines
 
 ## Validation Log
 
@@ -530,6 +540,20 @@
   - First parallel `npm test` attempt timed out in three unrelated long-running
     tests while `lint` and `build` were running concurrently; a fresh standalone
     `npm test` rerun passed with 163 files and 1066 tests.
+- Workbench native menu command parsing extraction validation:
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/menuCommands.test.ts src/renderer/workbench/__tests__/git-dock-layout.test.ts src/renderer/workbench/__tests__/titlebar-menu-copy.test.ts`
+    with 3 files and 14 tests after narrowing the structure guard to the
+    native menu effect so it does not inspect slash-command branches.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed menu/workbench files passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for new-thread, open-project, view, open-panel, and setup
+    commands, including default setup-tab behavior.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 164 files and 1071 tests.
+  - `npm run build` passed.
 
 ## Pending
 

@@ -94,6 +94,25 @@ describe("workbench git dock layout", () => {
     expect(shortcutCommands).toContain("case 'open-workflows'")
   })
 
+  it("keeps native menu command parsing outside WorkbenchLayout", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const menuCommands = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/menuCommands.ts"), "utf8")
+    const menuEffectStart = layout.indexOf("window.electronAPI.app.onMenuCommand")
+    const menuEffectEnd = layout.indexOf("const shortcutBindings", menuEffectStart)
+    const menuEffect = layout.slice(menuEffectStart, menuEffectEnd)
+
+    expect(menuEffectStart).toBeGreaterThan(-1)
+    expect(menuEffectEnd).toBeGreaterThan(menuEffectStart)
+    expect(layout).toContain("import { resolveWorkbenchMenuCommand } from './utils/menuCommands'")
+    expect(menuEffect).toContain("const action = resolveWorkbenchMenuCommand(link)")
+    expect(menuEffect).not.toContain("link?.action")
+    expect(menuEffect).not.toContain("action === 'new-thread'")
+    expect(menuEffect).not.toContain("panel === 'worktrees'")
+    expect(menuCommands).toContain("export function resolveWorkbenchMenuCommand")
+    expect(menuCommands).toContain("isWorkbenchViewMode(params.view)")
+    expect(menuCommands).toContain("'worktrees'")
+  })
+
   it("keeps the first-run announcement modal outside WorkbenchLayout", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
     const modal = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchAnnouncementModal.tsx"), "utf8")
