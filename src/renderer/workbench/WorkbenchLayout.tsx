@@ -770,29 +770,28 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [localAgents])
 
   const executePaletteCommand = useCallback((id: string) => {
-    // Try shortcut handler first
-    runShortcutCommand(id)
-    // Handle extra commands
-    if (id === 'open-memory') openSetup('memory')
-    else if (id === 'open-skills') openSetup('skills')
-    else if (id === 'open-plugins') openSetup('plugins')
-    else if (id === 'open-usage') openSetup('usage')
-    else if (id === 'open-models') openSetup('models')
-    else if (id === 'open-prompts') openSetup('shortcuts') // prompts go in shortcuts for now
-    else if (id === 'open-diagnostics') openSetup('appearance')
-    else if (id === 'open-backup') openSetup('appearance')
-    else if (id === 'seed-workflows') {
+    if (id === 'open-memory') { openSetup('memory'); return }
+    if (id === 'open-skills') { openSetup('skills'); return }
+    if (id === 'open-plugins') { openSetup('plugins'); return }
+    if (id === 'open-usage') { openSetup('usage'); return }
+    if (id === 'open-models') { openSetup('models'); return }
+    if (id === 'open-prompts') { openSetup('shortcuts'); return }
+    if (id === 'open-diagnostics') { openSetup('appearance'); return }
+    if (id === 'open-backup') { openSetup('appearance'); return }
+    if (id === 'seed-workflows') {
       window.electronAPI.workflows.seed().catch(() => {})
+      return
     }
-    // Agent switching
-    else if (id.startsWith('switch-agent:')) {
+    if (id.startsWith('switch-agent:')) {
       const agentId = id.split(':')[1]
       const usable = localAgentOptions(localAgents)
       if (agentId && usable.includes(agentId)) {
         setTargetAgent(agentId)
         setView('chat')
       }
+      return
     }
+    runShortcutCommand(id)
   }, [runShortcutCommand, openSetup, localAgents, setTargetAgent, setView])
 
   useEffect(() => {
@@ -2293,20 +2292,20 @@ function BrowserPanelV2({
   const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false })
   const webviewRef = useRef<any>(null)
 
-  const open = async (nextUrl = url) => {
+  const open = useCallback(async (nextUrl = url) => {
     if (!nextUrl.trim()) return
     setLoadError(null)
     const next = await window.electronAPI.browser.open({ workspaceId, url: normalizeUrl(nextUrl) })
     setSession(next)
     setUrl(next.url)
-  }
+  }, [url, workspaceId])
 
   useEffect(() => {
     if (!initialUrl) return
     setUrl(initialUrl)
     open(initialUrl).catch(e => setLoadError(e?.message || tr('打开网页失败。', 'Failed to open page.')))
     onInitialUrlConsumed?.()
-  }, [initialUrl])
+  }, [initialUrl, onInitialUrlConsumed, open])
 
   useEffect(() => {
     const webview = webviewRef.current
@@ -2609,14 +2608,18 @@ function clampInspectorWidth(width: number, viewportWidth = typeof window === 'u
 }
 
 async function watchTerminalRun(runId: string, setRuns: React.Dispatch<React.SetStateAction<TerminalRun[]>>, signal?: AbortSignal) {
-  for (let i = 0; i < 24; i++) {
+  let attempt = 0
+  while (!signal?.aborted) {
     if (signal?.aborted) return
-    await new Promise(resolve => setTimeout(resolve, i < 8 ? 500 : 1200))
+    const delay = attempt < 8 ? 500 : Math.min(5000, 1200 + (attempt - 8) * 250)
+    await new Promise(resolve => setTimeout(resolve, delay))
     if (signal?.aborted) return
     const history = await window.electronAPI.terminal.history().catch(() => [])
     const current = history.find(run => run.id === runId)
     setRuns(history)
     if (current && current.status !== 'running') break
+    if (!current) break
+    attempt += 1
   }
 }
 

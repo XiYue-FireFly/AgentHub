@@ -70,6 +70,13 @@ function AppInner() {
   const configRequestId = useRef(0)
   const configEmptyRetryCount = useRef(0)
   const configRetryTimer = useRef<number | null>(null)
+  const providersRef = useRef<ProviderDef[]>([])
+  const bindingsRef = useRef<BindingDef[]>([])
+  const fallbackChainRef = useRef<string[]>([])
+
+  useEffect(() => { providersRef.current = providers }, [providers])
+  useEffect(() => { bindingsRef.current = bindings }, [bindings])
+  useEffect(() => { fallbackChainRef.current = fallbackChain }, [fallbackChain])
 
   const applyProviderConfig = useCallback((cfg: any) => {
     if (!cfg) return
@@ -392,36 +399,36 @@ function AppInner() {
 
   /* ---------- 设置操作 ---------- */
   const onSetEnabled = useCallback(async (id: string, enabled: boolean) => {
-    const prev = providers
+    const prev = providersRef.current
     setProviders(ps => ps.map(p => p.id === id ? { ...p, enabled } : p))
     try { applyProviderConfig(await window.electronAPI.providers.setEnabled(id, enabled)) }
     catch { setProviders(prev) }
     loadConfig(); refreshStatus()
-  }, [applyProviderConfig, loadConfig, refreshStatus, providers])
+  }, [applyProviderConfig, loadConfig, refreshStatus])
 
   const onSetKey = useCallback(async (id: string, key: string) => {
-    const prev = providers
+    const prev = providersRef.current
     setProviders(ps => ps.map(p => p.id === id ? { ...p, apiKey: key, enabled: p.enabled || !!key } : p))
     try { applyProviderConfig(await window.electronAPI.providers.setKey(id, key)) }
     catch { setProviders(prev) }
     loadConfig(); refreshStatus()
-  }, [applyProviderConfig, loadConfig, refreshStatus, providers])
+  }, [applyProviderConfig, loadConfig, refreshStatus])
 
   const onSetBinding = useCallback(async (b: BindingDef) => {
-    const prev = bindings
+    const prev = bindingsRef.current
     setBindings(bs => bs.some(x => x.agentId === b.agentId) ? bs.map(x => x.agentId === b.agentId ? b : x) : [...bs, b])
     try { setBindings(await window.electronAPI.routing.setBinding(b)) }
     catch { setBindings(prev) }
     loadConfig(); refreshStatus()
-  }, [loadConfig, refreshStatus, bindings])
+  }, [loadConfig, refreshStatus])
 
   const onSetFallback = useCallback(async (chain: string[]) => {
-    const prev = fallbackChain
+    const prev = fallbackChainRef.current
     setFallbackChain(chain)
     try { await window.electronAPI.routing.setFallback(chain) }
     catch { setFallbackChain(prev) }
     loadConfig()
-  }, [loadConfig, fallbackChain])
+  }, [loadConfig])
 
   const onUpsertProvider = useCallback(async (p: any) => {
     try { await window.electronAPI.providers.upsert(p) } catch { /* noop */ }
