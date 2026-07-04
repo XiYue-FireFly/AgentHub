@@ -20,7 +20,7 @@ import { WorkbenchToolPanel } from './WorkbenchToolPanel'
 import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
-import { CommandPalette, PaletteCommand } from './CommandPalette'
+import { CommandPalette } from './CommandPalette'
 import { NativeTitlebar, type WorkbenchRightPanel } from './NativeTitlebar'
 import { DEFAULT_INSPECTOR_WIDTH, WorkbenchBottomDock, WorkbenchInspector, clampInspectorWidth } from './WorkbenchPanels'
 import { ErrorBoundary } from '../ErrorBoundary'
@@ -41,11 +41,11 @@ import { selectableModelOptions, isSelectableModel, resolveModelCommand, reasoni
 import { deriveTaskItems, type RuntimeTaskEventsByThread } from './utils/taskItems'
 import { approvalItemFromRuntimeEvent } from './utils/approvalEvents'
 import { watchTerminalRun } from './utils/terminalRunWatcher'
+import { buildPaletteCommands, resolvePaletteExtraAction } from './utils/paletteCommands'
 import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
   KEYBOARD_SHORTCUT_STORE_KEY,
-  KEYBOARD_SHORTCUT_COMMANDS,
   KEYBOARD_SHORTCUTS_CHANGED,
   KeyboardShortcutsConfigV1,
   resolveKeyboardShortcutBindings
@@ -807,58 +807,21 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     else if (commandId === 'open-workflows') setView('workflows')
   }, [createThread, openCreateProject, setView, openSetup])
 
-  const paletteCommands: PaletteCommand[] = useMemo(() => {
-    const cmds = KEYBOARD_SHORTCUT_COMMANDS as readonly { id: string; labelZh: string; labelEn: string; descriptionZh: string; descriptionEn: string; defaultBindings: readonly string[] }[]
-    const fromShortcuts: PaletteCommand[] = cmds.map(cmd => ({
-      id: cmd.id,
-      label: cmd.labelEn || cmd.id,
-      labelZh: cmd.labelZh,
-      labelEn: cmd.labelEn,
-      descriptionZh: cmd.descriptionZh,
-      descriptionEn: cmd.descriptionEn,
-      category: 'keyboard'
-    }))
-    const extra: PaletteCommand[] = [
-      { id: 'open-memory', label: 'Open Memory', labelZh: '打开记忆', category: 'navigation' },
-      { id: 'open-skills', label: 'Open Skills', labelZh: '打开技能', category: 'navigation' },
-      { id: 'open-prompts', label: 'Open Prompts', labelZh: '打开提示词库', category: 'navigation' },
-      { id: 'open-plugins', label: 'Open Plugins', labelZh: '打开插件管理', category: 'navigation' },
-      { id: 'open-usage', label: 'Open Usage Stats', labelZh: '打开用量统计', category: 'navigation' },
-      { id: 'open-models', label: 'Open Models', labelZh: '打开模型列表', category: 'navigation' },
-      { id: 'open-diagnostics', label: 'Run Diagnostics', labelZh: '运行诊断', category: 'system' },
-      { id: 'open-backup', label: 'Create Backup', labelZh: '创建备份', category: 'system' },
-      { id: 'seed-workflows', label: 'Seed Default Workflows', labelZh: '加载默认工作流', category: 'system' },
-      // Agent switching commands
-      ...localAgentOptions(localAgents).map(id => ({
-        id: `switch-agent:${id}`,
-        label: `Switch to ${id}`,
-        labelZh: `切换到 ${id}`,
-        category: 'agent' as const
-      }))
-    ]
-    return [...fromShortcuts, ...extra]
-  }, [localAgents])
+  const paletteCommands = useMemo(() => buildPaletteCommands(localAgents), [localAgents])
 
   const executePaletteCommand = useCallback((id: string) => {
-    if (id === 'open-memory') { openSetup('memory'); return }
-    if (id === 'open-skills') { openSetup('skills'); return }
-    if (id === 'open-plugins') { openSetup('plugins'); return }
-    if (id === 'open-usage') { openSetup('usage'); return }
-    if (id === 'open-models') { openSetup('models'); return }
-    if (id === 'open-prompts') { openSetup('shortcuts'); return }
-    if (id === 'open-diagnostics') { openSetup('appearance'); return }
-    if (id === 'open-backup') { openSetup('appearance'); return }
-    if (id === 'seed-workflows') {
+    const extraAction = resolvePaletteExtraAction(id, localAgents)
+    if (extraAction?.type === 'setup') {
+      openSetup(extraAction.tab as SettingsTabKey)
+      return
+    }
+    if (extraAction?.type === 'seed-workflows') {
       window.electronAPI.workflows.seed().catch(() => {})
       return
     }
-    if (id.startsWith('switch-agent:')) {
-      const agentId = id.split(':')[1]
-      const usable = localAgentOptions(localAgents)
-      if (agentId && usable.includes(agentId)) {
-        setTargetAgent(agentId)
-        setView('chat')
-      }
+    if (extraAction?.type === 'switch-agent') {
+      setTargetAgent(extraAction.agentId)
+      setView('chat')
       return
     }
     runShortcutCommand(id)

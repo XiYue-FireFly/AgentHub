@@ -153,6 +153,15 @@
   - reduced `WorkbenchLayout.tsx` from 1659 lines to 1614 lines
   - added structure coverage to keep workspace creation dialog logic out of
     `WorkbenchLayout.tsx`
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved command palette command construction and extra-command resolution
+    into `src/renderer/workbench/utils/paletteCommands.ts`
+  - kept command execution side effects in `WorkbenchLayout.tsx`, with unknown
+    palette commands falling back to the existing shortcut dispatcher
+  - added direct utility coverage for shortcut command inclusion, extra command
+    mappings, usable local-agent filtering, invalid agent rejection, and
+    shortcut fallback behavior
+  - reduced `WorkbenchLayout.tsx` from 1614 lines to 1577 lines
 
 ## Validation Log
 
@@ -406,6 +415,19 @@
     orchestration.
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 161 files and 1055 tests.
+  - `npm run build` passed.
+- Palette command utility extraction validation:
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/paletteCommands.test.ts src/renderer/workbench/__tests__/keyboard-shortcuts.test.ts src/renderer/workbench/__tests__/slash-command-behavior.test.ts src/renderer/workbench/__tests__/git-dock-layout.test.ts`
+    with 4 files and 27 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed palette/workbench files passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for shortcut commands, extra commands, usable local-agent
+    switch commands, setup mappings, workflow seeding, and shortcut fallback.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 162 files and 1057 tests.
   - `npm run build` passed.
 
 ## Pending
