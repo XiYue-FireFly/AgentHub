@@ -1,5 +1,5 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Icon, IC, AgentMark } from '../glass/ui'
+import { Icon, IC } from '../glass/ui'
 import { BindingDef, ProviderDef, TaskItem } from '../glass/meta'
 import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
 import { SettingsScreen } from '../screens/Settings'
@@ -25,7 +25,7 @@ import { FileTreePanel } from './FileTreePanel'
 import { SubagentDetailPanel } from './SubagentDetailPanel'
 import { SideConversationPanel } from './SideConversationPanel'
 import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
-import { localAgentLabel, localAgentOptions } from './localAgentOptions'
+import { localAgentOptions } from './localAgentOptions'
 import { isWorkbenchViewMode, type ViewMode } from './viewModes'
 import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
@@ -46,7 +46,6 @@ type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | 'files
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
 type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 
-const AGENT_SLOT_STORE_KEY = 'agenthub.workbench.agentSlots.v1'
 const INSPECTOR_WIDTH_STORE_KEY = 'agenthub.workbench.inspectorWidth.v1'
 const LAST_VIEW_STORE_KEY = 'agenthub.workbench.lastView.v1'
 const LAST_THREAD_STORE_KEY = 'agenthub.workbench.lastThread.v1'
@@ -101,6 +100,7 @@ interface WorkbenchLayoutProps {
     onDeleteProvider: (id: string) => void
     onReorderProvidersForClaude: (orderedIds: string[]) => void
   }
+  configLoadError?: string | null
   motion: MotionLevel
   setMotion: (m: MotionLevel) => void
 }
@@ -137,7 +137,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [sendError, setSendError] = useState<string | null>(null)
 
   useEffect(() => { setSendError(null) }, [view])
-  const [_agentSlots, setAgentSlots] = useState<string[]>([])
   const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH)
   const [viewportWidth, setViewportWidth] = useState(typeof window === 'undefined' ? 1280 : window.innerWidth)
   const [terminalRuns, setTerminalRuns] = useState<TerminalRun[]>([])
@@ -395,9 +394,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [])
 
   useEffect(() => {
-    window.electronAPI.store.get(AGENT_SLOT_STORE_KEY)
-      .then(value => { if (Array.isArray(value)) setAgentSlots(value.filter(Boolean).slice(0, 3)) })
-      .catch(() => {})
     window.electronAPI.store.get(CUSTOM_SCHEDULE_STORE_KEY)
       .then(value => { if (isStoredSchedule(value, 'custom')) setCustomScheduleState(value) })
       .catch(() => {})
@@ -727,6 +723,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     else if (commandId === 'view-chat') setView('chat')
     else if (commandId === 'view-write') setView('write')
     else if (commandId === 'view-tasks') setView('tasks')
+    else if (commandId === 'view-requirements') setView('requirements')
     else if (commandId === 'view-settings') setView('settings')
     else if (commandId === 'panel-runs') setRightPanel('runs')
     else if (commandId === 'panel-git') setRightPanel('git')
@@ -940,13 +937,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const workspaceName = activeWorkspace?.name || (workspaceId ? tr('工作目录', 'Working folder') : tr('未绑定工作目录', 'No folder bound'))
   const _currentSchedule = schedules.find(schedule => schedule.preset === mode)
   const usableAgentIds = localAgentOptions(localAgents)
-  const selectedAgentId = targetAgent && usableAgentIds.includes(targetAgent) ? targetAgent : null
-  const visibleAgentIds = selectedAgentId
-    ? [selectedAgentId, ...usableAgentIds.filter(id => id !== selectedAgentId)].slice(0, 3)
-    : usableAgentIds.slice(0, 3)
-  const _overflowAgentIds = usableAgentIds.filter(id => !visibleAgentIds.includes(id))
   const readyLocalAgents = usableAgentIds.length
-  const _selectedAgentName = selectedAgentId ? agentShortName(selectedAgentId) : null
 
   useEffect(() => {
     // 不要重置用户明确选择的 agent（即使是通过 HTTP provider 绑定的）
@@ -954,12 +945,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setTargetAgent(null)
     }
   }, [targetAgent, usableAgentIds.join('|')])
-
-  const _persistAgentSlots = useCallback((slots: string[]) => {
-    const clean = normalizeAgentSlots(slots, usableAgentIds)
-    setAgentSlots(clean)
-    window.electronAPI.store.set(AGENT_SLOT_STORE_KEY, clean).catch(() => {})
-  }, [usableAgentIds.join('|')])
 
   const setInspectorWidthPersisted = useCallback((width: number) => {
     const next = clampInspectorWidth(width, viewportWidth)
@@ -1218,6 +1203,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         />
 
         <main className="wb-main">
+          {props.configLoadError && (
+            <div className="wb-config-error" role="alert">
+              <span>{props.configLoadError}</span>
+              <button type="button" onClick={props.providerActions.onReload}>{tr('重试', 'Retry')}</button>
+            </div>
+          )}
+
           {view === 'write' && (
             <ErrorBoundary label="Write">
             <WriteWorkspace
@@ -1689,68 +1681,6 @@ function NativeTitlebar({
         <button onClick={() => win?.maximizeToggle()}><Icon d={IC.max} size={13} /></button>
         <button onClick={() => win?.close()}><Icon d={IC.x} size={13} /></button>
       </div>
-    </div>
-  )
-}
-
-function _AgentSlotBar({
-  usableAgentIds,
-  slots,
-  persistSlots,
-  targetAgent,
-  setTargetAgent,
-  agents
-}: {
-  usableAgentIds: string[]
-  slots: string[]
-  persistSlots: (slots: string[]) => void
-  targetAgent: string | null
-  setTargetAgent: (agentId: string | null) => void
-  agents: AgentMap
-}) {
-  const normalized = normalizeAgentSlots(slots, usableAgentIds)
-  useEffect(() => {
-    if (usableAgentIds.length > 0 && normalized.join('|') !== slots.join('|')) {
-      persistSlots(normalized)
-    }
-  }, [usableAgentIds.join('|'), normalized.join('|'), slots.join('|'), persistSlots])
-
-  if (usableAgentIds.length === 0) return null
-
-  return (
-    <div className="wb-agent-slots" aria-label={tr('本地 Agent 槽位', 'Local agent slots')}>
-      {normalized.map((agentId, index) => {
-        const choices = usableAgentIds.filter(id => id === agentId || !normalized.includes(id))
-        const canReplace = choices.length > 1
-        return (
-          <div key={`${index}-${agentId}`} className={'wb-agent-slot' + (targetAgent === agentId ? ' active' : '')}>
-            <button
-              type="button"
-              className="wb-agent-slot-main"
-              onClick={() => setTargetAgent(targetAgent === agentId ? null : agentId)}
-              title={tr(`直连 ${agentShortName(agentId)}`, `Route directly to ${agentShortName(agentId)}`)}
-            >
-              <AgentMark id={agentId} size={24} radius={7} />
-              <span>{agentShortName(agentId)}</span>
-              <i className={'ah-dot ' + (agents[agentId]?.status || 'idle')}></i>
-            </button>
-            {canReplace && (
-              <select
-                value={agentId}
-                onChange={event => {
-                  const next = [...normalized]
-                  next[index] = event.target.value
-                  persistSlots(next)
-                  setTargetAgent(event.target.value)
-                }}
-                aria-label={tr('替换 Agent', 'Replace agent')}
-              >
-                {choices.map(id => <option key={id} value={id}>{agentShortName(id)}</option>)}
-              </select>
-            )}
-          </div>
-        )
-      })}
     </div>
   )
 }
@@ -2514,25 +2444,6 @@ function browserCaptureToAttachment(capture: BrowserContextAttachment): Workbenc
   }
 }
 
-function normalizeAgentSlots(slots: string[], usableAgentIds: string[]): string[] {
-  const seen = new Set<string>()
-  const next: string[] = []
-  for (const id of slots) {
-    if (usableAgentIds.includes(id) && !seen.has(id)) {
-      seen.add(id)
-      next.push(id)
-    }
-  }
-  for (const id of usableAgentIds) {
-    if (next.length >= 3) break
-    if (!seen.has(id)) {
-      seen.add(id)
-      next.push(id)
-    }
-  }
-  return next.slice(0, 3)
-}
-
 function selectableModelOptions(providers: ProviderDef[]): Array<{ providerId: string; modelId: string; label: string; searchable: string }> {
   const options: Array<{ providerId: string; modelId: string; label: string; searchable: string }> = []
   for (const provider of providers) {
@@ -2634,8 +2545,4 @@ function _modeLabel(mode: DispatchPreset): string {
     'firefly-custom': tr('智能五角色', 'Smart five-role'),
     custom: tr('自定义调度', 'Custom schedule')
   } as Partial<Record<DispatchPreset, string>>)[mode] || mode
-}
-
-function agentShortName(agentId: string): string {
-  return localAgentLabel(agentId)
 }

@@ -43,12 +43,20 @@ export const KEYBOARD_SHORTCUT_COMMANDS = [
     defaultBindings: ['Ctrl+3']
   },
   {
+    id: 'view-requirements',
+    labelZh: '\u6253\u5f00\u9700\u6c42',
+    labelEn: 'Open requirements',
+    descriptionZh: '\u6253\u5f00\u9700\u6c42\u6587\u6863\u548c SDD \u52a9\u624b',
+    descriptionEn: 'Open requirements documents and the SDD assistant.',
+    defaultBindings: ['Ctrl+4']
+  },
+  {
     id: 'view-settings',
     labelZh: '\u5207\u6362\u5230\u8bbe\u7f6e',
     labelEn: 'Open settings',
     descriptionZh: '\u6253\u5f00\u8bbe\u7f6e\u9875',
     descriptionEn: 'Open Settings.',
-    defaultBindings: ['Ctrl+4']
+    defaultBindings: ['Ctrl+5']
   },
   {
     id: 'panel-runs',

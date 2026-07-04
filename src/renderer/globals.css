@@ -2796,6 +2796,31 @@ button, input, textarea, select { letter-spacing: 0; }
   box-shadow: 0 8px 22px rgba(80, 24, 20, 0.08);
   margin: 0 24px 8px;
 }
+.wb-config-error {
+  flex: none;
+  align-self: center;
+  width: min(860px, calc(100% - 48px));
+  color: var(--wb-red);
+  background: #fff6f5;
+  border: 1px solid #ffd8d5;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: var(--font-xs);
+  box-shadow: 0 8px 22px rgba(80, 24, 20, 0.08);
+  margin: 10px 24px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.wb-config-error button {
+  border: 1px solid #ffd8d5;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--wb-red);
+  border-radius: 7px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
 .wb-goal-strip {
   width: min(860px, calc(100% - 32px));
   margin: 0 auto 10px;

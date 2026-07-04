@@ -26,6 +26,15 @@
   test for rejected unregistered roots.
 - Fixed the Settings requirements tab so it resolves `workspaceId` to the
   workspace `rootPath` before loading SDD drafts.
+- Completed a residual fable5 1.2.4 cleanup batch:
+  - removed the unused legacy `_AgentSlotBar` implementation and slot state
+    from `WorkbenchLayout`
+  - made `conversation:exportFile` use resolved-path guards so filenames such
+    as `project..demo.md` are allowed while traversal is still blocked
+  - added `view-requirements` as a first-class shortcut/command palette command
+  - surfaced provider config load exhaustion as a visible workbench alert with a
+    retry action
+  - added path, shortcut, and architecture guard coverage
 
 ## Validation Log
 
@@ -54,9 +63,21 @@
   - `npm test` passed: 157 files, 1030 tests.
   - `npm run build` passed.
   - Read-only subagent review returned `APPROVE` with no blockers.
+- Residual 1.2.4 cleanup validation:
+  - Targeted tests passed:
+    `npx vitest run src/main/ipc/__tests__/conversation-ipc.test.ts src/main/ipc/__tests__/path-guards.test.ts src/main/__tests__/architecture-guards.test.ts src/renderer/workbench/__tests__/keyboard-shortcuts.test.ts src/renderer/workbench/__tests__/viewModes.test.ts`
+    with 5 files and 14 tests passed.
+  - `npm run typecheck` passed.
+  - Targeted eslint passed for changed code and tests.
+  - `git diff --check` passed.
+  - Full validation before the final retry-counter tweak passed:
+    `npm run typecheck`, `npm run lint` with 0 errors and 36 existing warnings,
+    `npm test` with 158 files and 1034 tests, and `npm run build`.
+  - Read-only subagent review returned `APPROVE`; its retry-counter note was
+    addressed by adding the `reloadConfig` wrapper.
 
 ## Pending
 
-- Commit the verified baseline patch set.
 - Continue fable5 1.2.4 residual fixes and 1.3.0 groundwork in small
   verified batches.
+- Re-run full validation after the next patch batch before commit.

@@ -53,4 +53,18 @@ describe('architecture guards', () => {
 
     expect(offenders).toEqual([])
   })
+
+  it('keeps IPC path traversal checks on resolved paths instead of raw path substrings', () => {
+    const offenders: string[] = []
+    const rawPathIncludesTraversal = /\b(?:path|filePath|rootPath|workspaceRoot|relPath|relativePath|resolvedPath)\.includes\(['"]\.\.['"]\)/
+
+    for (const file of collectSourceFiles(join(SRC_ROOT, 'main', 'ipc'))) {
+      const content = readFileSync(file, 'utf-8')
+      if (rawPathIncludesTraversal.test(content)) {
+        offenders.push(relative(SRC_ROOT, file))
+      }
+    }
+
+    expect(offenders).toEqual([])
+  })
 })

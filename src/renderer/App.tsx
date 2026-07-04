@@ -45,6 +45,7 @@ function AppInner() {
   const [hubAgents, setHubAgents] = useState<Record<string, string>>({})   // 注册表原始状态
   const [busyOverride, setBusyOverride] = useState<Record<string, AgentUIStatus | undefined>>({}) // 流式期间的即时状态
   const [providers, setProviders] = useState<ProviderDef[]>([])
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null)
   const [bindings, setBindings] = useState<BindingDef[]>([])
   const [fallbackChain, setFallbackChain] = useState<string[]>([])
   const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([])
@@ -165,7 +166,11 @@ function AppInner() {
     clearConfigRetryTimer()
     const retryLoadConfig = () => {
       const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
-      if (retryDelay === null) return
+      if (retryDelay === null) {
+        setConfigLoadError('主进程配置暂未就绪，请检查应用日志或点击重试。')
+        return
+      }
+      setConfigLoadError(null)
       configEmptyRetryCount.current += 1
       configRetryTimer.current = window.setTimeout(() => {
         configRetryTimer.current = null
@@ -181,18 +186,28 @@ function AppInner() {
       applyProviderConfig(cfg)
       if (!isEmptyProviderConfig(cfg?.providers)) {
         configEmptyRetryCount.current = 0
+        setConfigLoadError(null)
         return
       }
       const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
       if (retryDelay !== null) {
+        setConfigLoadError(null)
         configEmptyRetryCount.current += 1
         configRetryTimer.current = window.setTimeout(() => {
           configRetryTimer.current = null
           if (requestId === configRequestId.current) loadConfig().catch(() => {})
         }, retryDelay)
+      } else {
+        setConfigLoadError('主进程配置暂未就绪，请检查应用日志或点击重试。')
       }
     } catch { /* main 进程未就绪 */ }
   }, [applyProviderConfig, clearConfigRetryTimer])
+
+  const reloadConfig = useCallback(() => {
+    configEmptyRetryCount.current = 0
+    setConfigLoadError(null)
+    loadConfig()
+  }, [loadConfig])
 
   useEffect(() => clearConfigRetryTimer, [clearConfigRetryTimer])
 
@@ -497,11 +512,12 @@ function AppInner() {
         onSetKey,
         onSetBinding,
         onSetFallback,
-        onReload: loadConfig,
+        onReload: reloadConfig,
         onUpsertProvider,
         onDeleteProvider,
         onReorderProvidersForClaude
       }}
+      configLoadError={configLoadError}
       motion={motion}
       setMotion={setMotion}
     />
