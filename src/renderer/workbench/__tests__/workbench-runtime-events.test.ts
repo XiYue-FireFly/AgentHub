@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { isTaskHistoryEvent, mergeRuntimeEventLists, shouldFlushFirstStreamDelta } from "../utils/eventUtils"
+import { isTaskHistoryEvent, mergeRuntimeEventLists, runtimeAgentStatusFromEvent, shouldFlushFirstStreamDelta } from "../utils/eventUtils"
 
 describe("Workbench runtime event loading", () => {
   it("merges live runtime events that arrive while a snapshot is loading", () => {
@@ -99,5 +99,48 @@ describe("Workbench runtime event loading", () => {
     expect(layout).toContain("<ApprovalDialog items={approvals} onDecide={onApprovalDecide} />")
     expect(app).not.toContain("e.kind === 'approval'")
     expect(app).not.toContain("setApprovals")
+  })
+
+  it("drives agent busy display from runtime events instead of legacy dispatch stream", () => {
+    const app = readFileSync(join(process.cwd(), "src/renderer/App.tsx"), "utf8")
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+
+    expect(runtimeAgentStatusFromEvent({
+      id: "start-1",
+      threadId: "t1",
+      turnId: "turn-1",
+      seq: 1,
+      kind: "agent:start",
+      agentId: "codex",
+      payload: { taskId: "task-1" },
+      createdAt: 1
+    } as RuntimeEvent)).toEqual({ agentId: "codex", status: "busy", runKey: "turn-1:codex:task-1" })
+
+    expect(runtimeAgentStatusFromEvent({
+      id: "done-1",
+      threadId: "t1",
+      turnId: "turn-1",
+      seq: 2,
+      kind: "agent:done",
+      agentId: "codex",
+      payload: { taskId: "task-1" },
+      createdAt: 2
+    } as RuntimeEvent)).toEqual({ agentId: "codex", status: "idle", runKey: "turn-1:codex:task-1" })
+
+    expect(layout).toContain("runtimeAgentStatusFromEvent(event)")
+    expect(layout).toContain("props.onRuntimeAgentStatus?.(runtimeAgentStatus.agentId, runtimeAgentStatus.status, runtimeAgentStatus.runKey)")
+    expect(app).toContain("runtimeBusyRuns")
+    expect(app).toContain("setRuntimeBusyRuns")
+    expect(app).toContain("if (runtimeBusyRuns[id] && st !== 'off') st = 'busy'")
+  })
+
+  it("does not keep the legacy renderer dispatch stream or memory-backed chat state", () => {
+    const app = readFileSync(join(process.cwd(), "src/renderer/App.tsx"), "utf8")
+
+    expect(app).not.toContain("hub.onStream")
+    expect(app).not.toContain("setMessages")
+    expect(app).not.toContain("memoryApi.saveState")
+    expect(app).not.toContain("memoryApi.loadState")
+    expect(app).not.toContain("runtimeRefreshNonce")
   })
 })

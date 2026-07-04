@@ -10,6 +10,12 @@ type WorkbenchRuntimeEvent = {
   payload?: any
 }
 
+export type RuntimeAgentStatusUpdate = {
+  agentId: string
+  status: 'busy' | 'idle'
+  runKey: string
+}
+
 /**
  * Merge two lists of runtime events, deduplicating by id or threadId:seq key.
  * Maintains sorted order by seq and caps at MAX_EVENTS.
@@ -36,6 +42,22 @@ export function mergeRuntimeEventLists<Event extends WorkbenchRuntimeEvent>(base
  */
 export function isBufferedRuntimeEvent(event: WorkbenchRuntimeEvent): boolean {
   return event.kind === 'agent:delta' || event.kind === 'agent:activity'
+}
+
+export function runtimeAgentStatusFromEvent(event: WorkbenchRuntimeEvent): RuntimeAgentStatusUpdate | null {
+  if (event.kind !== 'agent:start' && event.kind !== 'agent:done' && event.kind !== 'agent:error') return null
+  const agentId = event.agentId || event.payload?.agentId
+  if (!agentId) return null
+  const runKey = [
+    event.turnId,
+    agentId,
+    event.payload?.scheduleStepId || event.payload?.taskId || event.payload?.scheduleRole || event.payload?.role || 'run'
+  ].join(':')
+  return {
+    agentId,
+    status: event.kind === 'agent:start' ? 'busy' : 'idle',
+    runKey
+  }
 }
 
 export function isTaskHistoryEvent(event: WorkbenchRuntimeEvent): boolean {

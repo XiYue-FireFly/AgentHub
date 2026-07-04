@@ -102,6 +102,17 @@
     `agent:approval` runtime events into `ApprovalDialog` items
   - kept legacy `hub.onStream` only for the remaining old chat-bubble
     compatibility path; approvals no longer depend on it
+- Continued fable5 1.3.0 runtime-pipeline consolidation:
+  - removed the renderer `hub.onStream` subscription from `App.tsx`
+  - removed legacy memory-backed `messages`/`tasks` state and persistence from
+    `App.tsx`
+  - moved task delete/clear confirmation and IPC ownership into
+    `WorkbenchLayout`
+  - added runtime-event-driven agent busy display through
+    `runtimeAgentStatusFromEvent` and `onRuntimeAgentStatus`, so short runs no
+    longer depend on the 8 second `hub.getStatus()` polling interval
+  - kept the renderer off legacy `dispatch:stream`; busy, approvals, chat, and
+    task history now use `runtime:event` for this batch
 
 ## Validation Log
 
@@ -280,11 +291,29 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 161 files and 1049 tests.
   - `npm run build` passed.
+- Legacy renderer stream removal validation:
+  - Initial read-only subagent review blocked the batch because removing
+    `busyOverride` could hide short agent runs between `hub.getStatus()` polls.
+  - Added runtime-event-driven busy tracking keyed by agent/run and requested a
+    follow-up read-only subagent review.
+  - Follow-up read-only subagent review returned `APPROVE` with no blockers and
+    confirmed live `agent:start/done/error` events update the App immediately
+    without restoring `hub.onStream`.
+  - Targeted tests passed:
+    `npx vitest run src/renderer/workbench/__tests__/workbench-runtime-events.test.ts src/renderer/workbench/__tests__/approvalEvents.test.ts src/renderer/workbench/__tests__/taskItems.test.ts`
+    with 3 files and 14 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed renderer runtime files passed.
+  - `git diff --check` passed.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 161 files and 1051 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 runtime-pipeline consolidation in small verified
   batches.
-- Next likely candidates: remove the renderer `hub.onStream` subscription and
-  legacy `messages/tasks` memory persistence from `App.tsx`.
+- Next likely candidates: remove dead preload/main legacy stream APIs
+  (`hub.onStream`/`chat.onResponse` and matching broadcasts) where no renderer
+  code still consumes them.
 - Re-run full validation after the next patch batch before commit.

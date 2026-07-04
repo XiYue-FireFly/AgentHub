@@ -1,23 +1,16 @@
 /* ============================================================
    AgentHub — 玻璃拟态壳层（design_handoff_glass_ui 实现）
    背景光斑 + 标题栏 + 侧边栏 + 四页（总览/会话/任务/设置）
-   真实 IPC：hub:status / hub:dispatch / dispatch:stream /
+   真实 IPC：hub:status /
              providers:* / routing:setBinding / proxy:info
    ============================================================ */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import {
-  AGENT_IDS, AgentUIStatus, BindingDef, ProviderDef, TaskItem, ChatMessage,
-  DispatchMode
-} from './glass/meta'
+import { AGENT_IDS, AgentUIStatus, BindingDef, ProviderDef } from './glass/meta'
 import { MotionLevel } from './screens/Settings'
 import { useLang } from './glass/i18n'
-import { applyOrchestrateEvent } from './glass/orchestrate-reducer'
-import { upsertStep } from './glass/chat-transcript'
 import { WorkbenchLayout } from './workbench/WorkbenchLayout'
 import { applyAppearance, loadAppearance, readAppearanceLocal, subscribeSystemTheme } from './appearance'
-import { styledConfirm } from './lib/confirm'
-import { hasRunningTask, nextMemorySaveDelayMs } from './memory-save-policy'
 import { isEmptyProviderConfig, nextEmptyProviderConfigRetryDelayMs } from './provider-config-load-policy'
 
 type AgentMap = Record<string, { status: AgentUIStatus }>
@@ -42,30 +35,17 @@ function AppInner() {
   const [hubRunning, setHubRunning] = useState(false)
   const [proxyHost, setProxyHost] = useState('127.0.0.1:9528')
   const [hubAgents, setHubAgents] = useState<Record<string, string>>({})   // 注册表原始状态
-  const [busyOverride, setBusyOverride] = useState<Record<string, AgentUIStatus | undefined>>({}) // 流式期间的即时状态
+  const [runtimeBusyRuns, setRuntimeBusyRuns] = useState<Record<string, Record<string, true>>>({})
   const [providers, setProviders] = useState<ProviderDef[]>([])
   const [configLoadError, setConfigLoadError] = useState<string | null>(null)
   const [bindings, setBindings] = useState<BindingDef[]>([])
   const [fallbackChain, setFallbackChain] = useState<string[]>([])
   const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([])
-  const [tasks, setTasks] = useState<TaskItem[]>([])
-  const [runtimeRefreshNonce, setRuntimeRefreshNonce] = useState(0)
-  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [appearance, setAppearance] = useState(readAppearanceLocal)
   const [motion, setMotion] = useState<MotionLevel>(() => {
     try { return readAppearanceLocal().motion || (localStorage.getItem('ah-motion') as MotionLevel) || 'rich' } catch { return 'rich' }
   })
 
-  /* 流式派发簿记 */
-  const taskToMsg = useRef<Map<string, string>>(new Map())
-  const pendingMsgId = useRef<string | null>(null)
-  const ignoredTasks = useRef<Set<string>>(new Set())
-  const ignoredMsgs = useRef<Set<string>>(new Set())
-  const activeTaskIds = useRef<Set<string>>(new Set())
-  const localTaskId = useRef<Map<string, string>>(new Map()) // 后端 taskId → 本地任务行 id
-  const memoryReady = useRef(false)
-  const lastRunningMemorySaveAt = useRef(0)
-  const orchestrateTasks = useRef<Set<string>>(new Set())  // 编排模式任务 id（其内部 agent 事件不渲染气泡）
   const configRequestId = useRef(0)
   const configEmptyRetryCount = useRef(0)
   const configRetryTimer = useRef<number | null>(null)
@@ -115,42 +95,6 @@ function AppInner() {
     try { localStorage.setItem('ah-motion', motion) } catch { /* noop */ }
     return subscribeSystemTheme(next, () => applyAppearance(next))
   }, [appearance, motion])
-
-  useEffect(() => {
-    let alive = true
-    const memoryApi = window.electronAPI?.memory
-    if (!memoryApi?.loadState) {
-      memoryReady.current = true
-      return () => { alive = false }
-    }
-    memoryApi.loadState()
-      .then(state => {
-        if (!alive) return
-        if (Array.isArray(state?.messages) && state.messages.length > 0) setMessages(state.messages as ChatMessage[])
-        if (Array.isArray(state?.tasks) && state.tasks.length > 0) setTasks(state.tasks as TaskItem[])
-      })
-      .catch(() => {})
-      .finally(() => { if (alive) memoryReady.current = true })
-    return () => { alive = false }
-  }, [])
-
-  useEffect(() => {
-    if (!memoryReady.current) return
-    const memoryApi = window.electronAPI?.memory
-    if (!memoryApi?.saveState) return
-    const running = hasRunningTask(tasks)
-    const delay = nextMemorySaveDelayMs(running, Date.now(), lastRunningMemorySaveAt.current)
-    const saveState = () => {
-      if (running) lastRunningMemorySaveAt.current = Date.now()
-      memoryApi.saveState({ messages, tasks }).catch(() => {})
-    }
-    if (running && delay === 0) {
-      saveState()
-      return
-    }
-    const timer = setTimeout(saveState, delay)
-    return () => clearTimeout(timer)
-  }, [messages, tasks])
 
   /* ---------- 数据加载 ---------- */
   const clearConfigRetryTimer = useCallback(() => {
@@ -216,20 +160,6 @@ function AppInner() {
       const m: Record<string, string> = {}
       for (const a of st?.agents ?? []) m[a.id] = a.status
       setHubAgents(m)
-      if (st?.tasks) {
-        setTasks(prev => {
-          const known = new Set(prev.map(t => t.id))
-          const fromHub: TaskItem[] = (st.tasks as any[])
-            .filter(t => !known.has(t.id) && ![...localTaskId.current.values()].includes(t.id) && !taskToMsg.current.has(t.id))
-            .map(t => ({
-              id: t.id, text: t.text, mode: (t.mode || 'auto') as DispatchMode,
-              status: t.status === 'pending' ? 'running' : t.status,
-              agents: [], durationMs: null,
-              createdAt: t.createdAt ? new Date(t.createdAt).toTimeString().slice(0, 5) : ''
-            }))
-          return fromHub.length ? [...prev, ...fromHub] : prev
-        })
-      }
     } catch { /* noop */ }
     try {
       setLocalAgents(await window.electronAPI.localAgents.status())
@@ -269,123 +199,7 @@ function AppInner() {
     return off
   }, [refreshStatus])
 
-  /* ---------- 流式事件 ---------- */
-  // P2-13: Guard against hub.onStream not being ready at mount time;
-  // without this, `off` is undefined and stream events are silently lost.
-  useEffect(() => {
-    const hubApi = window.electronAPI?.hub
-    if (!hubApi?.onStream) {
-      console.warn('[App] hub.onStream not available — stream events will not be received')
-      return
-    }
-    const off = hubApi.onStream((e: any) => {
-      const tid: string = e.taskId
-      if (!tid || ignoredTasks.current.has(tid)) return
-
-      if (e.__runtimeTurnId || e.turnId) return
-
-      let msgId = taskToMsg.current.get(tid)
-      if (!msgId && pendingMsgId.current) {
-        msgId = pendingMsgId.current
-        taskToMsg.current.set(tid, msgId)
-        activeTaskIds.current.add(tid)
-      }
-      if (!msgId || ignoredMsgs.current.has(msgId)) return
-      const localId = localTaskId.current.get(tid) ?? tid
-
-      // 编排模式：orchestrate:* 事件经 reducer 聚合到该消息的 orchestration；标记该任务
-      if (typeof e.kind === 'string' && e.kind.startsWith('orchestrate:')) {
-        orchestrateTasks.current.add(tid)
-        setMessages(ms => ms.map(m => m.id === msgId
-          ? { ...m, orchestration: applyOrchestrateEvent(m.orchestration, e) } : m))
-        if (e.kind === 'orchestrate:final' || e.kind === 'orchestrate:error') {
-          setBusyOverride(o => ({ ...o }))
-          setTasks(ts => ts.map(t => t.id === localId
-            ? { ...t, results: { ...(t.results || {}), orchestrate: e.content || t.results?.orchestrate || '' } } : t))
-        }
-        return
-      }
-      // 编排任务的内部 agent 事件（lead 分解/子任务/汇总）不渲染为普通气泡
-      if (orchestrateTasks.current.has(tid)) return
-
-      if (e.kind === 'start') {
-        setBusyOverride(o => ({ ...o, [e.agentId]: 'busy' }))
-        setMessages(ms => ms.map(m => {
-          if (m.id !== msgId) return m
-          if (m.replies.some(r => r.agentId === e.agentId)) return m
-          return { ...m, replies: [...m.replies, { agentId: e.agentId, thinking: '', text: '', done: false }] }
-        }))
-        setTasks(ts => ts.map(t => t.id === localId && !t.agents.includes(e.agentId)
-          ? { ...t, agents: [...t.agents, e.agentId] } : t))
-      } else if (e.kind === 'delta') {
-        setMessages(ms => ms.map(m => m.id === msgId
-          ? {
-              ...m,
-              replies: m.replies.map(r => r.agentId === e.agentId
-                ? (e.channel === 'thinking'
-                    ? { ...r, thinking: r.thinking + e.text }
-                    : { ...r, text: r.text + e.text })
-                : r)
-            }
-          : m))
-      } else if (e.kind === 'activity' && e.step) {
-        // Track A/B：结构化活动步骤（工具调用/思考），按 step.id upsert 进对应 reply 的 steps[]
-        setMessages(ms => ms.map(m => {
-          if (m.id !== msgId) return m
-          const exists = m.replies.some(r => r.agentId === e.agentId)
-          const replies = exists
-            ? m.replies.map(r => r.agentId === e.agentId ? { ...r, steps: upsertStep(r.steps, e.step) } : r)
-            : [...m.replies, { agentId: e.agentId, thinking: '', text: '', done: false, steps: upsertStep(undefined, e.step) }]
-          return { ...m, replies }
-        }))
-        // 同时落进任务历史，重启后仍可复查 agent 做了什么
-        setTasks(ts => ts.map(t => t.id === localId
-          ? { ...t, steps: { ...(t.steps || {}), [e.agentId]: upsertStep(t.steps?.[e.agentId], e.step) } }
-          : t))
-      } else if (e.kind === 'done') {
-        setBusyOverride(o => ({ ...o, [e.agentId]: undefined }))
-        setMessages(ms => ms.map(m => m.id === msgId
-          ? { ...m, replies: m.replies.map(r => r.agentId === e.agentId ? { ...r, done: true } : r) }
-          : m))
-        setTasks(ts => ts.map(t => t.id === localId
-          ? {
-              ...t,
-              results: { ...(t.results || {}), [e.agentId]: e.content },
-              usage: e.usage ? { ...(t.usage || {}), [e.agentId]: { ...e.usage, modelId: e.modelId } } : t.usage
-            }
-          : t))
-      } else if (e.kind === 'error') {
-        setBusyOverride(o => ({ ...o, [e.agentId]: undefined }))
-        setMessages(ms => ms.map(m => m.id === msgId
-          ? { ...m, replies: m.replies.map(r => r.agentId === e.agentId ? { ...r, done: true, error: e.error } : r) }
-          : m))
-        setTasks(ts => ts.map(t => t.id === localId
-          ? { ...t, errors: { ...(t.errors || {}), [e.agentId]: e.error } }
-          : t))
-      }
-    })
-    return off
-  }, [])
-
   /* ---------- 派发 ---------- */
-  const onDeleteTask = useCallback(async (id: string) => {
-    const ok = await styledConfirm({ message: '删除这条任务历史？对应的运行详情也会从当前会话记录中移除。', danger: true })
-    if (!ok) return
-    try { await window.electronAPI.tasks.delete(id) } catch { /* noop */ }
-    setTasks(ts => ts.filter(t => t.id !== id))
-    setRuntimeRefreshNonce(n => n + 1)
-    refreshStatus()
-  }, [refreshStatus])
-
-  const onClearCompletedTasks = useCallback(async () => {
-    const ok = await styledConfirm({ message: '清理所有已结束的任务历史？对应的运行详情也会从当前会话记录中移除。', danger: true })
-    if (!ok) return
-    try { await window.electronAPI.tasks.clearCompleted() } catch { /* noop */ }
-    setTasks(ts => ts.filter(t => t.status === 'running'))
-    setRuntimeRefreshNonce(n => n + 1)
-    refreshStatus()
-  }, [refreshStatus])
-
   /* ---------- 设置操作 ---------- */
   const onSetEnabled = useCallback(async (id: string, enabled: boolean) => {
     const prev = providersRef.current
@@ -436,6 +250,27 @@ function AppInner() {
     catch { loadConfig() }
   }, [applyProviderConfig, loadConfig, providers])
 
+  const onRuntimeAgentStatus = useCallback((agentId: string, status: 'busy' | 'idle', runKey: string) => {
+    if (!agentId || !runKey) return
+    if (status === 'busy') {
+      setRuntimeBusyRuns(prev => ({
+        ...prev,
+        [agentId]: { ...(prev[agentId] || {}), [runKey]: true }
+      }))
+      return
+    }
+    setRuntimeBusyRuns(prev => {
+      const current = prev[agentId]
+      if (!current?.[runKey]) return prev
+      const { [runKey]: _run, ...remainingRuns } = current
+      if (Object.keys(remainingRuns).length === 0) {
+        const { [agentId]: _done, ...rest } = prev
+        return rest
+      }
+      return { ...prev, [agentId]: remainingRuns }
+    })
+  }, [])
+
   /* ---------- Agent 展示状态 ----------
      off：HTTP 绑定的提供商未启用或无 Key（如 hermes/gemini）；stdio 绑定不受影响 */
   // P1-6: useMemo prevents WorkbenchLayout (112KB subtree) from re-rendering
@@ -455,12 +290,11 @@ function AppInner() {
         const hub = hubAgents[id]
         st = hub === 'busy' ? 'busy' : hub === 'error' ? 'error' : hub === 'offline' ? 'off' : 'idle'
       }
-      const ov = busyOverride[id]
-      if (ov && st !== 'off') st = ov
+      if (runtimeBusyRuns[id] && st !== 'off') st = 'busy'
       map[id] = { status: st }
     }
     return map
-  }, [bindings, providers, localAgents, hubAgents, busyOverride])
+  }, [bindings, providers, localAgents, hubAgents, runtimeBusyRuns])
 
 
   const lang = useLang() // 语言切换时整树重挂载（key），组件内 tr() 直接生效
@@ -474,9 +308,6 @@ function AppInner() {
       providers={providers}
       bindings={bindings}
       fallbackChain={fallbackChain}
-      runtimeRefreshNonce={runtimeRefreshNonce}
-      onDeleteTask={onDeleteTask}
-      onClearCompletedTasks={onClearCompletedTasks}
       providerActions={{
         onSetEnabled,
         onSetKey,
@@ -488,6 +319,7 @@ function AppInner() {
         onReorderProvidersForClaude
       }}
       configLoadError={configLoadError}
+      onRuntimeAgentStatus={onRuntimeAgentStatus}
       motion={motion}
       setMotion={setMotion}
     />

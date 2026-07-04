@@ -34,7 +34,8 @@ import { isWorkbenchViewMode, type ViewMode } from './viewModes'
 import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
-import { mergeRuntimeEventLists, isBufferedRuntimeEvent, isTaskHistoryEvent, shouldFlushFirstStreamDelta } from './utils/eventUtils'
+import { styledConfirm } from '../lib/confirm'
+import { mergeRuntimeEventLists, isBufferedRuntimeEvent, isTaskHistoryEvent, runtimeAgentStatusFromEvent, shouldFlushFirstStreamDelta } from './utils/eventUtils'
 import { parseSlashInput, parseLoopLimit, stripLoopFlags } from './utils/slashCommandUtils'
 import { selectableModelOptions, isSelectableModel, resolveModelCommand, reasoningFromCommand, reasoningLabel, type WorkbenchThinking } from './utils/modelUtils'
 import { deriveTaskItems, type RuntimeTaskEventsByThread } from './utils/taskItems'
@@ -67,9 +68,6 @@ interface WorkbenchLayoutProps {
   providers: ProviderDef[]
   bindings: BindingDef[]
   fallbackChain: string[]
-  runtimeRefreshNonce?: number
-  onDeleteTask: (id: string) => void
-  onClearCompletedTasks: () => void
   providerActions: {
     onSetEnabled: (id: string, enabled: boolean) => void
     onSetKey: (id: string, key: string) => void
@@ -81,12 +79,12 @@ interface WorkbenchLayoutProps {
     onReorderProvidersForClaude: (orderedIds: string[]) => void
   }
   configLoadError?: string | null
+  onRuntimeAgentStatus?: (agentId: string, status: 'busy' | 'idle', runKey: string) => void
   motion: MotionLevel
   setMotion: (m: MotionLevel) => void
 }
 
 export function WorkbenchLayout(props: WorkbenchLayoutProps) {
-  const { onDeleteTask, onClearCompletedTasks } = props
   const [view, setViewState] = useState<ViewMode>('chat')
   const [settingsTab, setSettingsTab] = useState<SettingsTabKey>('providers')
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot>({ threads: [], turns: [], runs: [], activeThreadId: null })
@@ -379,11 +377,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [setView])
 
   useEffect(() => {
-    if (props.runtimeRefreshNonce === undefined) return
-    loadWorkbench(workspaceId).catch(() => {})
-  }, [props.runtimeRefreshNonce, loadWorkbench, workspaceId])
-
-  useEffect(() => {
     // LOW-16: rAF throttle to avoid excessive re-renders during resize
     let rafId = 0
     const onResize = () => {
@@ -425,6 +418,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       const isPendingThreadEvent = pendingActiveThreadId !== null && event.threadId === loadingThreadIdRef.current
       const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current
       appendApprovalFromRuntimeEvent(event)
+      const runtimeAgentStatus = runtimeAgentStatusFromEvent(event)
+      if (runtimeAgentStatus) {
+        props.onRuntimeAgentStatus?.(runtimeAgentStatus.agentId, runtimeAgentStatus.status, runtimeAgentStatus.runKey)
+      }
 
       if (isPendingThreadEvent) {
         appendTaskRuntimeEvents(event.threadId, [event])
@@ -477,7 +474,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       clearRuntimeEventBuffer()
     }
-  }, [activeThreadId, pendingActiveThreadId, workspaceId, refreshThreadTodos, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+  }, [activeThreadId, pendingActiveThreadId, workspaceId, props.onRuntimeAgentStatus, refreshThreadTodos, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
 
   const onApprovalDecide = useCallback((item: ApprovalItem, approved: boolean, remember: boolean) => {
     if (remember) {
@@ -601,18 +598,22 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [loadWorkbench, workspaceId])
 
   const deleteRuntimeTask = useCallback(async (id: string) => {
-    await onDeleteTask(id)
+    const ok = await styledConfirm({ message: tr('删除这条任务历史？对应的运行详情也会从当前会话记录中移除。', 'Delete this task history? Its run details will also be removed from the current conversation.'), danger: true })
+    if (!ok) return
+    await window.electronAPI.tasks.delete(id).catch(() => false)
     fullyLoadedTaskThreadIds.current.clear()
     setTaskEventsByThread({})
     loadWorkbench(workspaceId).catch(() => {})
-  }, [loadWorkbench, onDeleteTask, workspaceId])
+  }, [loadWorkbench, workspaceId])
 
   const clearCompletedRuntimeTasks = useCallback(async () => {
-    await onClearCompletedTasks()
+    const ok = await styledConfirm({ message: tr('清理所有已结束的任务历史？对应的运行详情也会从当前会话记录中移除。', 'Clear all finished task history? Matching run details will also be removed from the current conversation.'), danger: true })
+    if (!ok) return
+    await window.electronAPI.tasks.clearCompleted().catch(() => false)
     fullyLoadedTaskThreadIds.current.clear()
     setTaskEventsByThread({})
     loadWorkbench(workspaceId).catch(() => {})
-  }, [loadWorkbench, onClearCompletedTasks, workspaceId])
+  }, [loadWorkbench, workspaceId])
 
   const closeAnnouncement = () => {
     try { localStorage.setItem(ANNOUNCEMENT_STORE_KEY, 'seen') } catch { /* noop */ }
