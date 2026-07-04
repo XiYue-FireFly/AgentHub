@@ -61,6 +61,14 @@
     attachment helpers from `WorkbenchLayout.tsx`
   - aligned the extracted browser panel with the current inline behavior,
     including stable `open()` dependencies and markdown attachment metadata
+- Continued fable5 1.3.0 Workbench decomposition:
+  - connected `WorkbenchLayout.tsx` to existing extracted pure utility modules
+    for runtime event merging, slash command parsing, loop flag handling,
+    provider model command resolution, and reasoning command labels
+  - removed duplicate pure helper implementations from `WorkbenchLayout.tsx`
+  - kept the fixed `watchTerminalRun` implementation local because the older
+    utility version still has the pre-fix 24-poll cap
+  - reduced `WorkbenchLayout.tsx` to 1695 lines
 
 ## Validation Log
 
@@ -148,10 +156,24 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 158 files and 1034 tests.
   - `npm run build` passed.
+- Workbench pure utility extraction validation:
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed layout, utility modules, and tests passed.
+  - Targeted tests passed with 3 files and 29 tests:
+    `workbench-runtime-events`, `slash-command-behavior`, and
+    `provider-routing-state`.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    compatibility with the current renderer `RuntimeEvent` shape, CJK slash
+    command parsing, `@minimax-code` normalization, provider-direct model
+    selection, and reasoning command behavior.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 158 files and 1038 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 Workbench decomposition in small verified batches.
 - Next likely candidates: remove now-redundant older workbench component shards
-  if unused, or extract pure command/runtime helpers with direct unit coverage.
+  if unused, or extract top-bar/Todo UI components with direct smoke coverage.
 - Re-run full validation after the next patch batch before commit.

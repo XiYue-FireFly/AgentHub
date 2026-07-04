@@ -1,12 +1,20 @@
-import { RuntimeEvent } from '../../src/store/workbench-store'
-
 const MAX_EVENTS = 5000
+
+type WorkbenchRuntimeEvent = {
+  id?: string
+  threadId: string
+  turnId: string
+  seq: number
+  kind: string
+  agentId?: string
+  payload?: any
+}
 
 /**
  * Merge two lists of runtime events, deduplicating by id or threadId:seq key.
  * Maintains sorted order by seq and caps at MAX_EVENTS.
  */
-export function mergeRuntimeEventLists(base: RuntimeEvent[], incoming: RuntimeEvent[]): RuntimeEvent[] {
+export function mergeRuntimeEventLists<Event extends WorkbenchRuntimeEvent>(base: Event[], incoming: Event[]): Event[] {
   if (incoming.length === 0) return base
   const seen = new Set(base.map(event => event.id || `${event.threadId}:${event.seq}`))
   const additions = incoming.filter(event => {
@@ -26,7 +34,7 @@ export function mergeRuntimeEventLists(base: RuntimeEvent[], incoming: RuntimeEv
 /**
  * Check if a runtime event should be buffered (agent:delta or agent:activity).
  */
-export function isBufferedRuntimeEvent(event: RuntimeEvent): boolean {
+export function isBufferedRuntimeEvent(event: WorkbenchRuntimeEvent): boolean {
   return event.kind === 'agent:delta' || event.kind === 'agent:activity'
 }
 
@@ -34,7 +42,7 @@ export function isBufferedRuntimeEvent(event: RuntimeEvent): boolean {
  * Check if this is the first stream delta for a given agent/turn/channel combination.
  * Used to trigger immediate flush on first content delta.
  */
-export function shouldFlushFirstStreamDelta(event: RuntimeEvent, seenKeys: Set<string>): boolean {
+export function shouldFlushFirstStreamDelta(event: WorkbenchRuntimeEvent, seenKeys: Set<string>): boolean {
   if (event.kind !== 'agent:delta' || event.payload?.channel === 'thinking') return false
   const key = [
     event.threadId,

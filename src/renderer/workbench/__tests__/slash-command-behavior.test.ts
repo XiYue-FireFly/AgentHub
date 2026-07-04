@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { addPaletteQuery, replaceAddToken, shouldRunComposerCommand } from "../ComposerBar"
+import { parseLoopLimit, parseSlashInput, stripLoopFlags } from "../utils/slashCommandUtils"
+import { reasoningFromCommand, resolveModelCommand } from "../utils/modelUtils"
 
 describe("workbench slash command behavior", () => {
   it("keeps model and reasoning commands wired into the runtime", () => {
@@ -12,11 +14,37 @@ describe("workbench slash command behavior", () => {
     expect(commands).toContain('{ template: "review" }')
     expect(commands).toContain('{ template: "model" }')
     expect(commands).toContain('{ template: "reasoning" }')
+    expect(layout).toContain("from './utils/slashCommandUtils'")
+    expect(layout).toContain("from './utils/modelUtils'")
     expect(layout).toContain("resolveModelCommand(args, selectableModels)")
     expect(layout).toContain("reasoningFromCommand(args, thinking)")
     expect(layout).toContain("请以代码审查方式回答")
     expect(layout).toContain("请在指令后面写下要处理的内容")
     expect(layout).toContain("await sendPrompt(args)")
+  })
+
+  it("parses slash commands and loop flags in extracted utilities", () => {
+    expect(parseSlashInput("/model deepseek/deepseek-chat")).toEqual({ label: "/model", args: "deepseek/deepseek-chat" })
+    expect(parseSlashInput("@minimax-code fix this")).toEqual({ label: "/agent:opencode", args: "fix this" })
+    expect(parseLoopLimit("--limit=25", 5)).toBe(20)
+    expect(parseLoopLimit("循环 3", 5)).toBe(3)
+    expect(stripLoopFlags("fix this --times=4")).toBe("fix this")
+  })
+
+  it("resolves provider model and reasoning commands in extracted utilities", () => {
+    const options = [
+      { providerId: "deepseek", modelId: "deepseek-chat", label: "DeepSeek / Chat", searchable: "deepseek/deepseek-chat deepseek chat" }
+    ]
+
+    expect(resolveModelCommand("deepseek/deepseek-chat", options)).toEqual({
+      selection: { providerId: "deepseek", modelId: "deepseek-chat", source: "provider" },
+      label: "DeepSeek / Chat"
+    })
+    expect(reasoningFromCommand("高", { mode: "auto", level: "medium", collapseInUI: true })).toEqual({
+      mode: "enabled",
+      level: "high",
+      collapseInUI: true
+    })
   })
 
   it("keeps unknown slash input from silently becoming a normal prompt", () => {
@@ -157,13 +185,16 @@ describe("workbench slash command behavior", () => {
 
   it("routes provider model selections through provider direct runs", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const modelUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/modelUtils.ts"), "utf8")
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
     const main = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
     const hubThreads = readFileSync(join(process.cwd(), "src/main/ipc/hub-threads-ipc.ts"), "utf8")
     const dispatcher = readFileSync(join(process.cwd(), "src/main/hub/dispatcher.ts"), "utf8")
 
     expect(layout).toContain("selectedProviderDirect")
     expect(layout).toContain("setTargetAgent(null)")
-    expect(layout).toContain("source: 'provider'")
+    expect(modelUtils).toContain("source: 'provider'")
+    expect(composer).toContain("source: 'provider'")
     expect(main).toContain("isProviderDirectSelection")
     expect(main).toContain("dispatcher.dispatchProviderDirect")
     expect(main).toContain("retryProviderDirect")

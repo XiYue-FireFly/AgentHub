@@ -3,7 +3,7 @@
  * Supports /command, @agent, /namespace:command patterns.
  */
 export function parseSlashInput(value: string): { label: string; args: string } | null {
-  const match = value.trim().match(/^((?:\/|@)[\w一-鿿][\w一-鿿_-]*(?::[\w一-鿿][\w一-鿿_-]*)?)(?:\s+([\s\S]*))?$/i)
+  const match = value.trim().match(/^((?:\/|@)[\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]*(?::[\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]*)?)(?:\s+([\s\S]*))?$/i)
   if (!match) return null
   const rawLabel = match[1].toLowerCase()
   const label = rawLabel.startsWith('@') ? `/agent:${rawLabel.slice(1) === 'minimax-code' ? 'opencode' : rawLabel.slice(1)}` : rawLabel

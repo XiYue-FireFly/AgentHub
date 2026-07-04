@@ -3,12 +3,6 @@ import { ProviderDef } from '../../glass/meta'
 
 export type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
 
-export interface ModelSelection {
-  providerId: string
-  modelId: string
-  source?: string
-}
-
 export interface WorkbenchThinking {
   mode: 'off' | 'auto' | 'enabled'
   level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'

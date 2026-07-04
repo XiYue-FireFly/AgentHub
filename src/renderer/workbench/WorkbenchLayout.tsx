@@ -33,6 +33,9 @@ import { isWorkbenchViewMode, type ViewMode } from './viewModes'
 import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
+import { mergeRuntimeEventLists, isBufferedRuntimeEvent, shouldFlushFirstStreamDelta } from './utils/eventUtils'
+import { parseSlashInput, parseLoopLimit, stripLoopFlags } from './utils/slashCommandUtils'
+import { selectableModelOptions, isSelectableModel, resolveModelCommand, reasoningFromCommand, reasoningLabel, type WorkbenchThinking } from './utils/modelUtils'
 import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
@@ -45,8 +48,6 @@ import {
 
 type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage' | 'agentLoop' | 'requirements'
 type RightPanel = WorkbenchRightPanel
-type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
-type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 
 const INSPECTOR_WIDTH_STORE_KEY = 'agenthub.workbench.inspectorWidth.v1'
 const LAST_VIEW_STORE_KEY = 'agenthub.workbench.lastView.v1'
@@ -55,24 +56,6 @@ const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
 const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
 const SCHEDULE_OVERRIDES_STORE_KEY = 'agenthub.workbench.scheduleOverrides.v1'
 const ANNOUNCEMENT_STORE_KEY = 'agenthub.workbench.announcement.v0.5.4'
-const MAX_EVENTS = 5000
-
-function mergeRuntimeEventLists(base: RuntimeEvent[], incoming: RuntimeEvent[]): RuntimeEvent[] {
-  if (incoming.length === 0) return base
-  const seen = new Set(base.map(event => event.id || `${event.threadId}:${event.seq}`))
-  const additions = incoming.filter(event => {
-    const key = event.id || `${event.threadId}:${event.seq}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-  if (additions.length === 0) return base
-  const last = base[base.length - 1]
-  const ordered = !last || additions.every(event => event.seq > last.seq)
-  const merged = ordered ? [...base, ...additions] : [...base, ...additions].sort((a, b) => a.seq - b.seq)
-  if (merged.length > MAX_EVENTS) return merged.slice(merged.length - MAX_EVENTS)
-  return merged
-}
 
 interface WorkbenchLayoutProps {
   hubRunning: boolean
@@ -1784,109 +1767,6 @@ function WorkbenchToolPanel({
   if (panel === 'worktrees') return <WorktreePanel workspaceId={workspaceId} onClose={onClose} />
   if (panel === 'browser') return <BrowserPanel workspaceId={workspaceId} onClose={onClose} initialUrl={browserUrl} onInitialUrlConsumed={onBrowserUrlConsumed} onAttach={onAttachBrowserCapture} />
   return null
-}
-
-function parseSlashInput(value: string): { label: string; args: string } | null {
-  const match = value.trim().match(/^((?:\/|@)[\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]*(?::[\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]*)?)(?:\s+([\s\S]*))?$/i)
-  if (!match) return null
-  const rawLabel = match[1].toLowerCase()
-  const label = rawLabel.startsWith('@') ? `/agent:${rawLabel.slice(1) === 'minimax-code' ? 'opencode' : rawLabel.slice(1)}` : rawLabel
-  return { label, args: (match[2] || '').trim() }
-}
-
-function isBufferedRuntimeEvent(event: RuntimeEvent): boolean {
-  return event.kind === 'agent:delta' || event.kind === 'agent:activity'
-}
-
-function shouldFlushFirstStreamDelta(event: RuntimeEvent, seenKeys: Set<string>): boolean {
-  if (event.kind !== 'agent:delta' || event.payload?.channel === 'thinking') return false
-  const key = [
-    event.threadId,
-    event.turnId,
-    event.agentId || event.payload?.agentId || 'agent',
-    event.payload?.channel || 'content'
-  ].join(':')
-  if (seenKeys.has(key)) return false
-  seenKeys.add(key)
-  return true
-}
-
-function parseLoopLimit(value: string, fallback = 5): number {
-  const match = value.match(/(?:--?(?:n|times|limit|max)|循环|轮数)\s*[=:]?\s*(\d{1,2})/i)
-  const n = Math.floor(Number(match?.[1] || fallback) || fallback)
-  return Math.max(1, Math.min(20, n))
-}
-
-function stripLoopFlags(value: string): string {
-  return value.replace(/(?:--?(?:n|times|limit|max)|循环|轮数)\s*[=:]?\s*\d{1,2}/gi, '').trim()
-}
-
-function selectableModelOptions(providers: ProviderDef[]): Array<{ providerId: string; modelId: string; label: string; searchable: string }> {
-  const options: Array<{ providerId: string; modelId: string; label: string; searchable: string }> = []
-  for (const provider of providers) {
-    if (!provider.enabled || !provider.apiKey || !provider.models?.length) continue
-    for (const model of provider.models) {
-      const label = `${provider.name} / ${model.label || model.id}`
-      options.push({
-        providerId: provider.id,
-        modelId: model.id,
-        label,
-        searchable: `${provider.id}/${model.id} ${provider.name} ${model.label || ''}`.toLowerCase()
-      })
-    }
-  }
-  return options
-}
-
-function isSelectableModel(selection: ModelSelection | null, providers: ProviderDef[]): boolean {
-  if (!selection) return false
-  return providers.some(provider =>
-    provider.id === selection.providerId &&
-    provider.enabled &&
-    !!provider.apiKey &&
-    provider.models?.some(model => model.id === selection.modelId)
-  )
-}
-
-function resolveModelCommand(
-  args: string,
-  options: Array<{ providerId: string; modelId: string; label: string; searchable: string }>
-): { selection?: ModelSelection; label?: string; message?: string } {
-  if (options.length === 0) return { message: tr('没有可用模型。请先在设置里启用供应商并填写 Key。', 'No available models. Enable a provider and API key in Settings first.') }
-  const raw = args.trim().toLowerCase()
-  if (!raw) return { message: tr(`可用模型：${options.slice(0, 8).map(item => `${item.providerId}/${item.modelId}`).join('、')}`, `Available models: ${options.slice(0, 8).map(item => `${item.providerId}/${item.modelId}`).join(', ')}`) }
-  const [providerPart, modelPart] = raw.includes('/') ? raw.split('/', 2) : ['', raw]
-  const matched = options.find(item => {
-    if (providerPart) return item.providerId.toLowerCase() === providerPart && item.modelId.toLowerCase() === modelPart
-    return item.modelId.toLowerCase() === modelPart || item.searchable.includes(raw)
-  })
-  if (!matched) return { message: tr(`没有找到模型：${args}`, `Model not found: ${args}`) }
-  return { selection: { providerId: matched.providerId, modelId: matched.modelId, source: 'provider' }, label: matched.label }
-}
-
-function reasoningFromCommand(args: string, previous: WorkbenchThinking): WorkbenchThinking | null {
-  const value = normalizeReasoningChoice(args)
-  return value ? { ...previous, mode: 'enabled', level: value, collapseInUI: true } : null
-}
-
-function reasoningLabel(thinking: WorkbenchThinking): string {
-  return reasoningChoiceLabel(normalizeReasoningChoice(thinking.level) || 'medium')
-}
-
-function normalizeReasoningChoice(value: string): ThinkingLevelChoice | null {
-  const normalized = value.trim().toLowerCase()
-  if (normalized === '低' || normalized === 'low') return 'low'
-  if (normalized === '中' || normalized === 'medium' || normalized === 'mid') return 'medium'
-  if (normalized === '高' || normalized === 'high') return 'high'
-  if (normalized === '超高' || normalized === '极高' || normalized === 'xhigh' || normalized === 'extra' || normalized === 'max') return 'xhigh'
-  return null
-}
-
-function reasoningChoiceLabel(value: ThinkingLevelChoice): string {
-  if (value === 'low') return tr('低', 'low')
-  if (value === 'medium') return tr('中', 'medium')
-  if (value === 'high') return tr('高', 'high')
-  return tr('超高', 'extra high')
 }
 
 async function watchTerminalRun(runId: string, setRuns: React.Dispatch<React.SetStateAction<TerminalRun[]>>, signal?: AbortSignal) {

@@ -1,12 +1,15 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
+import { mergeRuntimeEventLists, shouldFlushFirstStreamDelta } from "../utils/eventUtils"
 
 describe("Workbench runtime event loading", () => {
   it("merges live runtime events that arrive while a snapshot is loading", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
 
-    expect(source).toContain("function mergeRuntimeEventLists")
+    const utils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/eventUtils.ts"), "utf8")
+
+    expect(utils).toContain("function mergeRuntimeEventLists")
     expect(source).toContain("setEvents(prev => mergeRuntimeEventLists(prev, nextEvents))")
     expect(source).toContain("const loadedEvents = await window.electronAPI.runtime.eventsSince")
     expect(source).toContain("...prev.filter(event => event.threadId === nextVisibleThreadId)")
@@ -23,8 +26,10 @@ describe("Workbench runtime event loading", () => {
     expect(source).toContain("seenImmediateStreamKeys")
     expect(source).toContain("shouldFlushFirstStreamDelta(event, seenImmediateStreamKeys.current)")
     expect(source).toContain("appendRuntimeEvents([event])")
-    expect(source).toContain("event.kind !== 'agent:delta' || event.payload?.channel === 'thinking'")
-    expect(source).toContain("seenKeys.add(key)")
+    const utils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/eventUtils.ts"), "utf8")
+
+    expect(utils).toContain("event.kind !== 'agent:delta' || event.payload?.channel === 'thinking'")
+    expect(utils).toContain("seenKeys.add(key)")
     expect(source).toContain("seenImmediateStreamKeys.current.clear()")
   })
 
@@ -37,5 +42,36 @@ describe("Workbench runtime event loading", () => {
     expect(source).toContain("const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current")
     expect(source).toContain("if (pendingActiveThreadId) {")
     expect(source).toContain("if (selectThreadGenRef.current === gen) {")
+  })
+
+  it("deduplicates and sorts runtime events in the extracted utility", () => {
+    const base = [
+      { id: "a", threadId: "t1", turnId: "turn", seq: 2, kind: "agent:done", payload: {}, createdAt: 2 },
+      { id: "b", threadId: "t1", turnId: "turn", seq: 4, kind: "agent:done", payload: {}, createdAt: 4 }
+    ] as RuntimeEvent[]
+    const incoming = [
+      { id: "a", threadId: "t1", turnId: "turn", seq: 2, kind: "agent:done", payload: {}, createdAt: 2 },
+      { id: "c", threadId: "t1", turnId: "turn", seq: 3, kind: "agent:done", payload: {}, createdAt: 3 }
+    ] as RuntimeEvent[]
+
+    expect(mergeRuntimeEventLists(base, incoming).map(event => event.id)).toEqual(["a", "c", "b"])
+  })
+
+  it("flushes only the first content delta key in the extracted utility", () => {
+    const seen = new Set<string>()
+    const event = {
+      id: "delta-1",
+      threadId: "t1",
+      turnId: "turn",
+      seq: 1,
+      kind: "agent:delta",
+      agentId: "codex",
+      payload: { channel: "content" },
+      createdAt: 1
+    } as RuntimeEvent
+
+    expect(shouldFlushFirstStreamDelta(event, seen)).toBe(true)
+    expect(shouldFlushFirstStreamDelta(event, seen)).toBe(false)
+    expect(shouldFlushFirstStreamDelta({ ...event, id: "delta-2", payload: { channel: "thinking" } }, new Set())).toBe(false)
   })
 })
