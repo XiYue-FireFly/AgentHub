@@ -186,6 +186,16 @@
   - preserved write, chat, tasks, requirements, settings, and workflows view
     rendering, including the static Settings import behavior
   - reduced `WorkbenchLayout.tsx` from 1496 lines to 1361 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved keyboard shortcut command-id routing into
+    `src/renderer/workbench/utils/shortcutCommands.ts`
+  - kept `WorkbenchLayout.tsx` responsible only for executing the resolved
+    UI/runtime side effects
+  - fixed the registered `stop-task` shortcut so it now invokes the same
+    `cancelLatest` path used by the composer cancel button
+  - added direct shortcut resolver coverage plus a guard that every registered
+    keyboard shortcut command maps to an action
+  - reduced `WorkbenchLayout.tsx` from 1361 lines to 1355 lines
 
 ## Validation Log
 
@@ -498,6 +508,28 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 162 files and 1060 tests.
   - `npm run build` passed.
+- Workbench shortcut command routing extraction validation:
+  - Initial targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/shortcutCommands.test.ts src/renderer/workbench/__tests__/keyboard-shortcuts.test.ts src/renderer/workbench/__tests__/paletteCommands.test.ts src/renderer/workbench/__tests__/git-dock-layout.test.ts`
+    with 4 files and 18 tests.
+  - Read-only subagent review initially returned `BLOCKED` because the
+    registered `stop-task` shortcut had no resolver action and there was no
+    complete registered-command mapping guard.
+  - Added `stop-task` to the resolver and routed it through `cancelLatest`;
+    added complete `KEYBOARD_SHORTCUT_COMMANDS` mapping coverage and structure
+    coverage for the cancel path.
+  - Follow-up targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/shortcutCommands.test.ts src/renderer/workbench/__tests__/keyboard-shortcuts.test.ts src/renderer/workbench/__tests__/paletteCommands.test.ts src/renderer/workbench/__tests__/git-dock-layout.test.ts`
+    with 4 files and 19 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed shortcut/workbench files passed.
+  - `git diff --check` passed.
+  - Follow-up read-only subagent review returned `APPROVE` with no blockers.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm run build` passed.
+  - First parallel `npm test` attempt timed out in three unrelated long-running
+    tests while `lint` and `build` were running concurrently; a fresh standalone
+    `npm test` rerun passed with 163 files and 1066 tests.
 
 ## Pending
 

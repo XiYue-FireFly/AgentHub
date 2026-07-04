@@ -27,6 +27,7 @@ import { deriveTaskItems, type RuntimeTaskEventsByThread } from './utils/taskIte
 import { approvalItemFromRuntimeEvent } from './utils/approvalEvents'
 import { watchTerminalRun } from './utils/terminalRunWatcher'
 import { buildPaletteCommands, resolvePaletteExtraAction } from './utils/paletteCommands'
+import { resolveShortcutCommandAction } from './utils/shortcutCommands'
 import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
@@ -481,6 +482,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     () => activeThread ? snapshot.turns.filter(t => t.threadId === activeThread.id) : [],
     [snapshot.turns, activeThread]
   )
+  const cancelLatest = useCallback(async () => {
+    const running = [...activeTurns].reverse().find(t => t.status === 'running')
+    if (running) {
+      await window.electronAPI.turns.cancel(running.id)
+      await loadWorkbench(workspaceId)
+    }
+  }, [activeTurns, loadWorkbench, workspaceId])
+
   const activeEvents = useMemo(
     () => visibleThreadId === activeThreadId ? events : events.filter(event => event.threadId === visibleThreadId),
     [events, visibleThreadId, activeThreadId]
@@ -774,23 +783,17 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
 
   const runShortcutCommand = useCallback((commandId: string) => {
-    if (commandId === 'command-palette') { setCommandPaletteOpen(prev => !prev); return }
-    if (commandId === 'focus-composer') { document.querySelector<HTMLTextAreaElement>('.wb-composer-input')?.focus(); return }
-    if (commandId === 'new-chat') void createThread()
-    else if (commandId === 'choose-workspace') openCreateProject()
-    else if (commandId === 'view-chat') setView('chat')
-    else if (commandId === 'view-write') setView('write')
-    else if (commandId === 'view-tasks') setView('tasks')
-    else if (commandId === 'view-requirements') setView('requirements')
-    else if (commandId === 'view-settings') setView('settings')
-    else if (commandId === 'panel-runs') setRightPanel('runs')
-    else if (commandId === 'panel-git') setRightPanel('git')
-    else if (commandId === 'panel-browser') setRightPanel('browser')
-    else if (commandId === 'panel-terminal') setRightPanel('terminal')
-    else if (commandId === 'settings-shortcuts') openSetup('shortcuts')
-    else if (commandId === 'settings-mcp') openSetup('mcp')
-    else if (commandId === 'open-workflows') setView('workflows')
-  }, [createThread, openCreateProject, setView, openSetup])
+    const action = resolveShortcutCommandAction(commandId)
+    if (!action) return
+    if (action.type === 'toggle-command-palette') setCommandPaletteOpen(prev => !prev)
+    else if (action.type === 'focus-composer') document.querySelector<HTMLTextAreaElement>('.wb-composer-input')?.focus()
+    else if (action.type === 'stop-task') void cancelLatest()
+    else if (action.type === 'new-chat') void createThread()
+    else if (action.type === 'choose-workspace') openCreateProject()
+    else if (action.type === 'set-view') setView(action.view)
+    else if (action.type === 'set-panel') setRightPanel(action.panel)
+    else if (action.type === 'setup') openSetup(action.tab as SettingsTabKey)
+  }, [cancelLatest, createThread, openCreateProject, setView, openSetup])
 
   const paletteCommands = useMemo(() => buildPaletteCommands(localAgents), [localAgents])
 
@@ -902,14 +905,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setSendError(e?.message || tr('启动运行失败。', 'Failed to start the run.'))
     } finally {
       setSending(false)
-    }
-  }
-
-  const cancelLatest = async () => {
-    const running = [...activeTurns].reverse().find(t => t.status === 'running')
-    if (running) {
-      await window.electronAPI.turns.cancel(running.id)
-      await loadWorkbench(workspaceId)
     }
   }
 

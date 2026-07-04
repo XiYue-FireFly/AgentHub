@@ -77,6 +77,23 @@ describe("workbench git dock layout", () => {
     expect(dialog).toContain("defaultDialogPath('folder'")
   })
 
+  it("keeps shortcut command routing outside WorkbenchLayout", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const shortcutCommands = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/shortcutCommands.ts"), "utf8")
+
+    expect(layout).toContain("import { resolveShortcutCommandAction } from './utils/shortcutCommands'")
+    expect(layout).toContain("const action = resolveShortcutCommandAction(commandId)")
+    expect(layout).toContain("action.type === 'stop-task'")
+    expect(layout).toContain("void cancelLatest()")
+    expect(layout).not.toContain("commandId === 'view-chat'")
+    expect(layout).not.toContain("commandId === 'panel-git'")
+    expect(layout).not.toContain("commandId === 'settings-shortcuts'")
+    expect(shortcutCommands).toContain("export function resolveShortcutCommandAction")
+    expect(shortcutCommands).toContain("case 'stop-task'")
+    expect(shortcutCommands).toContain("case 'view-requirements'")
+    expect(shortcutCommands).toContain("case 'open-workflows'")
+  })
+
   it("keeps the first-run announcement modal outside WorkbenchLayout", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
     const modal = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchAnnouncementModal.tsx"), "utf8")
