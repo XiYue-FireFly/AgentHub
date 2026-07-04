@@ -35,6 +35,12 @@
   - surfaced provider config load exhaustion as a visible workbench alert with a
     retry action
   - added path, shortcut, and architecture guard coverage
+- Started fable5 1.3.0 Workbench decomposition:
+  - moved `NativeTitlebar` and its private menu component into
+    `src/renderer/workbench/NativeTitlebar.tsx`
+  - kept the move behavior-preserving apart from the intentional Requirements
+    menu entry that matches the existing `view-requirements` command
+  - reduced `WorkbenchLayout.tsx` from 2548 lines to 2389 lines
 
 ## Validation Log
 
@@ -75,6 +81,18 @@
     `npm test` with 158 files and 1034 tests, and `npm run build`.
   - Read-only subagent review returned `APPROVE`; its retry-counter note was
     addressed by adding the `reloadConfig` wrapper.
+- Workbench titlebar split validation:
+  - Initial read-only subagent review returned `BLOCKED` because
+    `titlebar-menu-copy.test.ts` still searched `WorkbenchLayout.tsx`.
+  - Updated the test to read `NativeTitlebar.tsx`; the follow-up targeted
+    command passed with 3 files and 7 tests:
+    `npm test -- --run src/renderer/workbench/__tests__/titlebar-menu-copy.test.ts src/renderer/workbench/__tests__/keyboard-shortcuts.test.ts src/renderer/workbench/__tests__/viewModes.test.ts`.
+  - `npm run typecheck` passed.
+  - Targeted eslint for `NativeTitlebar`, `WorkbenchLayout`, and the titlebar
+    test passed.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 158 files and 1034 tests.
+  - `npm run build` passed.
 
 ## Pending
 
