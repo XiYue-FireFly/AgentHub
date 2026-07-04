@@ -80,7 +80,8 @@ export function buildAssistantSystemPrompt(ctx: AssistantContext): string {
   parts.push(
     '## 回复要求',
     '- 回复简洁明了，避免冗长',
-    '- 如需修改需求，给出具体的修改建议和示例',
+    '- 如果用户要求完善、整理、改写或更新需求文档，直接返回完整的修订版 Markdown 需求文档，从一级标题开始，不要只返回分析意见',
+    '- 如果用户只是咨询、评审或提问，返回分析意见即可',
     '- 如发现遗漏的验收标准，主动提出建议',
     '- 引用需求块时使用其 ID（如 R-1）'
   )

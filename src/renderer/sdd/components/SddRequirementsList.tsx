@@ -10,6 +10,7 @@ import { tr } from '../../glass/i18n'
 import { useSddDraftStore } from '../sdd-draft-store'
 import { listDrafts, createNewDraft, deleteDraft, loadDraft, saveDraftToDisk, parseRequirementBlocks } from '../sdd-draft-actions'
 import { buildAssistantPrompt } from '../sdd-assistant-prompt'
+import { applyAssistantRequirementResponse } from '../sdd-assistant-apply'
 import { buildPlanPrompt } from '../sdd-plan-prompt'
 import { SddDraftEditor } from './SddDraftEditor'
 import { SddAssistantPanel } from './SddAssistantPanel'
@@ -19,23 +20,7 @@ interface SddRequirementsListProps {
 }
 
 const PLAN_GENERATION_TRIGGER_MESSAGE = 'Generate an implementation plan from the current requirement document.'
-const AI_REQUIREMENT_SECTION_TITLE = '## AI 需求整理'
 type AssistantRequestMode = 'chat' | 'plan'
-
-function cleanAssistantMarkdown(content: string): string {
-  const trimmed = content.trim()
-  const fenced = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i)
-  return (fenced ? fenced[1] : trimmed).trim()
-}
-
-function appendAssistantRequirementContent(current: string, response: string): string {
-  const cleaned = cleanAssistantMarkdown(response)
-  if (!cleaned) return current
-  const base = current.trimEnd()
-  const timestamp = new Date().toLocaleString()
-  const section = `${AI_REQUIREMENT_SECTION_TITLE}\n\n> 更新时间：${timestamp}\n\n${cleaned}`
-  return base ? `${base}\n\n${section}\n` : `${section}\n`
-}
 
 export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps) {
   const [drafts, setDrafts] = useState<any[]>([])
@@ -162,7 +147,7 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
     const content = result.content || ''
     if (mode === 'chat' && content.trim()) {
       const latest = useSddDraftStore.getState()
-      latest.setContent(appendAssistantRequirementContent(latest.content, content))
+      latest.setContent(applyAssistantRequirementResponse(latest.content, content))
       await saveDraftToDisk()
       await parseRequirementBlocks()
       if (workspaceRoot) await refreshDrafts()
