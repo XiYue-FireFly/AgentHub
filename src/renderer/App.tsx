@@ -156,8 +156,20 @@ function AppInner() {
   const loadConfig = useCallback(async () => {
     const requestId = ++configRequestId.current
     clearConfigRetryTimer()
+    const retryLoadConfig = () => {
+      const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
+      if (retryDelay === null) return
+      configEmptyRetryCount.current += 1
+      configRetryTimer.current = window.setTimeout(() => {
+        configRetryTimer.current = null
+        if (requestId === configRequestId.current) loadConfig().catch(() => {})
+      }, retryDelay)
+    }
     try {
-      const cfg = await window.electronAPI.providers.get()
+      const cfg = await window.electronAPI.providers.get().catch(error => {
+        retryLoadConfig()
+        throw error
+      })
       if (requestId !== configRequestId.current) return
       applyProviderConfig(cfg)
       if (!isEmptyProviderConfig(cfg?.providers)) {

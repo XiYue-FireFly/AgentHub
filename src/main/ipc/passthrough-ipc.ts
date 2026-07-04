@@ -24,8 +24,8 @@ import { listTeamPresets, saveTeamPreset, deleteTeamPreset, getDefaultFireflyTea
 import { detectTechStack, generateWorkspaceSummary } from '../runtime/project-knowledge-enhanced'
 import { runDiagnosticSuite } from '../runtime/diagnostics-suite'
 import { createFireflyState, completeRole, getRoleContext, isComplete, getFinalOutput } from '../runtime/firefly-state-machine'
-import { buildModelList, listGlobalModels, updateModelRoute, testModelRoute, exportCodexCatalog, toggleModelFavorite, toggleModelHidden, getModelFavorites, getModelHidden } from '../runtime/models-center'
 import { getBudgetConfig, checkBudget, updateBudgetConfig } from '../runtime/budget-center'
+import { registerModelsIpc } from './models-ipc'
 import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from '../runtime/inline-edit'
 import { appEventLogPath } from '../runtime/app-event-log'
 import { DispatchPreset } from '../runtime/types'
@@ -141,16 +141,7 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
   ipcMain.handle("firefly:isComplete", (_e, state: any) => isComplete(state))
   ipcMain.handle("firefly:getOutput", (_e, state: any) => getFinalOutput(state))
 
-  ipcMain.handle("models:list", (_e, providers?: any[]) => Array.isArray(providers) ? buildModelList(providers) : listGlobalModels())
-  ipcMain.handle("models:routeSettings:get", () => providerMgr.getModelRouteSettings())
-  ipcMain.handle("models:routeSettings:set", (_e, patch: any) => providerMgr.setModelRouteSettings(patch || {}))
-  ipcMain.handle("models:updateRoute", (_e, providerId: string, modelId: string, patch: any) => updateModelRoute(providerId, modelId, patch || {}))
-  ipcMain.handle("models:test", (_e, input: { providerId: string; modelId: string; upstreamModel?: string }) => testModelRoute(input))
-  ipcMain.handle("models:exportCodexCatalog", () => exportCodexCatalog())
-  ipcMain.handle("models:toggleFavorite", (_e, providerId: string, modelId: string) => toggleModelFavorite(providerId, modelId))
-  ipcMain.handle("models:toggleHidden", (_e, providerId: string, modelId: string) => toggleModelHidden(providerId, modelId))
-  ipcMain.handle("models:favorites", () => [...getModelFavorites()])
-  ipcMain.handle("models:hidden", () => [...getModelHidden()])
+  registerModelsIpc({ providerMgr })
 
   ipcMain.handle("budget:get", () => getBudgetConfig())
   ipcMain.handle("budget:update", (_e, patch: any) => updateBudgetConfig(patch))

@@ -43,8 +43,11 @@ export interface ExecutionTracker {
   persistReport(): void
 }
 
-const LEDGER_FILE = join(app.getPath('userData'), 'execution-reports.json')
 const MAX_LEDGER_ENTRIES = 500
+
+function ledgerFile(): string {
+  return join(app.getPath('userData'), 'execution-reports.json')
+}
 
 export function createExecutionTracker(sessionId: string): ExecutionTracker {
   const tracker: ExecutionTracker = {
@@ -109,9 +112,10 @@ export function createExecutionTracker(sessionId: string): ExecutionTracker {
       }
 
       let existing: any[] = []
-      if (existsSync(LEDGER_FILE)) {
+      const filePath = ledgerFile()
+      if (existsSync(filePath)) {
         try {
-          existing = JSON.parse(readFileSync(LEDGER_FILE, 'utf-8'))
+          existing = JSON.parse(readFileSync(filePath, 'utf-8'))
         } catch {
           existing = []
         }
@@ -122,7 +126,7 @@ export function createExecutionTracker(sessionId: string): ExecutionTracker {
         existing = existing.slice(-MAX_LEDGER_ENTRIES)
       }
       try {
-        writeFileSync(LEDGER_FILE, JSON.stringify(existing, null, 2))
+        writeFileSync(filePath, JSON.stringify(existing, null, 2))
       } catch (err) {
         console.error('[execution-tracker] Failed to write ledger:', err)
       }
@@ -133,9 +137,10 @@ export function createExecutionTracker(sessionId: string): ExecutionTracker {
 }
 
 export function loadExecutionHistory(limit: number = 50): any[] {
-  if (!existsSync(LEDGER_FILE)) return []
+  const filePath = ledgerFile()
+  if (!existsSync(filePath)) return []
   try {
-    const data = JSON.parse(readFileSync(LEDGER_FILE, 'utf-8'))
+    const data = JSON.parse(readFileSync(filePath, 'utf-8'))
     return data.slice(-limit)
   } catch {
     return []

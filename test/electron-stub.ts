@@ -8,7 +8,10 @@
    ============================================================ */
 
 export const app = {
-  getPath: (_name?: string) => '',
+  paths: { appData: '', userData: '' } as Record<string, string>,
+  getPath: (name?: string) => app.paths[name || ''] || '',
+  setPath: (name: string, value: string) => { app.paths[name] = value },
+  setName: (_name: string) => {},
   getName: () => 'agenthub',
   getVersion: () => '0.0.0-test',
   on: () => app,

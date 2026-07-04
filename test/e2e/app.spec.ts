@@ -83,6 +83,25 @@ test.describe('AgentHub App', () => {
     await expect(mainPage.locator('.wb-settings-shell')).toBeVisible({ timeout: 5_000 })
   })
 
+  test('settings providers render builtin cards with clean user data', async () => {
+    expect(page).not.toBeNull()
+    const mainPage = page
+    if (!mainPage) throw new Error('Electron page was not initialized')
+    await mainPage.waitForSelector('.wb-root', { timeout: 10_000 })
+    await mainPage.keyboard.press('Control+4')
+    await expect(mainPage.locator('.wb-settings-shell')).toBeVisible({ timeout: 5_000 })
+    const announcement = mainPage.locator('.wb-announcement-backdrop')
+    if (await announcement.isVisible().catch(() => false)) {
+      await mainPage.getByRole('button', { name: /我知道了|Got it/ }).click()
+      await expect(announcement).toBeHidden({ timeout: 5_000 })
+    }
+
+    await mainPage.locator('.wb-settings-nav button').nth(1).click()
+    await expect(mainPage.locator('.wb-provider-card').filter({ hasText: 'OpenAI' }).first()).toBeVisible({ timeout: 5_000 })
+    await expect(mainPage.locator('.wb-provider-card').filter({ hasText: 'Anthropic' }).first()).toBeVisible({ timeout: 5_000 })
+    expect(await mainPage.locator('.wb-provider-card').count()).toBeGreaterThan(5)
+  })
+
   test('composer input is focusable', async () => {
     expect(page).not.toBeNull()
     const mainPage = page

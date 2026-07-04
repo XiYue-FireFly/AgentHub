@@ -1,3 +1,4 @@
+import "./startup-paths"
 import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, ipcMain, shell, WebContents } from "electron"
 import { join, resolve } from "path"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
@@ -39,6 +40,8 @@ import { applyRouteDecisionToPlan, planDispatch } from "./runtime/dispatch-plann
 // project-map imports moved to src/main/ipc/workflow-ipc.ts
 import { appendAppEventLog, installGlobalAppEventLogging } from "./runtime/app-event-log"
 import { registerAllIpcHandlers } from "./ipc"
+import { registerProviderIpc } from "./ipc/provider-ipc"
+import { registerModelsIpc } from "./ipc/models-ipc"
 import { hub as hubLog, window_ as windowLog, pipeline as pipelineLog, proxy as proxyLog } from "./logger"
 import {
   runCustomScheduleTurn
@@ -920,6 +923,8 @@ if (initialDeepLink) pendingDeepLink = parseDeepLink(initialDeepLink)
 
 app.whenReady().then(async () => {
   if (process.platform === "win32") app.setAppUserModelId("dev.agenthub.desktop")
+  registerProviderIpc({ providerMgr, registerAgentsFromBindings })
+  registerModelsIpc({ providerMgr })
   providerMgr.unlockSecrets()   // app ready 后解密落盘的 apiKey 到内存（safeStorage 此时可用）
   createWindow()
   createTray()

@@ -12,6 +12,9 @@ interface ProviderIpcDeps {
   registerAgentsFromBindings: () => void
 }
 
+let registered = false
+let warningListenerRegistered = false
+
 /** Strip sensitive API keys from config before sending to renderer. */
 function isMaskedApiKey(value: unknown): boolean {
   if (typeof value !== 'string') return false
@@ -35,11 +38,17 @@ function stripApiKeys(config: any): any {
 export function registerProviderIpc(deps: ProviderIpcDeps): void {
   const { providerMgr, registerAgentsFromBindings } = deps
 
-  providerMgr.onSecretEncryptionWarning?.((warning: { providerId: string; message: string }) => {
-    for (const webContents of BrowserWindow.getAllWindows().map(window => window.webContents)) {
-      if (!webContents.isDestroyed()) webContents.send('providers:warning', warning)
-    }
-  })
+  if (!warningListenerRegistered) {
+    warningListenerRegistered = true
+    providerMgr.onSecretEncryptionWarning?.((warning: { providerId: string; message: string }) => {
+      for (const webContents of BrowserWindow.getAllWindows().map(window => window.webContents)) {
+        if (!webContents.isDestroyed()) webContents.send('providers:warning', warning)
+      }
+    })
+  }
+
+  if (registered) return
+  registered = true
 
   ipcMain.handle("providers:get", async () => stripApiKeys(providerMgr.getConfig()))
   ipcMain.handle("providers:upsert", async (_e, p) => {
