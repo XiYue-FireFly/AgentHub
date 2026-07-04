@@ -135,6 +135,15 @@
     internal/tested storage helpers without renderer IPC exposure
   - added an architecture guard preventing retired renderer invoke channels
     from returning through preload or `ipcMain.handle`
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved secondary tool-panel dispatch into
+    `src/renderer/workbench/WorkbenchToolPanel.tsx`
+  - moved the fixed terminal run watcher into
+    `src/renderer/workbench/utils/terminalRunWatcher.ts`
+  - kept Git in the bottom dock path and kept browser/worktree panel props
+    behavior-preserving
+  - added structure coverage to prevent the terminal watcher from regressing to
+    the older fixed 24-poll cap
 
 ## Validation Log
 
@@ -362,12 +371,25 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 161 files and 1053 tests.
   - `npm run build` passed.
+- Workbench tool-panel and terminal watcher extraction validation:
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/git-dock-layout.test.ts src/renderer/workbench/__tests__/slash-command-behavior.test.ts src/renderer/workbench/__tests__/workbench-runtime-events.test.ts src/renderer/workbench/__tests__/workbench-copy.test.ts`
+    with 4 files and 30 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed Workbench files passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    WorkbenchToolPanel prop parity, Git bottom dock preservation, and
+    open-ended terminal polling.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 161 files and 1054 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 runtime-pipeline consolidation in small verified
   batches.
 - Next likely candidates: continue Workbench decomposition and store migration
-  from fable5 3.3, or address remaining `hub:status` legacy task payload
-  cleanup after confirming no external compatibility dependency.
+  from fable5 3.3, with project creation modal and command palette logic as
+  likely low-risk extraction targets.
 - Re-run full validation after the next patch batch before commit.

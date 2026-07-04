@@ -15,6 +15,22 @@ describe("workbench git dock layout", () => {
     expect(styles).toContain(".wb-bottom-dock .wb-git-workflow")
   })
 
+  it("keeps secondary panel dispatch and terminal polling outside WorkbenchLayout", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const toolPanel = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchToolPanel.tsx"), "utf8")
+    const terminalWatcher = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/terminalRunWatcher.ts"), "utf8")
+
+    expect(layout).toContain("import { WorkbenchToolPanel } from './WorkbenchToolPanel'")
+    expect(layout).toContain("import { watchTerminalRun } from './utils/terminalRunWatcher'")
+    expect(layout).not.toContain("function WorkbenchToolPanel")
+    expect(layout).not.toContain("async function watchTerminalRun")
+    expect(toolPanel).toContain("export function WorkbenchToolPanel")
+    expect(toolPanel).toContain("<BrowserPanel")
+    expect(terminalWatcher).toContain("while (!signal?.aborted)")
+    expect(terminalWatcher).toContain("Math.min(5000")
+    expect(terminalWatcher).not.toContain("i < 24")
+  })
+
   it("keeps new floating workbench surfaces on theme tokens", () => {
     const styles = readFileSync(join(process.cwd(), "src/renderer/globals.css"), "utf8")
 

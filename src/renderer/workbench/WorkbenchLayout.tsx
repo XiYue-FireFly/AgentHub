@@ -15,6 +15,7 @@ import { ThreadView } from './ThreadView'
 import { ComposerBar } from './ComposerBar'
 import { RunTimeline } from './RunTimeline'
 import { WorkbenchChatTopBar } from './WorkbenchChatTopBar'
+import { WorkbenchToolPanel } from './WorkbenchToolPanel'
 import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
 import { WorkspaceItem, AgentMap } from './types'
@@ -26,8 +27,6 @@ import { GitBranchControl } from './GitBranchControl'
 import { FileTreePanel } from './FileTreePanel'
 import { SubagentDetailPanel } from './SubagentDetailPanel'
 import { SideConversationPanel } from './SideConversationPanel'
-import { WorktreePanel } from './components/panels/WorktreePanel'
-import { BrowserPanel } from './components/panels/BrowserPanel'
 import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
 import { localAgentOptions } from './localAgentOptions'
 import { isWorkbenchViewMode, type ViewMode } from './viewModes'
@@ -40,6 +39,7 @@ import { parseSlashInput, parseLoopLimit, stripLoopFlags } from './utils/slashCo
 import { selectableModelOptions, isSelectableModel, resolveModelCommand, reasoningFromCommand, reasoningLabel, type WorkbenchThinking } from './utils/modelUtils'
 import { deriveTaskItems, type RuntimeTaskEventsByThread } from './utils/taskItems'
 import { approvalItemFromRuntimeEvent } from './utils/approvalEvents'
+import { watchTerminalRun } from './utils/terminalRunWatcher'
 import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
@@ -1644,43 +1644,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 }
 
 // GitBranchControl moved to GitBranchControl.tsx (registered via import)
-
-function WorkbenchToolPanel({
-  panel,
-  workspaceId,
-  onClose,
-  browserUrl,
-  onBrowserUrlConsumed,
-  onAttachBrowserCapture
-}: {
-  panel: Exclude<RightPanel, null | 'runs' | 'files' | 'terminal' | 'side-chat'>
-  workspaceId: string | null
-  onClose: () => void
-  browserUrl?: string | null
-  onBrowserUrlConsumed?: () => void
-  onAttachBrowserCapture: (attachment: WorkbenchAttachment) => void
-}) {
-  if (panel === 'git') return <GitWorkbenchPanel workspaceId={workspaceId} onClose={onClose} />
-  if (panel === 'worktrees') return <WorktreePanel workspaceId={workspaceId} onClose={onClose} />
-  if (panel === 'browser') return <BrowserPanel workspaceId={workspaceId} onClose={onClose} initialUrl={browserUrl} onInitialUrlConsumed={onBrowserUrlConsumed} onAttach={onAttachBrowserCapture} />
-  return null
-}
-
-async function watchTerminalRun(runId: string, setRuns: React.Dispatch<React.SetStateAction<TerminalRun[]>>, signal?: AbortSignal) {
-  let attempt = 0
-  while (!signal?.aborted) {
-    if (signal?.aborted) return
-    const delay = attempt < 8 ? 500 : Math.min(5000, 1200 + (attempt - 8) * 250)
-    await new Promise(resolve => setTimeout(resolve, delay))
-    if (signal?.aborted) return
-    const history = await window.electronAPI.terminal.history().catch(() => [])
-    const current = history.find(run => run.id === runId)
-    setRuns(history)
-    if (current && current.status !== 'running') break
-    if (!current) break
-    attempt += 1
-  }
-}
 
 function _modeLabel(mode: DispatchPreset): string {
   return ({
