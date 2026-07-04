@@ -206,6 +206,16 @@
   - added direct menu resolver coverage and a structure guard scoped to the
     native menu effect
   - reduced `WorkbenchLayout.tsx` from 1355 lines to 1352 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved send-prompt dispatch request resolution into
+    `src/renderer/workbench/utils/dispatchRequest.ts`
+  - kept `WorkbenchLayout.tsx` responsible for UI state and the `turns.create`
+    IPC call while pure routing decisions now live in a tested helper
+  - preserved provider-direct, local-agent direct, editable-schedule sanitize,
+    override schedule priority, and custom/smart schedule unavailable behavior
+  - added direct resolver coverage and updated provider/slash routing structure
+    guards to inspect the extracted helper
+  - reduced `WorkbenchLayout.tsx` from 1352 lines to 1346 lines
 
 ## Validation Log
 
@@ -553,6 +563,19 @@
     commands, including default setup-tab behavior.
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 164 files and 1071 tests.
+  - `npm run build` passed.
+- Workbench dispatch request extraction validation:
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/dispatchRequest.test.ts src/renderer/workbench/__tests__/provider-routing-state.test.ts src/renderer/workbench/__tests__/slash-command-behavior.test.ts src/renderer/workbench/__tests__/git-dock-layout.test.ts src/renderer/workbench/__tests__/customSchedule.test.ts`
+    with 5 files and 44 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed dispatch/workbench files passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    parity for provider direct, local direct, override schedule priority,
+    schedule sanitization, and unavailable custom/smart schedules.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 165 files and 1077 tests.
   - `npm run build` passed.
 
 ## Pending

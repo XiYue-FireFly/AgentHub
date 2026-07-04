@@ -113,6 +113,25 @@ describe("workbench git dock layout", () => {
     expect(menuCommands).toContain("'worktrees'")
   })
 
+  it("keeps send-prompt dispatch request routing outside WorkbenchLayout", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const dispatchRequest = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/dispatchRequest.ts"), "utf8")
+    const sendPromptStart = layout.indexOf("const sendPrompt = async")
+    const sendPromptEnd = layout.indexOf("const cancelAgent", sendPromptStart)
+    const sendPromptSource = layout.slice(sendPromptStart, sendPromptEnd)
+
+    expect(sendPromptStart).toBeGreaterThan(-1)
+    expect(sendPromptEnd).toBeGreaterThan(sendPromptStart)
+    expect(layout).toContain("import { resolveDispatchRequest } from './utils/dispatchRequest'")
+    expect(sendPromptSource).toContain("const dispatchRequest = resolveDispatchRequest")
+    expect(sendPromptSource).not.toContain("const selectedProviderDirect")
+    expect(sendPromptSource).not.toContain("sanitizeCustomSchedule")
+    expect(sendPromptSource).not.toContain("customScheduleHasRunnableSteps")
+    expect(dispatchRequest).toContain("export function resolveDispatchRequest")
+    expect(dispatchRequest).toContain("selectedProviderDirect")
+    expect(dispatchRequest).toContain("sanitizeCustomSchedule")
+  })
+
   it("keeps the first-run announcement modal outside WorkbenchLayout", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
     const modal = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchAnnouncementModal.tsx"), "utf8")

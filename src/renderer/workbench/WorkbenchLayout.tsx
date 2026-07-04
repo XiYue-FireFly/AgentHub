@@ -17,7 +17,7 @@ import { DEFAULT_INSPECTOR_WIDTH, WorkbenchBottomDock, WorkbenchInspector, clamp
 import { localAgentOptions } from './localAgentOptions'
 import { isWorkbenchViewMode, type ViewMode } from './viewModes'
 import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
-import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
+import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides } from './customSchedule'
 import { readAppearanceLocal } from '../appearance'
 import { styledConfirm } from '../lib/confirm'
 import { mergeRuntimeEventLists, isBufferedRuntimeEvent, isTaskHistoryEvent, runtimeAgentStatusFromEvent, shouldFlushFirstStreamDelta } from './utils/eventUtils'
@@ -29,6 +29,7 @@ import { watchTerminalRun } from './utils/terminalRunWatcher'
 import { buildPaletteCommands, resolvePaletteExtraAction } from './utils/paletteCommands'
 import { resolveShortcutCommandAction } from './utils/shortcutCommands'
 import { resolveWorkbenchMenuCommand } from './utils/menuCommands'
+import { resolveDispatchRequest } from './utils/dispatchRequest'
 import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
@@ -857,23 +858,16 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   const sendPrompt = async (prompt: string, attachments: WorkbenchAttachment[] = [], overrides: { targetAgent?: string | null; mode?: DispatchPreset; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null } = {}) => {
     if (!prompt.trim() || sending) return
-    const requestedTargetAgent = overrides.targetAgent !== undefined ? overrides.targetAgent : targetAgent
-    const requestedModelSelection = requestedTargetAgent ? null : (overrides.modelSelection !== undefined ? overrides.modelSelection : modelSelection)
-    const selectedProviderDirect = !requestedTargetAgent && requestedModelSelection?.source === 'provider'
-    const selectedLocalDirect = !!requestedTargetAgent
-    const nextTargetAgent = selectedProviderDirect ? null : requestedTargetAgent
-    const nextMode = selectedProviderDirect || selectedLocalDirect ? 'auto' : (overrides.mode || mode)
-    const rawCustomSchedule = selectedProviderDirect || selectedLocalDirect
-      ? undefined
-      : (overrides.customSchedule || (!nextTargetAgent ? dispatchScheduleForMode(nextMode) : undefined))
     const usableLocalAgents = localAgentOptions(localAgents)
-    const safeCustomSchedule = rawCustomSchedule ? sanitizeCustomSchedule(rawCustomSchedule, usableLocalAgents) : undefined
-    const scheduleUnavailable = safeCustomSchedule
-      ? !customScheduleHasRunnableSteps(safeCustomSchedule)
-      : nextMode === 'custom' || nextMode === 'firefly-custom'
-        ? usableLocalAgents.length === 0
-        : false
-    if (scheduleUnavailable && !nextTargetAgent && !selectedProviderDirect) {
+    const dispatchRequest = resolveDispatchRequest({
+      targetAgent,
+      modelSelection,
+      mode,
+      overrides,
+      usableLocalAgents,
+      scheduleForMode: dispatchScheduleForMode
+    })
+    if (dispatchRequest.scheduleUnavailable && !dispatchRequest.targetAgent && !dispatchRequest.selectedProviderDirect) {
       setSendError(tr('智能/自定义调度需要至少一个可用本地 Agent。请先在设置 > 路由里配置 CLI。', 'Smart and custom schedules need at least one usable local agent. Configure a CLI in Settings > Routing first.'))
       return
     }
@@ -884,12 +878,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         threadId: activeThreadId,
         workspaceId: workspaceId ?? null,
         prompt,
-        mode: nextMode,
-        targetAgent: nextTargetAgent,
+        mode: dispatchRequest.mode,
+        targetAgent: dispatchRequest.targetAgent,
         thinking,
-        modelSelection: selectedLocalDirect ? undefined : requestedModelSelection || undefined,
+        modelSelection: dispatchRequest.modelSelection,
         attachments,
-        customSchedule: selectedProviderDirect || selectedLocalDirect ? undefined : safeCustomSchedule
+        customSchedule: dispatchRequest.customSchedule
       })
       const threadId = result?.thread?.id || activeThreadId
       if (threadId) {

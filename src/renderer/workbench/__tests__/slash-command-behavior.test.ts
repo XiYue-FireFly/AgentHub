@@ -185,12 +185,15 @@ describe("workbench slash command behavior", () => {
 
   it("routes provider model selections through provider direct runs", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const dispatchRequest = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/dispatchRequest.ts"), "utf8")
     const modelUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/modelUtils.ts"), "utf8")
     const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
     const main = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
     const dispatcher = readFileSync(join(process.cwd(), "src/main/hub/dispatcher.ts"), "utf8")
 
-    expect(layout).toContain("selectedProviderDirect")
+    expect(layout).toContain("resolveDispatchRequest")
+    expect(dispatchRequest).toContain("selectedProviderDirect")
+    expect(dispatchRequest).toContain("requestedModelSelection?.source === 'provider'")
     expect(layout).toContain("setTargetAgent(null)")
     expect(modelUtils).toContain("source: 'provider'")
     expect(composer).toContain("source: 'provider'")
