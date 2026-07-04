@@ -47,6 +47,13 @@
     `src/renderer/workbench/WorkbenchPanels.tsx`
   - kept business panels in `WorkbenchLayout.tsx` for later isolated batches
   - reduced `WorkbenchLayout.tsx` from 2389 lines to 2085 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - connected `WorkbenchLayout.tsx` to the existing extracted
+    `src/renderer/workbench/components/panels/WorktreePanel.tsx`
+  - removed the duplicate inline `WorktreePanel` and `worktreeStatusLabel`
+    implementation from `WorkbenchLayout.tsx`
+  - preserved the previous status labels and worktree create/sync/open/remove
+    behavior in the extracted component
 
 ## Validation Log
 
@@ -107,9 +114,22 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 158 files and 1034 tests.
   - `npm run build` passed.
+- Workbench WorktreePanel extraction validation:
+  - `npm run typecheck` passed.
+  - Targeted eslint for `WorkbenchLayout.tsx` and
+    `components/panels/WorktreePanel.tsx` passed.
+  - Targeted Workbench tests passed with 4 files and 9 tests:
+    `titlebar-menu-copy`, `keyboard-shortcuts`, `viewModes`, and
+    `git-dock-layout`.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for workspace-empty UI, create/sync/open/remove flows,
+    confirmation, error handling, refresh, and loading state.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 158 files and 1034 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 Workbench decomposition in small verified batches.
-- Next likely pure-move candidates: `WorktreePanel` or `BrowserPanelV2`.
+- Next likely pure-move candidate: `BrowserPanelV2`.
 - Re-run full validation after the next patch batch before commit.
