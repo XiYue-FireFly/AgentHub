@@ -41,6 +41,12 @@
   - kept the move behavior-preserving apart from the intentional Requirements
     menu entry that matches the existing `view-requirements` command
   - reduced `WorkbenchLayout.tsx` from 2548 lines to 2389 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved the inspector shell, bottom dock, tool panel bar, panel title, and
+    inspector width clamp helper into
+    `src/renderer/workbench/WorkbenchPanels.tsx`
+  - kept business panels in `WorkbenchLayout.tsx` for later isolated batches
+  - reduced `WorkbenchLayout.tsx` from 2389 lines to 2085 lines
 
 ## Validation Log
 
@@ -93,9 +99,17 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 158 files and 1034 tests.
   - `npm run build` passed.
+- Workbench panel shell split validation:
+  - Read-only subagent review returned `APPROVE` with no blockers. It noted
+    that `WorkbenchPanels.tsx` must be included in the commit and suggested a
+    later shared type extraction for `WorkbenchRightPanel`.
+  - `npm run typecheck` passed.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 158 files and 1034 tests.
+  - `npm run build` passed.
 
 ## Pending
 
-- Continue fable5 1.2.4 residual fixes and 1.3.0 groundwork in small
-  verified batches.
+- Continue fable5 1.3.0 Workbench decomposition in small verified batches.
+- Next likely pure-move candidates: `WorktreePanel` or `BrowserPanelV2`.
 - Re-run full validation after the next patch batch before commit.
