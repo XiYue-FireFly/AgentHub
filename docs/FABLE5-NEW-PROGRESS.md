@@ -162,6 +162,14 @@
     mappings, usable local-agent filtering, invalid agent rejection, and
     shortcut fallback behavior
   - reduced `WorkbenchLayout.tsx` from 1614 lines to 1577 lines
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved the first-run workbench announcement modal into
+    `src/renderer/workbench/WorkbenchAnnouncementModal.tsx`
+  - kept localStorage seen-state and setup navigation side effects in
+    `WorkbenchLayout.tsx`
+  - preserved modal classes, backdrop close behavior, setup buttons, and the
+    "Got it" close action
+  - reduced `WorkbenchLayout.tsx` from 1577 lines to 1534 lines
 
 ## Validation Log
 
@@ -428,6 +436,19 @@
     switch commands, setup mappings, workflow seeding, and shortcut fallback.
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 162 files and 1057 tests.
+  - `npm run build` passed.
+- Workbench announcement modal extraction validation:
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/git-dock-layout.test.ts src/renderer/workbench/__tests__/keyboard-shortcuts.test.ts src/renderer/workbench/__tests__/paletteCommands.test.ts src/renderer/workbench/__tests__/workbench-copy.test.ts`
+    with 4 files and 12 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed announcement/workbench files passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for seen-state ownership, modal structure, close behavior,
+    setup navigation, and action buttons.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 162 files and 1058 tests.
   - `npm run build` passed.
 
 ## Pending

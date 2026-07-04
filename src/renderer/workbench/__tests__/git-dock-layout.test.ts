@@ -44,6 +44,19 @@ describe("workbench git dock layout", () => {
     expect(dialog).toContain("defaultDialogPath('folder'")
   })
 
+  it("keeps the first-run announcement modal outside WorkbenchLayout", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const modal = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchAnnouncementModal.tsx"), "utf8")
+
+    expect(layout).toContain("import { WorkbenchAnnouncementModal } from './WorkbenchAnnouncementModal'")
+    expect(layout).not.toContain('className="wb-announcement-modal"')
+    expect(layout).toContain("<WorkbenchAnnouncementModal")
+    expect(modal).toContain("export function WorkbenchAnnouncementModal")
+    expect(modal).toContain("wb-announcement-actions")
+    expect(modal).toContain("onOpenSetup('local-agents')")
+    expect(modal).toContain("onOpenSetup('providers')")
+  })
+
   it("keeps new floating workbench surfaces on theme tokens", () => {
     const styles = readFileSync(join(process.cwd(), "src/renderer/globals.css"), "utf8")
 
