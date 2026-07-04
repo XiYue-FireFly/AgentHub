@@ -144,6 +144,15 @@
     behavior-preserving
   - added structure coverage to prevent the terminal watcher from regressing to
     the older fixed 24-poll cap
+- Continued fable5 1.3.0 Workbench decomposition:
+  - moved add-working-folder modal state, folder picking, validation, and
+    `workspaces.create` into `src/renderer/workbench/CreateWorkspaceDialog.tsx`
+  - kept post-create workbench orchestration in `WorkbenchLayout.tsx`:
+    activate workspace, remember it, reload workbench, create a new chat, and
+    select it
+  - reduced `WorkbenchLayout.tsx` from 1659 lines to 1614 lines
+  - added structure coverage to keep workspace creation dialog logic out of
+    `WorkbenchLayout.tsx`
 
 ## Validation Log
 
@@ -383,6 +392,20 @@
     open-ended terminal polling.
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 161 files and 1054 tests.
+  - `npm run build` passed.
+- CreateWorkspaceDialog extraction validation:
+  - Targeted validation passed:
+    `npx vitest run src/renderer/workbench/__tests__/git-dock-layout.test.ts src/renderer/workbench/__tests__/keyboard-shortcuts.test.ts src/renderer/workbench/__tests__/viewModes.test.ts src/renderer/workbench/__tests__/workbench-copy.test.ts`
+    with 4 files and 11 tests.
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed Workbench files passed.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for dialog labels/classes, folder picking, remembered
+    dialog path, validation, `workspaces.create`, and post-create workbench
+    orchestration.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 161 files and 1055 tests.
   - `npm run build` passed.
 
 ## Pending

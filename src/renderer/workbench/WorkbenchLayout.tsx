@@ -15,6 +15,7 @@ import { ThreadView } from './ThreadView'
 import { ComposerBar } from './ComposerBar'
 import { RunTimeline } from './RunTimeline'
 import { WorkbenchChatTopBar } from './WorkbenchChatTopBar'
+import { CreateWorkspaceDialog } from './CreateWorkspaceDialog'
 import { WorkbenchToolPanel } from './WorkbenchToolPanel'
 import { WriteWorkspace } from './WriteWorkspace'
 import { GitWorkbenchPanel } from './GitWorkbenchPanel'
@@ -32,7 +33,7 @@ import { localAgentOptions } from './localAgentOptions'
 import { isWorkbenchViewMode, type ViewMode } from './viewModes'
 import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
-import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
+import { readAppearanceLocal } from '../appearance'
 import { styledConfirm } from '../lib/confirm'
 import { mergeRuntimeEventLists, isBufferedRuntimeEvent, isTaskHistoryEvent, runtimeAgentStatusFromEvent, shouldFlushFirstStreamDelta } from './utils/eventUtils'
 import { parseSlashInput, parseLoopLimit, stripLoopFlags } from './utils/slashCommandUtils'
@@ -111,8 +112,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [sending, setSending] = useState(false)
   const [search, setSearch] = useState('')
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
-  const [projectDraft, setProjectDraft] = useState({ name: '', rootPath: '' })
-  const [projectError, setProjectError] = useState<string | null>(null)
   const [rightPanel, setRightPanel] = useState<RightPanel>(null)
   const [selectedAgentDetail, setSelectedAgentDetail] = useState<{ agentId: string; turnId: string } | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
@@ -737,8 +736,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [])
 
   const openCreateProject = useCallback(() => {
-    setProjectError(null)
-    setProjectDraft({ name: '', rootPath: '' })
     setProjectDialogOpen(true)
   }, [])
 
@@ -890,35 +887,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [shortcutBindings, runShortcutCommand])
 
-  const pickProjectFolder = async () => {
-    const picked = await window.electronAPI.app.pickFolder({ defaultPath: defaultDialogPath('folder', activeWorkspace?.rootPath) })
-    if (!picked) return
-    rememberDialogPath('folder', picked)
-    const inferred = picked.split(/[\\/]/).filter(Boolean).at(-1) || tr('新工作目录', 'New folder')
-    setProjectDraft(draft => ({ name: draft.name || inferred, rootPath: picked }))
-  }
-
-  const submitProject = async () => {
-    const name = projectDraft.name.trim()
-    const rootPath = projectDraft.rootPath.trim()
-    if (!name || !rootPath) {
-      setProjectError(tr('请选择本地目录并填写名称。', 'Choose a local folder and enter a name.'))
-      return
-    }
-    try {
-      setProjectError(null)
-      const ws = await window.electronAPI.workspaces.create({ name, rootPath })
-      await window.electronAPI.workspaces.setActive(ws.id)
-      setWorkspaceId(ws.id)
-      rememberWorkspaceId(ws.id)
-      setProjectDialogOpen(false)
-      await loadWorkbench(ws.id)
-      const thread = await window.electronAPI.threads.create({ workspaceId: ws.id, title: tr('新对话', 'New chat') })
-      await selectThread(thread.id)
-    } catch (e: any) {
-      setProjectError(e?.message || tr('添加工作目录失败。', 'Failed to add folder.'))
-    }
-  }
+  const handleProjectCreated = useCallback(async (ws: Pick<WorkspaceItem, 'id' | 'name' | 'rootPath'>) => {
+    await window.electronAPI.workspaces.setActive(ws.id)
+    setWorkspaceId(ws.id)
+    rememberWorkspaceId(ws.id)
+    setProjectDialogOpen(false)
+    await loadWorkbench(ws.id)
+    const thread = await window.electronAPI.threads.create({ workspaceId: ws.id, title: tr('新对话', 'New chat') })
+    await selectThread(thread.id)
+  }, [loadWorkbench, rememberWorkspaceId, selectThread])
 
   const deleteThread = async (threadId: string) => {
     await window.electronAPI.threads.delete(threadId)
@@ -1557,33 +1534,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       </div>
 
       {projectDialogOpen && (
-        <div className="wb-modal-backdrop" onMouseDown={() => setProjectDialogOpen(false)}>
-          <div className="wb-project-modal" onMouseDown={e => e.stopPropagation()}>
-            <div className="wb-project-modal-head">
-              <div>
-                <strong>{tr('添加工作目录', 'Add working folder')}</strong>
-                <span>{tr('选择一个本地目录。绑定后文件、Git、终端和工作树会使用这个目录。', 'Choose a local folder for files, Git, terminal, and worktrees.')}</span>
-              </div>
-              <button onClick={() => setProjectDialogOpen(false)}><Icon d={IC.x} size={14} /></button>
-            </div>
-            <label>
-              {tr('目录名称', 'Folder name')}
-              <input value={projectDraft.name} onChange={e => setProjectDraft(d => ({ ...d, name: e.target.value }))} placeholder={tr('给这个目录起个名字', 'Name this folder')} />
-            </label>
-            <label>
-              {tr('本地目录', 'Local folder')}
-              <div className="wb-folder-picker">
-                <input value={projectDraft.rootPath} onChange={e => setProjectDraft(d => ({ ...d, rootPath: e.target.value }))} placeholder={tr('选择本地目录', 'Choose a local folder')} />
-                <button onClick={pickProjectFolder}>{tr('浏览', 'Browse')}</button>
-              </div>
-            </label>
-            {projectError && <div className="wb-project-error">{projectError}</div>}
-            <div className="wb-project-modal-actions">
-              <button onClick={() => setProjectDialogOpen(false)}>{tr('取消', 'Cancel')}</button>
-              <button className="primary" onClick={submitProject}>{tr('添加工作目录', 'Add folder')}</button>
-            </div>
-          </div>
-        </div>
+        <CreateWorkspaceDialog
+          activeWorkspaceRoot={activeWorkspace?.rootPath}
+          onClose={() => setProjectDialogOpen(false)}
+          onCreated={handleProjectCreated}
+        />
       )}
 
       {announcementOpen && (

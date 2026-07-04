@@ -31,6 +31,19 @@ describe("workbench git dock layout", () => {
     expect(terminalWatcher).not.toContain("i < 24")
   })
 
+  it("keeps workspace creation dialog logic outside WorkbenchLayout", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const dialog = readFileSync(join(process.cwd(), "src/renderer/workbench/CreateWorkspaceDialog.tsx"), "utf8")
+
+    expect(layout).toContain("import { CreateWorkspaceDialog } from './CreateWorkspaceDialog'")
+    expect(layout).not.toContain("const pickProjectFolder")
+    expect(layout).not.toContain("const submitProject")
+    expect(dialog).toContain("export function CreateWorkspaceDialog")
+    expect(dialog).toContain("window.electronAPI.app.pickFolder")
+    expect(dialog).toContain("window.electronAPI.workspaces.create")
+    expect(dialog).toContain("defaultDialogPath('folder'")
+  })
+
   it("keeps new floating workbench surfaces on theme tokens", () => {
     const styles = readFileSync(join(process.cwd(), "src/renderer/globals.css"), "utf8")
 
