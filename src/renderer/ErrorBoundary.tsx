@@ -1,18 +1,11 @@
-/**
- * ErrorBoundary: catches React render errors and shows a recovery UI.
- *
- * Wraps each major screen. On error, shows a non-blocking toast with
- * "Something went wrong" and a "Reload" button. Logs to console for
- * debugging. Does not crash the entire app.
- */
-
 import React, { Component, type ReactNode } from 'react'
+import { tr } from './glass/i18n'
 
 interface Props {
   children: ReactNode
-  /** Optional label for identifying which section crashed */
+  /** Optional label for identifying which section crashed. */
   label?: string
-  /** Optional fallback UI */
+  /** Optional fallback UI. */
   fallback?: ReactNode
 }
 
@@ -39,12 +32,11 @@ export class ErrorBoundary extends Component<Props, State> {
     this.setState({ errorInfo: errorInfo.componentStack || null })
   }
 
-  private handleReload = () => {
+  private handleRetry = () => {
     this.setState(prev => ({ hasError: false, error: null, errorInfo: null, resetKey: prev.resetKey + 1 }))
   }
 
-  // LOW-20: Provide navigation to a safe state (full reload resets all state)
-  private handleGoHome = () => {
+  private handleReloadApp = () => {
     window.location.reload()
   }
 
@@ -53,19 +45,30 @@ export class ErrorBoundary extends Component<Props, State> {
     navigator.clipboard.writeText(text).catch(() => {})
   }
 
+  private isChunkLoadError(): boolean {
+    const error = this.state.error
+    const text = `${error?.name || ''}\n${error?.message || ''}\n${error?.stack || ''}`
+    return /Failed to fetch dynamically imported module|Loading chunk|ChunkLoadError|Importing a module script failed/i.test(text)
+  }
+
   render() {
     if (this.state.hasError) {
       if (this.props.fallback) return this.props.fallback
+      const chunkLoadError = this.isChunkLoadError()
       return (
         <div className="wb-error-boundary">
           <div className="wb-error-boundary-card">
-            <div className="wb-error-boundary-icon">⚠</div>
-            <strong>{this.props.label ? `${this.props.label} — ` : ''}Something went wrong</strong>
-            <p className="wb-error-boundary-msg">{this.state.error?.message || 'An unexpected error occurred.'}</p>
+            <div className="wb-error-boundary-icon">!</div>
+            <strong>{this.props.label ? `${this.props.label} - ` : ''}{tr('页面加载失败', 'Something went wrong')}</strong>
+            <p className="wb-error-boundary-msg">
+              {chunkLoadError
+                ? tr('应用资源已更新，请重新加载窗口后再打开该页面。', 'The app assets changed. Reload the window, then open this page again.')
+                : (this.state.error?.message || tr('发生了未知错误。', 'An unexpected error occurred.'))}
+            </p>
             <div className="wb-error-boundary-actions">
-              <button className="ah-btn sm primary" onClick={this.handleReload}>Try again</button>
-              <button className="ah-btn sm" onClick={this.handleGoHome}>Go to overview</button>
-              <button className="ah-btn sm" onClick={this.handleCopyError}>Copy error</button>
+              <button className="ah-btn sm primary" onClick={this.handleReloadApp}>{tr('重新加载应用', 'Reload app')}</button>
+              <button className="ah-btn sm" onClick={this.handleRetry}>{tr('重试页面', 'Retry page')}</button>
+              <button className="ah-btn sm" onClick={this.handleCopyError}>{tr('复制错误', 'Copy error')}</button>
             </div>
           </div>
         </div>

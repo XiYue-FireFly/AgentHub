@@ -102,18 +102,12 @@ What should be achieved?
 - [ ] Acceptance criterion 3
 `
 
-function getDefaultTemplate(): string {
-  // Windows 通常没有 LANG 环境变量，检查多种方式
-  const lang = process.env.LANG || process.env.LANGUAGE || process.env.LC_ALL || ''
-  const locale = Intl.DateTimeFormat().resolvedOptions().locale || ''
-
-  // 检查是否为中文环境
-  if (lang.startsWith('zh') || lang.includes('CN') || lang.includes('TW') ||
-      locale.startsWith('zh') || locale.includes('CN') || locale.includes('TW')) {
-    return DEFAULT_TEMPLATE_ZH
-  }
-  // 默认使用中文（因为用户界面是中文）
-  return DEFAULT_TEMPLATE_ZH
+export function getDefaultTemplate(env: NodeJS.ProcessEnv = process.env, locale = Intl.DateTimeFormat().resolvedOptions().locale || ''): string {
+  const languageSignals = [env.LANG, env.LANGUAGE, env.LC_ALL, locale].filter((value): value is string => Boolean(value))
+  const isChinese = languageSignals.some(value =>
+    value.startsWith('zh') || value.includes('CN') || value.includes('TW')
+  )
+  return isChinese ? DEFAULT_TEMPLATE_ZH : DEFAULT_TEMPLATE_EN
 }
 
 // ============================================================

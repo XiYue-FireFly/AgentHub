@@ -30,10 +30,11 @@ interface ChatMessage {
 interface SddAssistantPanelProps {
   draftId: string
   workspaceRoot: string
-  onSendMessage?: (message: string, history: Array<{ role: 'user' | 'assistant'; content: string }>) => Promise<string>
+  onSendMessage?: (message: string, history: Array<{ role: 'user' | 'assistant'; content: string }>, mode?: 'chat' | 'plan') => Promise<string>
   onApplyFramework?: (framework: SddPmFramework) => void
   onClose?: () => void
   initialMessage?: string
+  initialMode?: 'chat' | 'plan'
 }
 
 // ============================================================
@@ -130,14 +131,28 @@ export function SddAssistantPanel({
   onSendMessage,
   onApplyFramework,
   onClose,
-  initialMessage
+  initialMessage,
+  initialMode = 'chat'
 }: SddAssistantPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const msgIdCounter = useRef(0)
-  const initialMessageSent = useRef(false)
+  const initialMessageSentFor = useRef<string | null>(null)
+  const onSendMessageRef = useRef(onSendMessage)
+  const mountedRef = useRef(false)
+
+  useEffect(() => {
+    onSendMessageRef.current = onSendMessage
+  }, [onSendMessage])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   // Auto scroll to bottom
   useEffect(() => {
@@ -146,13 +161,12 @@ export function SddAssistantPanel({
 
   // Auto-send initial message (e.g. for plan generation mode)
   useEffect(() => {
-    if (!initialMessage || initialMessageSent.current || !onSendMessage) return
-    initialMessageSent.current = true
+    if (!initialMessage || initialMessageSentFor.current === initialMessage || !onSendMessageRef.current) return
     setInput(initialMessage)
     // 使用 setTimeout 确保 state 已更新后再触发发送
-    let cancelled = false
     const timer = setTimeout(() => {
-      if (cancelled) return
+      if (!mountedRef.current || initialMessageSentFor.current === initialMessage) return
+      initialMessageSentFor.current = initialMessage
       const userMessage: ChatMessage = {
         id: `msg-${Date.now()}-${++msgIdCounter.current}`,
         role: 'user',
@@ -162,9 +176,14 @@ export function SddAssistantPanel({
       setMessages(prev => [...prev, userMessage])
       setInput('')
       setBusy(true)
-      onSendMessage(initialMessage, [])
+      const sendInitialMessage = onSendMessageRef.current
+      if (!sendInitialMessage) {
+        setBusy(false)
+        return
+      }
+      sendInitialMessage(initialMessage, [], initialMode)
         .then(response => {
-          if (cancelled) return
+          if (!mountedRef.current) return
           const assistantMessage: ChatMessage = {
             id: `msg-${Date.now()}-${++msgIdCounter.current}`,
             role: 'assistant',
@@ -174,7 +193,7 @@ export function SddAssistantPanel({
           setMessages(prev => [...prev, assistantMessage])
         })
         .catch(error => {
-          if (cancelled) return
+          if (!mountedRef.current) return
           const errorMessage: ChatMessage = {
             id: `msg-${Date.now()}-${++msgIdCounter.current}`,
             role: 'assistant',
@@ -183,14 +202,14 @@ export function SddAssistantPanel({
           }
           setMessages(prev => [...prev, errorMessage])
         })
-        .finally(() => { if (!cancelled) setBusy(false) })
+        .finally(() => { if (mountedRef.current) setBusy(false) })
     }, 0)
-    // 清理 timer 和标记，防止组件卸载后更新状态
+    // Only cancel the scheduled send. Once started, parent rerenders must not
+    // cancel the in-flight request; mountedRef guards unmounts.
     return () => {
-      cancelled = true
       clearTimeout(timer)
     }
-  }, [initialMessage, onSendMessage])
+  }, [initialMessage, initialMode, !!onSendMessage])
 
   // Send message
   const handleSend = async () => {
@@ -210,7 +229,7 @@ export function SddAssistantPanel({
     try {
       // 传递对话历史给 AI，支持多轮对话上下文
       const history = messages.map(m => ({ role: m.role, content: m.content }))
-      const response = await onSendMessage(userMessage.content, history)
+      const response = await onSendMessage(userMessage.content, history, 'chat')
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-${++msgIdCounter.current}`,
         role: 'assistant',

@@ -131,6 +131,7 @@ export function getLocalToken(): string {
   if (!t || typeof t !== 'string') {
     t = randomBytes(24).toString('hex')
     appStore.set(TOKEN_KEY, t)
+    appStore.flush()
   }
   return t
 }

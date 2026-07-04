@@ -8,44 +8,60 @@
  * Run: npx playwright test
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect, _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
 
 const mainEntry = join(process.cwd(), 'out', 'main', 'index.js')
 
-async function launchAgentHub(): Promise<{ app: ElectronApplication; page: Page }> {
+async function launchAgentHub(): Promise<{ app: ElectronApplication; page: Page; userDataDir: string }> {
   if (!existsSync(mainEntry)) {
     throw new Error('Missing built Electron main entry. Run `npm run build` before `npx playwright test`.')
   }
 
-  const app = await electron.launch({
-    args: [mainEntry],
-    env: {
-      ...process.env,
-      NODE_ENV: 'test'
-    }
-  })
-  const page = await app.firstWindow()
-  await page.waitForLoadState('domcontentloaded')
-  return { app, page }
+  const userDataDir = mkdtempSync(join(tmpdir(), 'agenthub-e2e-'))
+  let app: ElectronApplication | null = null
+  try {
+    app = await electron.launch({
+      args: [`--user-data-dir=${userDataDir}`, mainEntry],
+      env: {
+        ...process.env,
+        NODE_ENV: 'test',
+        AGENTHUB_USER_DATA_DIR: userDataDir
+      }
+    })
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    return { app, page, userDataDir }
+  } catch (error) {
+    await app?.close().catch(() => {})
+    rmSync(userDataDir, { recursive: true, force: true })
+    throw error
+  }
 }
 
 test.describe('AgentHub App', () => {
   let app: ElectronApplication | null = null
   let page: Page | null = null
+  let userDataDir: string | null = null
 
   test.beforeEach(async () => {
     const launched = await launchAgentHub()
     app = launched.app
     page = launched.page
+    userDataDir = launched.userDataDir
   })
 
   test.afterEach(async () => {
     await app?.close()
+    if (userDataDir) {
+      rmSync(userDataDir, { recursive: true, force: true })
+    }
     app = null
     page = null
+    userDataDir = null
   })
 
   test('app loads and shows main shell', async () => {

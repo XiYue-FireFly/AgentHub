@@ -25,6 +25,7 @@ interface ElectronAPI {
     healthAll: () => Promise<any>
     fetchModels: (id: string, override?: { baseUrl?: string; apiKey?: string; kind?: string }) => Promise<{ ok: boolean; count?: number; error?: string; config?: any }>
     reorderForClaude: (orderedIds: string[]) => Promise<any>
+    onWarning?: (callback: (warning: { providerId: string; message: string }) => void) => () => void
   }
   takeover: {
     status: () => Promise<Record<string, {

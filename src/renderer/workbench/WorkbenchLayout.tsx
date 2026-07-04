@@ -2,9 +2,9 @@
 import { Icon, IC, AgentMark } from '../glass/ui'
 import { BindingDef, ProviderDef, TaskItem } from '../glass/meta'
 import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
-// Phase 3.2 lazy loading: heavy views loaded on demand
-const SettingsScreen = React.lazy(() => import('../screens/Settings').then(m => ({ default: m.SettingsScreen })))
+import { SettingsScreen } from '../screens/Settings'
 type MotionLevel = 'off' | 'subtle' | 'rich'
+// Phase 3.2 lazy loading: secondary heavy views loaded on demand
 const WorkflowsPanel = React.lazy(() => import('./WorkflowsPanel').then(m => ({ default: m.WorkflowsPanel })))
 import { TerminalPanel } from './TerminalPanel'
 import { TasksScreen } from '../screens/Tasks'
@@ -26,6 +26,8 @@ import { SubagentDetailPanel } from './SubagentDetailPanel'
 import { SideConversationPanel } from './SideConversationPanel'
 import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
+import { isWorkbenchViewMode, type ViewMode } from './viewModes'
+import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
 import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
 import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
 import {
@@ -39,7 +41,6 @@ import {
   shortcutDisplay
 } from '../keyboard-shortcuts'
 
-type ViewMode = 'chat' | 'write' | 'tasks' | 'requirements' | 'settings' | 'workflows'
 type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage' | 'agentLoop' | 'requirements'
 type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | 'files' | 'side-chat' | null
 type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
@@ -49,7 +50,6 @@ const AGENT_SLOT_STORE_KEY = 'agenthub.workbench.agentSlots.v1'
 const INSPECTOR_WIDTH_STORE_KEY = 'agenthub.workbench.inspectorWidth.v1'
 const LAST_VIEW_STORE_KEY = 'agenthub.workbench.lastView.v1'
 const LAST_THREAD_STORE_KEY = 'agenthub.workbench.lastThread.v1'
-const LAST_WORKSPACE_STORE_KEY = 'agenthub.workbench.lastWorkspace.v1'
 const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
 const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
 const SCHEDULE_OVERRIDES_STORE_KEY = 'agenthub.workbench.scheduleOverrides.v1'
@@ -177,9 +177,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [])
 
   const rememberWorkspaceId = useCallback((id: string | null) => {
-    try {
-      if (id) localStorage.setItem(LAST_WORKSPACE_STORE_KEY, id)
-    } catch { /* noop */ }
+    rememberWorkbenchWorkspaceId(id)
   }, [])
 
   const setView = useCallback((next: ViewMode) => {
@@ -293,13 +291,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       window.electronAPI.localAgents.status().catch(() => [])
     ])
 
-    let persistedWorkspaceId: string | null = null
-    try { persistedWorkspaceId = localStorage.getItem(LAST_WORKSPACE_STORE_KEY) } catch { /* noop */ }
-    const persistedWorkspaceVisible = persistedWorkspaceId && wsList.some(workspace => workspace.id === persistedWorkspaceId)
-    const activeWorkspaceVisible = activeWs && wsList.some(workspace => workspace.id === activeWs)
-    const resolvedWorkspaceId = nextWorkspaceId !== undefined
-      ? nextWorkspaceId
-      : (workspaceId ?? (activeWorkspaceVisible ? activeWs : null) ?? (persistedWorkspaceVisible ? persistedWorkspaceId : null) ?? wsList[0]?.id ?? null)
+    const resolvedWorkspaceId = resolveWorkbenchWorkspaceId({
+      requestedWorkspaceId: nextWorkspaceId,
+      currentWorkspaceId: workspaceId,
+      activeWorkspaceId: activeWs,
+      rememberedWorkspaceId: readRememberedWorkspaceId(),
+      workspaces: wsList
+    })
     if (nextWorkspaceId === undefined && resolvedWorkspaceId && resolvedWorkspaceId !== activeWs) {
       window.electronAPI.workspaces.setActive(resolvedWorkspaceId).catch(() => null)
     }
@@ -346,12 +344,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setEvents([])
       setThreadTodosState([])
       loadingThreadIdRef.current = null
-    }
-    if (nextWorkspaceId === undefined && wsList.length === 0 && emptyWorkspaceRetryRef.current < 8) {
-      emptyWorkspaceRetryRef.current += 1
-      window.setTimeout(() => {
-        if (loadWorkbenchGenRef.current === gen) loadWorkbench().catch(() => {})
-      }, 350)
+      if (nextWorkspaceId === undefined && wsList.length === 0) {
+        window.setTimeout(() => {
+          if (loadWorkbenchGenRef.current === gen) loadWorkbench().catch(() => {})
+        }, 500)
+      }
     }
   }, [workspaceId, clearRuntimeEventBuffer, rememberWorkspaceId])
 
@@ -372,7 +369,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       let lastView: ViewMode = 'chat'
       try {
         const saved = localStorage.getItem(LAST_VIEW_STORE_KEY)
-        if (saved === 'chat' || saved === 'write' || saved === 'tasks' || saved === 'settings') lastView = saved
+        if (isWorkbenchViewMode(saved)) lastView = saved
       } catch { /* noop */ }
       setView(lastView)
     }
@@ -692,8 +689,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (action === 'new-thread') void createThread()
       else if (action === 'open-project') openCreateProject()
       else if (action === 'view') {
-        const nextView = params.view as ViewMode
-        if (['chat', 'write', 'tasks', 'settings'].includes(nextView)) setView(nextView)
+        if (isWorkbenchViewMode(params.view)) setView(params.view)
       } else if (action === 'open-panel') {
         const panel = params.panel
         if (panel === 'runs' || panel === 'git' || panel === 'worktrees' || panel === 'browser') setRightPanel(panel)

@@ -20,6 +20,7 @@ interface SddRequirementsListProps {
 
 const PLAN_GENERATION_TRIGGER_MESSAGE = 'Generate an implementation plan from the current requirement document.'
 const AI_REQUIREMENT_SECTION_TITLE = '## AI 需求整理'
+type AssistantRequestMode = 'chat' | 'plan'
 
 function cleanAssistantMarkdown(content: string): string {
   const trimmed = content.trim()
@@ -118,6 +119,57 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
     setView('list')
   }
 
+  const handleSendAssistantMessage = useCallback(async (
+    message: string,
+    history: Array<{ role: 'user' | 'assistant'; content: string }>,
+    mode: AssistantRequestMode = 'chat'
+  ): Promise<string> => {
+    const store = useSddDraftStore.getState()
+    const draft = store.activeDraft
+    if (!draft) throw new Error('No active draft')
+
+    let systemPrompt: string
+    let userPrompt: string = message
+
+    if (mode === 'plan') {
+      const planResult = buildPlanPrompt({
+        draft,
+        blocks: store.requirementBlocks,
+        designContext: draft.designContext
+      })
+      systemPrompt = planResult.systemPrompt
+      userPrompt = planResult.userPrompt
+      setAssistantMode('chat')
+    } else {
+      const result = buildAssistantPrompt(
+        {
+          draft,
+          blocks: store.requirementBlocks,
+          designContext: draft.designContext,
+          history
+        },
+        message
+      )
+      systemPrompt = result.systemPrompt
+      userPrompt = result.userPrompt
+    }
+
+    const result = await window.electronAPI.ai.quickComplete({
+      prompt: userPrompt,
+      systemPrompt
+    })
+    if (!result?.ok) throw new Error(result?.error || 'AI request failed')
+    const content = result.content || ''
+    if (mode === 'chat' && content.trim()) {
+      const latest = useSddDraftStore.getState()
+      latest.setContent(appendAssistantRequirementContent(latest.content, content))
+      await saveDraftToDisk()
+      await parseRequirementBlocks()
+      if (workspaceRoot) await refreshDrafts()
+    }
+    return content
+  }, [refreshDrafts, workspaceRoot])
+
   // Format date
   const formatDate = (dateStr: string) => {
     try {
@@ -154,56 +206,8 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
             draftId={activeDraft.id}
             workspaceRoot={activeDraft.workspaceRoot}
             initialMessage={assistantMode === 'plan' ? PLAN_GENERATION_TRIGGER_MESSAGE : undefined}
-            onSendMessage={async (message: string, history: Array<{ role: 'user' | 'assistant'; content: string }>) => {
-              const modeForRequest = assistantMode
-              const store = useSddDraftStore.getState()
-              const draft = store.activeDraft
-              if (!draft) throw new Error('No active draft')
-
-              let systemPrompt: string
-              let userPrompt: string = message
-
-              if (modeForRequest === 'plan') {
-                // 计划生成模式：使用计划 prompt 构建器
-                const planResult = buildPlanPrompt({
-                  draft,
-                  blocks: store.requirementBlocks,
-                  designContext: draft.designContext
-                })
-                systemPrompt = planResult.systemPrompt
-                userPrompt = planResult.userPrompt
-                // 发送后切回聊天模式
-                setAssistantMode('chat')
-              } else {
-                // 聊天模式：使用完整 prompt 构建器（含对话历史）
-                const result = buildAssistantPrompt(
-                  {
-                    draft,
-                    blocks: store.requirementBlocks,
-                    designContext: draft.designContext,
-                    history
-                  },
-                  message
-                )
-                systemPrompt = result.systemPrompt
-                userPrompt = result.userPrompt
-              }
-
-              const result = await window.electronAPI.ai.quickComplete({
-                prompt: userPrompt,
-                systemPrompt
-              })
-              if (!result?.ok) throw new Error(result?.error || 'AI request failed')
-              const content = result.content || ''
-              if (modeForRequest === 'chat' && content.trim()) {
-                const latest = useSddDraftStore.getState()
-                latest.setContent(appendAssistantRequirementContent(latest.content, content))
-                await saveDraftToDisk()
-                await parseRequirementBlocks()
-                if (workspaceRoot) await refreshDrafts()
-              }
-              return content
-            }}
+            initialMode={assistantMode}
+            onSendMessage={handleSendAssistantMessage}
             onClose={() => setAssistantOpen(false)}
           />
         )}

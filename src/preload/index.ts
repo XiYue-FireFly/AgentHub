@@ -54,7 +54,12 @@ const api = {
     health: (id: string) => ipcRenderer.invoke('providers:health', id),
     healthAll: () => ipcRenderer.invoke('providers:healthAll'),
     fetchModels: (id: string, override?: { baseUrl?: string; apiKey?: string; kind?: string }) => ipcRenderer.invoke('providers:fetchModels', id, override),
-    reorderForClaude: (orderedIds: string[]) => ipcRenderer.invoke('providers:reorderForClaude', orderedIds)
+    reorderForClaude: (orderedIds: string[]) => ipcRenderer.invoke('providers:reorderForClaude', orderedIds),
+    onWarning: (callback: (warning: { providerId: string; message: string }) => void) => {
+      const handler = (_event: any, warning: any) => callback(warning)
+      ipcRenderer.on('providers:warning', handler)
+      return () => ipcRenderer.removeListener('providers:warning', handler)
+    }
   },
   takeover: {
     status: () => ipcRenderer.invoke('takeover:status'),

@@ -1,6 +1,27 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
+import { planDispatch } from "../runtime/dispatch-planner"
+import type { PromptOptimizerResult } from "../runtime/prompt-optimizer"
+import type { SchedulePreview } from "../runtime/types"
+
+function optimizer(overrides: Partial<PromptOptimizerResult> = {}): PromptOptimizerResult {
+  return {
+    originalPrompt: "Fix the app and review the implementation",
+    optimizedPrompt: "[optimized] Fix the app and review the implementation",
+    intent: "bugfix",
+    matchedSkills: [],
+    matchedPlugins: [],
+    contextBlock: {
+      id: "ctx-test",
+      kind: "skill",
+      title: "Prompt optimizer",
+      participation: "selected",
+      createdAt: 1
+    },
+    ...overrides
+  }
+}
 
 describe("smart five-role custom schedule integration", () => {
   it("isolates router prompts and marks non-chat schedule output as run-only", () => {
@@ -53,28 +74,52 @@ describe("smart five-role custom schedule integration", () => {
 
     expect(source).toContain("new Dispatcher(registry, pipeline, (taskText = \"\") => memory().selectContextEntries(taskText, { limit: 12, tokenBudget: 4_000 }))")
     expect(source).toContain("memory().selectContextEntries(prompt, { limit: 24, tokenBudget: 8_000 })")
-    expect(source).toContain("memory().selectContextEntries(payload.prompt, { limit: 8, tokenBudget: 3_000 })")
+    expect(source).toContain("memory().selectContextEntries(optimizedDispatchUserPrompt, { limit: 8, tokenBudget: 3_000 })")
     expect(source).not.toContain("new Dispatcher(registry, pipeline, () => memory().getCatalog().entries")
   })
 
   it("builds five-role schedules from dispatchable local agents instead of every registry entry", () => {
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const plan = planDispatch({
+      requestedMode: "firefly-custom",
+      availableAgentIds: ["codex", "claude", "minimax-code"],
+      optimization: optimizer()
+    })
 
     expect(source).toContain("function dispatchableLocalAgentIds()")
-    expect(source).toContain("const fireflyAgentIds = !directRun && mode === \"firefly-custom\" ? dispatchableLocalAgentIds() : []")
-    expect(source).toContain("fireflyFiveRoleTemplate(fireflyAgentIds)")
-    expect(source).toContain("fireflyFiveRoleTemplate(retryFireflyAgentIds)")
+    expect(source).toContain("availableAgentIds: dispatchableLocalAgentIds()")
+    expect(plan.effectiveMode).toBe("firefly-custom")
+    expect(plan.dispatchMode).toBe("chain")
+    expect(plan.schedule?.preset).toBe("firefly-custom")
+    expect(plan.routeAgentIds).toEqual(["codex", "claude", "minimax-code"])
+    expect(plan.schedule?.steps.every(step => plan.routeAgentIds?.includes(step.agentId))).toBe(true)
     expect(source).not.toContain("fireflyFiveRoleTemplate(registry.getAll().map(agent => agent.id))")
   })
 
   it("limits smart five-role router decisions to the same dispatchable local agent set", () => {
     const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const customSchedule: SchedulePreview = {
+      preset: "custom",
+      label: "Test schedule",
+      description: "Test schedule",
+      steps: [
+        { id: "one", label: "One", agentId: "codex", role: "worker", mode: "auto" }
+      ]
+    }
+    const plan = planDispatch({
+      requestedMode: "custom",
+      customSchedule,
+      availableAgentIds: ["codex", "claude"],
+      optimization: optimizer()
+    })
 
     expect(source).toContain("function availableRouteAgents(agentIds?: string[])")
     expect(source).toContain("const allowed = agentIds?.length ? new Set(agentIds) : null")
-    expect(source).toContain("makeRouteDecision(thread.id, turn.id, dispatchUserPrompt, fireflyAgentIds)")
-    expect(source).toContain("makeRouteDecision(thread.id, created.turn.id, retryUserPrompt, retryFireflyAgentIds)")
+    expect(source).toContain("makeRouteDecision(thread.id, turn.id, optimizedDispatchUserPrompt, dispatchPlanBase.routeAgentIds)")
+    expect(source).toContain("makeRouteDecision(thread.id, created.turn.id, retryOptimization.optimizedPrompt, retryPlanBase.routeAgentIds)")
+    expect(plan.routeAgentIds).toEqual(["codex", "claude"])
+    expect(plan.schedule).toBe(customSchedule)
     expect(scheduleHelpers).toContain("function scheduleStepsWithRouteDecision(steps: ScheduleStep[], decision?: RouteDecision): ScheduleStep[]")
     expect(scheduleHelpers).toContain("void decision")
   })
@@ -92,15 +137,41 @@ describe("smart five-role custom schedule integration", () => {
 
   it("forces local and provider direct runs out of schedule mode before persisting or retrying", () => {
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+    const localDirectPlan = planDispatch({
+      requestedMode: "firefly-custom",
+      directRun: true,
+      directTarget: "codex",
+      availableAgentIds: ["codex", "claude", "minimax-code"],
+      optimization: optimizer()
+    })
+    const providerDirectPlan = planDispatch({
+      requestedMode: "custom",
+      directRun: true,
+      availableAgentIds: ["codex", "claude"],
+      optimization: optimizer()
+    })
 
     expect(source).toContain("const localDirect = !!directTarget")
     expect(source).toContain("const directRun = providerDirect || localDirect")
-    expect(source).toContain('const effectiveMode = directRun ? "auto" : mode')
-    expect(source).toContain("const scheduleForTurn = directRun")
-    expect(source).toContain('customSchedule: retryDirectRun ? undefined : turn.customSchedule')
-    expect(source).toContain('mode: retryDirectRun ? "auto" : turn.mode')
+    expect(source).toContain("const effectiveMode = dispatchPlanBase.effectiveMode")
+    expect(source).toContain("const scheduleForTurn = dispatchPlanBase.schedule")
+    expect(source).toContain("customSchedule: retryPlanBase.schedule")
+    expect(source).toContain("mode: retryPlanBase.effectiveMode")
     expect(source).toContain("const retryDirectRun = retryProviderDirect || !!retryTargetAgent")
-    expect(source).toContain("const retrySchedule = retryDirectRun")
+    expect(source).toContain("const retrySchedule = retryPlan.schedule")
+    expect(localDirectPlan).toMatchObject({
+      effectiveMode: "auto",
+      dispatchMode: "auto",
+      strategy: "direct-agent"
+    })
+    expect(localDirectPlan.schedule).toBeUndefined()
+    expect(localDirectPlan.routeAgentIds).toBeUndefined()
+    expect(providerDirectPlan).toMatchObject({
+      effectiveMode: "auto",
+      dispatchMode: "auto",
+      strategy: "direct-provider"
+    })
+    expect(providerDirectPlan.schedule).toBeUndefined()
   })
 
   it("scores guard verdicts from agent output instead of guard prompt instructions", () => {

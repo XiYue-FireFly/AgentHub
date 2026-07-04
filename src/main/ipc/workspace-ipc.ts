@@ -1,18 +1,14 @@
 import { ipcMain, app } from 'electron'
-import { resolve, join, relative, isAbsolute, sep } from 'node:path'
+import { resolve, join } from 'node:path'
 import * as fs from 'node:fs/promises'
 import { createWorktree, listWorktrees, openWorktree, removeWorktree, syncWorktree } from '../runtime/worktrees'
 import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from '../runtime/workspace-files'
 import { getWorkspaceManager, WorkspaceNotFoundError, WorkspacePathInvalidError } from '../hub/workspace'
+import { isPathInsideBase, resolveWorkspaceRelativePath } from './path-guards'
 
 /** Validate that a relative path stays within the workspace root. */
 function validateWorkspacePath(workspaceRoot: string, relativePath: string): string | null {
-  if (!workspaceRoot || !relativePath || relativePath.includes('..')) return null
-  const root = resolve(workspaceRoot)
-  const target = resolve(join(root, relativePath))
-  const rel = relative(root, target)
-  if (rel.startsWith('..') || isAbsolute(rel)) return null
-  return target
+  return resolveWorkspaceRelativePath(workspaceRoot, relativePath)
 }
 
 function serialiseWsError(e: unknown): Error {
@@ -30,29 +26,21 @@ export function registerWorkspaceIpc(): void {
   ipcMain.handle("worktrees:open", (_event, id: string) => openWorktree(id))
 
   ipcMain.handle("workspaceFiles:list", (_e, rootPath: string, max?: number) => {
-    if (!rootPath || rootPath.includes('..')) throw new Error('Invalid workspace path')
+    if (!rootPath) throw new Error('Invalid workspace path')
     return listWorkspaceFiles(rootPath, max)
   })
   ipcMain.handle("workspaceFiles:search", (_e, rootPath: string, query: string, max?: number) => {
-    if (!rootPath || rootPath.includes('..')) throw new Error('Invalid workspace path')
+    if (!rootPath) throw new Error('Invalid workspace path')
     return searchWorkspaceFiles(rootPath, query, max)
   })
   ipcMain.handle("workspaceFiles:preview", (_e, filePath: string, maxLines?: number) => {
-    if (filePath.includes('..')) return { ok: false, error: 'Invalid path: traversal not allowed' }
     const resolved = resolve(filePath)
     const activeId = getWorkspaceManager()?.getActive()
     const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
     const root = ws?.rootPath
-    // 大小写不敏感的包含检查（Windows 路径不区分大小写）
-    const isWithin = (target: string, base: string): boolean => {
-      const t = target.toLowerCase()
-      const b = base.toLowerCase()
-      return t === b || t.startsWith(b + sep.toLowerCase())
-    }
-    // 必须有工作区 root 且路径在 root 内，或者路径在 home 目录内
     const home = app.getPath('home')
-    const inWorkspace = root && isWithin(resolved, root)
-    const inHome = isWithin(resolved, home)
+    const inWorkspace = root && isPathInsideBase(resolved, root)
+    const inHome = isPathInsideBase(resolved, home)
     if (!inWorkspace && !inHome) {
       return { ok: false, error: 'Access denied: path outside allowed directories' }
     }

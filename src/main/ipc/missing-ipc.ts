@@ -7,7 +7,7 @@
  */
 
 import { ipcMain, shell, dialog, app } from 'electron'
-import { isAbsolute, normalize, resolve, extname } from 'node:path'
+import { extname } from 'node:path'
 import { readFileSync, statSync } from 'node:fs'
 import { getWorkspaceManager } from '../hub/workspace'
 import { getSkillManager } from '../skills/manager'
@@ -17,10 +17,10 @@ import { getAgenticConfig } from '../agentic/config'
 import { getApprovalConfig, resolvePendingApproval } from '../agentic/approval'
 import { openWithEditor } from '../runtime/open-target'
 import { takeoverStatus, takeoverApply, takeoverRestore } from '../routing/takeover'
-import { sep } from 'node:path'
 import { getCachedLocalAgentStatuses } from '../runtime/local-agents'
 import { ProviderClient } from '../providers/client'
 import type { AgentRouteBinding, ThinkingConfig } from '../providers/types'
+import { resolvePathWithinAllowedBases } from './path-guards'
 
 const SENSITIVE_EXTENSIONS = new Set([
   '.pem', '.key', '.p12', '.pfx', '.crt', '.cer', '.der', '.keystore', '.jks', '.ssh', '.ovpn', '.kdbx'
@@ -157,24 +157,8 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       const activeId = getWorkspaceManager()?.getActive()
       const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
       const root = input?.workspaceRoot || ws?.rootPath || app.getPath('userData')
-      const resolved = isAbsolute(rawPath) ? normalize(rawPath) : resolve(root, rawPath)
-      // Security: verify resolved path is within workspace root or userData (case-insensitive on Windows)
-      const normalizeRoot = normalize(root)
       const userData = app.getPath('userData')
-      const normalizeUserData = normalize(userData)
-      const isWithin = (target: string, base: string): boolean => {
-        const t = target.toLowerCase()
-        const b = base.toLowerCase()
-        return t === b || t.startsWith(b + sep.toLowerCase())
-      }
-      if (!isWithin(resolved, normalizeRoot) && !isWithin(resolved, normalizeUserData)) {
-        return { ok: false, error: 'Access denied: path outside allowed directories' }
-      }
-      // Additional traversal check: resolved path must not contain '..' segments after normalization
-      const relativeToRoot = normalize(resolved).replace(new RegExp('^' + escapeRegExp(normalizeRoot), 'i'), '')
-      if (relativeToRoot.includes('..')) {
-        return { ok: false, error: 'Invalid path: traversal not allowed' }
-      }
+      const resolved = resolvePathWithinAllowedBases(rawPath, root, [root, userData])
       const st = statSync(resolved)
       if (st.size > 1_000_000) return { ok: false, error: 'File too large' }
       return { ok: true, content: readFileSync(resolved, 'utf-8') }
@@ -236,6 +220,9 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   ipcMain.handle("ai:quickComplete", async (_e, input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) => {
     let timeout: ReturnType<typeof setTimeout> | null = null
     try {
+      if (typeof input?.prompt !== 'string' || !input.prompt.trim()) {
+        return { ok: false, error: 'empty prompt' }
+      }
       const provider = input.providerId ? providerMgr.getProvider(input.providerId) : providerMgr.getEnabledProviders()?.[0]
       if (!provider) return { ok: false, error: 'No provider available' }
       const modelId = input.modelId || provider.models?.[0]?.id || 'gpt-4'
@@ -279,30 +266,12 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   })
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 function resolveAppPath(pathText: string, workspaceRoot?: string | null): string {
   const p = pathText || ''
-  if (p.includes('..')) throw new Error('Invalid path: traversal not allowed')
   const activeId = getWorkspaceManager()?.getActive()
   const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null
   const root = workspaceRoot || ws?.rootPath || app.getPath('userData')
-  const resolved = isAbsolute(p) ? normalize(p) : resolve(root, p)
-  // 安全检查：绝对路径必须在 workspace root、userData 或 home 目录内
-  const isWithin = (target: string, base: string): boolean => {
-    const t = target.toLowerCase()
-    const b = base.toLowerCase()
-    return t === b || t.startsWith(b + sep.toLowerCase())
-  }
-  const normalizeRoot = normalize(root)
   const userData = app.getPath('userData')
-  const normalizeUserData = normalize(userData)
   const home = app.getPath('home')
-  const normalizeHome = normalize(home)
-  if (!isWithin(resolved, normalizeRoot) && !isWithin(resolved, normalizeUserData) && !isWithin(resolved, normalizeHome)) {
-    throw new Error('Access denied: path outside allowed directories')
-  }
-  return resolved
+  return resolvePathWithinAllowedBases(p, root, [root, userData, home])
 }

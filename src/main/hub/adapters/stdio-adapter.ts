@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import { createLogger } from '../../logger'
 
 const log = createLogger('StdioAdapter')
+const STDOUT_BUFFER_MAX = 256 * 1024
 
 function quoteForCommandShell(value: string): string {
   if (/^[A-Za-z0-9_./:\\=@%+-]+$/.test(value)) return value
@@ -17,6 +18,12 @@ function quoteForCommandShell(value: string): string {
  */
 export function resolvePromptArg(prompt: string, needsCommandShell: boolean): string {
   return needsCommandShell ? prompt.replace(/\r?\n/g, ' ') : prompt
+}
+
+export function appendBoundedStdoutBuffer(current: string, chunk: string, maxChars = STDOUT_BUFFER_MAX): string {
+  const combined = current + chunk
+  if (combined.length <= maxChars) return combined
+  return combined.slice(combined.length - maxChars)
 }
 
 /**
@@ -141,9 +148,12 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     this.proc.stdout?.on('data', (d: Buffer) => {
       const text = this.outDecoder ? this.outDecoder.decode(d, { stream: true }) : d.toString()
       if (!text) return
-      this.buffer += text
-      if (this.activityParser) this.handleActivityChunk(text)
-      else this.handleOutput(text)
+      if (this.activityParser) {
+        this.handleActivityChunk(text)
+      } else {
+        this.buffer = appendBoundedStdoutBuffer(this.buffer, text)
+        this.handleOutput(text)
+      }
     })
     this.proc.stderr?.on('data', (d: Buffer) => {
       this.errChunks.push(d)

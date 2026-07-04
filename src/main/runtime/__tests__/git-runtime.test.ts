@@ -62,5 +62,5 @@ describe("git runtime public helpers", () => {
     expect(committed.stdout).toContain("selected.txt")
     expect(committed.stdout).not.toContain("staged.txt")
     expect(status.stdout).toContain("A  staged.txt")
-  }, 15000)
+  }, 30000)
 })

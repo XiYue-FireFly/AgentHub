@@ -1,6 +1,6 @@
 {
   "name": "agenthub",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "AgentHub - 多 Agent 协同桌面工作台",
   "main": "out/main/index.js",
   "author": {
@@ -63,7 +63,7 @@
     "appId": "dev.agenthub.desktop",
     "productName": "AgentHub",
     "copyright": "Copyright (c) 2026 AgentHubTeam",
-    "buildVersion": "1.2.2",
+    "buildVersion": "1.2.3",
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
     "files": [

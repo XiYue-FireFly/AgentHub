@@ -1,20 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { buildClaudeProviderReorderIds, deriveModelListCandidates, parseFetchedModels } from "../manager"
 
-const memory: Record<string, any> = {}
+const storeMock = vi.hoisted(() => ({
+  memory: {} as Record<string, any>,
+  encryptSecret: vi.fn((value: string) => value),
+  decryptSecret: vi.fn((value: string) => value)
+}))
 
 vi.mock("../../store", () => ({
   store: {
-    get: (key: string) => memory[key],
-    set: (key: string, value: any) => { memory[key] = value }
+    get: (key: string) => storeMock.memory[key],
+    set: (key: string, value: any) => { storeMock.memory[key] = value }
   },
-  encryptSecret: (value: string) => value,
-  decryptSecret: (value: string) => value
+  encryptSecret: storeMock.encryptSecret,
+  decryptSecret: storeMock.decryptSecret
 }))
 
 describe("ProviderManager.fetchModels", () => {
   beforeEach(() => {
-    for (const key of Object.keys(memory)) delete memory[key]
+    for (const key of Object.keys(storeMock.memory)) delete storeMock.memory[key]
+    storeMock.encryptSecret.mockImplementation((value: string) => value)
+    storeMock.decryptSecret.mockImplementation((value: string) => value)
     vi.resetModules()
     vi.restoreAllMocks()
   })
@@ -238,5 +244,107 @@ describe("ProviderManager.fetchModels", () => {
     expect(manager.getProvider("anthropic")).toMatchObject({ apiKey: "anthropic-key", enabled: true })
     expect(manager.getProvider("openai")?.sortOrder).toBe(0)
     expect(manager.getProvider("deepseek")?.sortOrder).toBe(2)
+  })
+
+  it("continues saving provider config when secret encryption is unavailable", async () => {
+    storeMock.encryptSecret.mockImplementation((value: string) => {
+      if (value) throw new Error("safeStorage unavailable")
+      return value
+    })
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    const warnings: Array<{ providerId: string; message: string }> = []
+    manager.onSecretEncryptionWarning(warning => warnings.push(warning))
+
+    expect(() => manager.setProviderApiKey("openai", "plain-key")).not.toThrow()
+    expect(manager.getProvider("openai")).toMatchObject({ apiKey: "plain-key", enabled: true })
+    expect(storeMock.memory["providers.config.v1"].providers.find((provider: any) => provider.id === "openai")).toMatchObject({
+      apiKey: "plain-key",
+      enabled: true
+    })
+    expect(warnings).toEqual([{ providerId: "openai", message: "safeStorage unavailable" }])
+
+    manager.setProviderApiKey("openai", "new-plain-key")
+
+    expect(warnings).toHaveLength(1)
+    expect(storeMock.memory["providers.config.v1"].providers.find((provider: any) => provider.id === "openai")).toMatchObject({
+      apiKey: "new-plain-key",
+      enabled: true
+    })
+  })
+
+  it("falls back to a models health URL for unknown provider kinds", async () => {
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    manager.upsertProvider({
+      id: "unknown-kind",
+      name: "Unknown Kind",
+      kind: "future-kind" as any,
+      baseUrl: "https://future.example/v1/",
+      apiKey: "key",
+      enabled: true,
+      builtIn: false,
+      models: [],
+      capabilities: {
+        protocol: "chat_completions",
+        stream: true,
+        nativeThinking: false,
+        budgetTokens: false,
+        toolCalls: true,
+        systemPrompt: true
+      },
+      defaultThinking: { mode: "auto", level: "medium", collapseInUI: true }
+    })
+    const calls: string[] = []
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(url)
+      return { status: 200 }
+    }))
+
+    const health = await manager.checkProviderHealth("unknown-kind")
+
+    expect(health.status).toBe("ok")
+    expect(calls[0]).toBe("https://future.example/v1/models")
+  })
+
+  it("does not select disabled models when resolving a fallback provider binding", async () => {
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    manager.setProviderEnabled("openai", false)
+    manager.setFallbackChain(["deepseek"])
+    manager.setProviderApiKey("deepseek", "fallback-key")
+    manager.upsertProvider({
+      ...manager.getProvider("deepseek")!,
+      models: [
+        {
+          id: "route-bound-model",
+          label: "Route Bound Disabled",
+          enabled: false,
+          contextWindow: 128000,
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: false
+        },
+        {
+          id: "enabled-chat",
+          label: "Enabled Chat",
+          enabled: true,
+          contextWindow: 128000,
+          supportsTools: false,
+          supportsVision: false,
+          supportsThinking: false
+        }
+      ]
+    })
+    manager.upsertBinding({
+      ...manager.getBinding("codex")!,
+      providerId: "openai",
+      modelId: "route-bound-model"
+    })
+
+    const resolved = manager.resolveBinding("codex")
+
+    expect(resolved?.provider.id).toBe("deepseek")
+    expect(resolved?.model.id).toBe("enabled-chat")
   })
 })

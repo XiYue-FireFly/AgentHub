@@ -1,24 +1,81 @@
-import { describe, it, expect } from 'vitest'
-import { resolvePromptArg } from '../stdio-adapter'
+import { EventEmitter } from 'node:events'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+
+const childProcessMock = vi.hoisted(() => ({
+  spawn: vi.fn(),
+  exec: vi.fn(),
+  execFileSync: vi.fn()
+}))
+
+vi.mock('child_process', () => childProcessMock)
+
+import { appendBoundedStdoutBuffer, resolvePromptArg, StdioAgentAdapter } from '../stdio-adapter'
 
 /**
- * 多行提示词保真单测 — resolvePromptArg：
- *   - 直接 spawn（needsCommandShell=false）：保留换行；
- *   - 经 cmd.exe /c（needsCommandShell=true）：压平换行为空格（防破坏命令行解析）。
+ * Multi-line prompt preservation:
+ * - direct spawn keeps newlines in the argv value;
+ * - cmd.exe /c flattens newlines to avoid breaking command-line parsing.
  */
 describe('resolvePromptArg', () => {
   const multi = 'line one\nline two\r\nline three'
 
-  it('直接 spawn 保留换行（.exe / 非 Windows）', () => {
+  it('keeps newlines for direct spawn', () => {
     expect(resolvePromptArg(multi, false)).toBe(multi)
   })
 
-  it('cmd.exe 路径压平换行为空格', () => {
+  it('flattens newlines for the cmd.exe path', () => {
     expect(resolvePromptArg(multi, true)).toBe('line one line two line three')
   })
 
-  it('单行提示词两种路径不变', () => {
+  it('leaves single-line prompts unchanged', () => {
     expect(resolvePromptArg('hello', false)).toBe('hello')
     expect(resolvePromptArg('hello', true)).toBe('hello')
+  })
+})
+
+describe('appendBoundedStdoutBuffer', () => {
+  it('keeps only the tail when stdout exceeds the cap', () => {
+    expect(appendBoundedStdoutBuffer('abcdef', 'ghijkl', 5)).toBe('hijkl')
+  })
+})
+
+describe('StdioAgentAdapter stdout buffering', () => {
+  afterEach(() => {
+    childProcessMock.spawn.mockReset()
+    childProcessMock.exec.mockReset()
+    childProcessMock.execFileSync.mockReset()
+  })
+
+  it('does not maintain the diagnostic stdout buffer when activityParser consumes the stream', async () => {
+    const stdout = new EventEmitter()
+    const stderr = new EventEmitter()
+    const stdin = { write: vi.fn(), end: vi.fn() }
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter
+      stderr: EventEmitter
+      stdin: typeof stdin
+    }
+    proc.stdout = stdout
+    proc.stderr = stderr
+    proc.stdin = stdin
+
+    childProcessMock.spawn.mockReturnValue(proc as any)
+
+    const adapter = new StdioAgentAdapter('test', 'Test CLI', 'test.exe', [])
+    const parsedLines: string[] = []
+    const outputs: string[] = []
+    adapter.activityParser = (line) => {
+      parsedLines.push(line)
+      return { content: `parsed:${line}\n` }
+    }
+    adapter.onOutput = chunk => outputs.push(chunk)
+
+    adapter.send('prompt')
+    stdout.emit('data', Buffer.from('{"event":"one"}\n{"event":"two"}\n'))
+    proc.emit('exit', 0)
+
+    expect(parsedLines).toEqual(['{"event":"one"}', '{"event":"two"}'])
+    expect(outputs).toEqual(['parsed:{"event":"one"}\n', 'parsed:{"event":"two"}\n'])
+    expect((adapter as any).buffer).toBe('')
   })
 })

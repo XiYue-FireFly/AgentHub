@@ -12,6 +12,13 @@
 import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
+import {
+  closeTerminalTabState,
+  getRememberedWorkspaceTabState,
+  rememberWorkspaceTabState,
+  type TerminalTab,
+  type TerminalTabState
+} from './terminalTabs'
 
 // xterm.js loaded dynamically to avoid SSR issues
 let Terminal: any = null
@@ -33,12 +40,6 @@ async function loadXterm() {
 interface TerminalPanelProps {
   workspaceRoot?: string | null
   onClose?: () => void
-}
-
-interface TerminalTab {
-  id: string
-  index: number
-  title?: string
 }
 
 const TERMINAL_FONT_FAMILY = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace'
@@ -107,10 +108,12 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
   const [xtermLoaded, setXtermLoaded] = useState(false)
   const [tabs, setTabs] = useState<TerminalTab[]>([{ id: INITIAL_TAB_ID, index: 1 }])
   const [activeTabId, setActiveTabId] = useState(INITIAL_TAB_ID)
+  const tabsRef = useRef(tabs)
+  const activeTabIdRef = useRef(activeTabId)
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const renameInputRef = useRef<HTMLInputElement | null>(null)
-  const workspaceTabStatesRef = useRef<Record<string, { tabs: TerminalTab[]; activeTabId: string }>>({})
+  const workspaceTabStatesRef = useRef<Map<string, TerminalTabState>>(new Map())
   const workspaceKeyRef = useRef(workspaceRoot || '')
 
   // Load xterm.js
@@ -118,19 +121,27 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
     loadXterm().then(() => setXtermLoaded(true)).catch(() => {})
   }, [])
 
+  useLayoutEffect(() => { tabsRef.current = tabs }, [tabs])
+  useLayoutEffect(() => { activeTabIdRef.current = activeTabId }, [activeTabId])
+
   // Reset tabs on workspace change
   useLayoutEffect(() => {
     const prevKey = workspaceKeyRef.current
     const nextKey = workspaceRoot || ''
     if (prevKey === nextKey) return
-    workspaceTabStatesRef.current[prevKey] = { tabs, activeTabId }
-    const saved = workspaceTabStatesRef.current[nextKey]
+    rememberWorkspaceTabState(workspaceTabStatesRef.current, prevKey, { tabs: tabsRef.current, activeTabId: activeTabIdRef.current })
+    const saved = getRememberedWorkspaceTabState(workspaceTabStatesRef.current, nextKey)
     workspaceKeyRef.current = nextKey
     if (saved) {
+      tabsRef.current = saved.tabs
+      activeTabIdRef.current = saved.activeTabId
       setTabs(saved.tabs)
       setActiveTabId(saved.activeTabId)
     } else {
-      setTabs([{ id: INITIAL_TAB_ID, index: 1 }])
+      const initialTabs = [{ id: INITIAL_TAB_ID, index: 1 }]
+      tabsRef.current = initialTabs
+      activeTabIdRef.current = INITIAL_TAB_ID
+      setTabs(initialTabs)
       setActiveTabId(INITIAL_TAB_ID)
     }
   }, [workspaceRoot])
@@ -277,16 +288,20 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
   }, [tabs.length])
 
   const handleCloseTab = useCallback((tabId: string) => {
-    if (tabs.length <= 1) return
     const sessionId = terminalSessionId(workspaceRoot, tabId)
     ;(window as any).electronAPI?.terminalPty?.dispose?.(sessionId)
-    const closingIndex = tabs.findIndex(t => t.id === tabId)
-    setTabs(prev => prev.filter(t => t.id !== tabId))
-    if (activeTabId === tabId) {
-      const next = tabs[closingIndex + 1] ?? tabs[closingIndex - 1] ?? tabs[0]
-      if (next) setActiveTabId(next.id)
-    }
-  }, [tabs, activeTabId, workspaceRoot])
+
+    setTabs(prev => {
+      const current = { tabs: prev, activeTabId: activeTabIdRef.current }
+      const next = closeTerminalTabState(current, tabId)
+      if (next === current || next.tabs === current.tabs) return prev
+
+      tabsRef.current = next.tabs
+      activeTabIdRef.current = next.activeTabId
+      setActiveTabId(next.activeTabId)
+      return next.tabs
+    })
+  }, [workspaceRoot])
 
   const handleRestart = useCallback(async () => {
     const sessionId = terminalSessionId(workspaceRoot, activeTabId)

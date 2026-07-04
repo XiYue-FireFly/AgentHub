@@ -18,6 +18,8 @@ import { ApprovalItem } from './glass/approval-dialog'
 import { WorkbenchLayout } from './workbench/WorkbenchLayout'
 import { applyAppearance, loadAppearance, readAppearanceLocal, subscribeSystemTheme } from './appearance'
 import { styledConfirm } from './lib/confirm'
+import { hasRunningTask, nextMemorySaveDelayMs } from './memory-save-policy'
+import { isEmptyProviderConfig, nextEmptyProviderConfigRetryDelayMs } from './provider-config-load-policy'
 
 type AgentMap = Record<string, { status: AgentUIStatus }>
 
@@ -63,19 +65,16 @@ function AppInner() {
   const activeTaskIds = useRef<Set<string>>(new Set())
   const localTaskId = useRef<Map<string, string>>(new Map()) // 后端 taskId → 本地任务行 id
   const memoryReady = useRef(false)
+  const lastRunningMemorySaveAt = useRef(0)
   const orchestrateTasks = useRef<Set<string>>(new Set())  // 编排模式任务 id（其内部 agent 事件不渲染气泡）
   const configRequestId = useRef(0)
-  const emptyProviderRetryRef = useRef(0)
+  const configEmptyRetryCount = useRef(0)
+  const configRetryTimer = useRef<number | null>(null)
 
   const applyProviderConfig = useCallback((cfg: any) => {
     if (!cfg) return
     const nextProviders = Array.isArray(cfg.providers) ? cfg.providers : []
-    if (nextProviders.length > 0) {
-      emptyProviderRetryRef.current = 0
-      setProviders(nextProviders)
-    } else {
-      setProviders(current => current)
-    }
+    setProviders(current => nextProviders.length > 0 ? nextProviders : current)
     setBindings(cfg.routing?.bindings ?? [])
     setFallbackChain(cfg.routing?.fallbackChain ?? [])
   }, [])
@@ -133,29 +132,50 @@ function AppInner() {
     if (!memoryReady.current) return
     const memoryApi = window.electronAPI?.memory
     if (!memoryApi?.saveState) return
-    // LOW-15: Pause memory save during streaming to avoid excessive writes
-    if (tasks.some(t => t.status === 'running')) return
-    const timer = setTimeout(() => {
+    const running = hasRunningTask(tasks)
+    const delay = nextMemorySaveDelayMs(running, Date.now(), lastRunningMemorySaveAt.current)
+    const saveState = () => {
+      if (running) lastRunningMemorySaveAt.current = Date.now()
       memoryApi.saveState({ messages, tasks }).catch(() => {})
-    }, 450)
+    }
+    if (running && delay === 0) {
+      saveState()
+      return
+    }
+    const timer = setTimeout(saveState, delay)
     return () => clearTimeout(timer)
   }, [messages, tasks])
 
   /* ---------- 数据加载 ---------- */
+  const clearConfigRetryTimer = useCallback(() => {
+    if (!configRetryTimer.current) return
+    clearTimeout(configRetryTimer.current)
+    configRetryTimer.current = null
+  }, [])
+
   const loadConfig = useCallback(async () => {
     const requestId = ++configRequestId.current
+    clearConfigRetryTimer()
     try {
       const cfg = await window.electronAPI.providers.get()
-      if (requestId === configRequestId.current) applyProviderConfig(cfg)
-      if (requestId === configRequestId.current && (!Array.isArray(cfg?.providers) || cfg.providers.length === 0)) {
-        emptyProviderRetryRef.current += 1
-        if (emptyProviderRetryRef.current > 8) return
-        window.setTimeout(() => {
+      if (requestId !== configRequestId.current) return
+      applyProviderConfig(cfg)
+      if (!isEmptyProviderConfig(cfg?.providers)) {
+        configEmptyRetryCount.current = 0
+        return
+      }
+      const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
+      if (retryDelay !== null) {
+        configEmptyRetryCount.current += 1
+        configRetryTimer.current = window.setTimeout(() => {
+          configRetryTimer.current = null
           if (requestId === configRequestId.current) loadConfig().catch(() => {})
-        }, 350)
+        }, retryDelay)
       }
     } catch { /* main 进程未就绪 */ }
-  }, [])
+  }, [applyProviderConfig, clearConfigRetryTimer])
+
+  useEffect(() => clearConfigRetryTimer, [clearConfigRetryTimer])
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -196,6 +216,18 @@ function AppInner() {
     const poll = setInterval(refreshStatus, 8000)
     return () => clearInterval(poll)
   }, [loadConfig, refreshStatus])
+
+  useEffect(() => {
+    const off = window.electronAPI.providers.onWarning?.((warning) => {
+      window.electronAPI.notifications?.push?.({
+        title: 'Provider key storage warning',
+        body: `Provider ${warning.providerId} could not encrypt its API key for this save. The setting was kept, but secure storage is unavailable on this system.`,
+        category: 'error',
+        action: { type: 'navigate', target: 'settings' }
+      }).catch(() => {})
+    })
+    return off
+  }, [])
 
   /* 深链 */
   useEffect(() => {

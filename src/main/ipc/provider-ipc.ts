@@ -5,7 +5,7 @@
  * Dependencies are injected at registration time.
  */
 
-import { ipcMain } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
 
 interface ProviderIpcDeps {
   providerMgr: any
@@ -34,6 +34,12 @@ function stripApiKeys(config: any): any {
 
 export function registerProviderIpc(deps: ProviderIpcDeps): void {
   const { providerMgr, registerAgentsFromBindings } = deps
+
+  providerMgr.onSecretEncryptionWarning?.((warning: { providerId: string; message: string }) => {
+    for (const webContents of BrowserWindow.getAllWindows().map(window => window.webContents)) {
+      if (!webContents.isDestroyed()) webContents.send('providers:warning', warning)
+    }
+  })
 
   ipcMain.handle("providers:get", async () => stripApiKeys(providerMgr.getConfig()))
   ipcMain.handle("providers:upsert", async (_e, p) => {

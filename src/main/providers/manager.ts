@@ -27,6 +27,7 @@ const log = createLogger('Providers')
 const STORAGE_KEY = 'providers.config.v1'
 
 const CONFIG_VERSION = 1
+const SECRET_ENCRYPTION_WARNING_EVENT = 'secret-encryption-warning'
 
 function defaultConfig(): ProvidersConfig {
   return {
@@ -79,6 +80,11 @@ export type FetchModelsOverride = {
   baseUrl?: string
   apiKey?: string
   kind?: ProviderKind
+}
+
+export interface ProviderSecretEncryptionWarning {
+  providerId: string
+  message: string
 }
 
 /**
@@ -325,7 +331,7 @@ function normalizeModelRouteSettings(value: any): ModelRouteSettings {
 
 function isCodexInternalModel(modelId: string): boolean {
   const id = modelId.trim().toLowerCase()
-  return /^gpt-5(\.|-|$)/.test(id) || /^gpt-5\.[0-9]/.test(id) || /^o[0-9].*mini/.test(id)
+  return /^gpt-5(\.|-|$)/.test(id) || /^o[0-9].*mini/.test(id)
 }
 
 function codexSlotCandidates(settings: ModelRouteSettings, requested: string): string[] {
@@ -447,6 +453,7 @@ export class ProviderManager extends EventEmitter {
   private secretsUnlocked = false
   /** MED-20: Debounce timer for health-check saves */
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private warnedSecretEncryptionProviders = new Set<string>()
 
   constructor() {
     super()
@@ -558,10 +565,27 @@ export class ProviderManager extends EventEmitter {
     // 落盘前加密 apiKey（内存 cfg 保持明文供运行时使用）。
     // encryptSecret 幂等：若 unlockSecrets 尚未执行（cfg 仍为密文），重复加密会被跳过，磁盘不被破坏。
     const persisted = JSON.parse(JSON.stringify(this.cfg)) as ProvidersConfig
-    persisted.providers = persisted.providers.map(p => ({ ...p, apiKey: encryptSecret(p.apiKey || '') }))
+    persisted.providers = persisted.providers.map(p => {
+      try {
+        return { ...p, apiKey: encryptSecret(p.apiKey || '') }
+      } catch (error: any) {
+        const message = error?.message || String(error)
+        if (!this.warnedSecretEncryptionProviders.has(p.id)) {
+          this.warnedSecretEncryptionProviders.add(p.id)
+          log.warn(`Failed to encrypt API key for provider ${p.id}; preserving current value for this save:`, message)
+          this.emit(SECRET_ENCRYPTION_WARNING_EVENT, { providerId: p.id, message } satisfies ProviderSecretEncryptionWarning)
+        }
+        return { ...p, apiKey: p.apiKey || '' }
+      }
+    })
     persisted.version = CONFIG_VERSION
     store.set(STORAGE_KEY, persisted)
     this.emit('config:changed', this.cfg)
+  }
+
+  onSecretEncryptionWarning(listener: (warning: ProviderSecretEncryptionWarning) => void): () => void {
+    this.on(SECRET_ENCRYPTION_WARNING_EVENT, listener)
+    return () => this.off(SECRET_ENCRYPTION_WARNING_EVENT, listener)
   }
 
   /** MED-20: Debounced save for health checks to avoid excessive disk writes */
@@ -639,9 +663,11 @@ export class ProviderManager extends EventEmitter {
  }
  if (!isUsable(provider)) return null
 
- // LOW-35: When using fallback provider, prefer models with similar capabilities (tools support)
- const model = provider.models.find(m => m.id === binding.modelId)
-   ?? (usingFallbackProvider ? (provider.models.find(m => m.supportsTools) ?? provider.models[0]) : undefined)
+ // LOW-35: When using fallback provider, prefer enabled models with similar capabilities (tools support)
+ const enabledModels = provider.models.filter(m => m.enabled !== false)
+ const model = usingFallbackProvider
+   ? (enabledModels.find(m => m.id === binding.modelId) ?? enabledModels.find(m => m.supportsTools) ?? enabledModels[0])
+   : provider.models.find(m => m.id === binding.modelId)
  if (!model) return null
  return { provider, model, binding, thinking: binding.thinking }
  }
@@ -1001,6 +1027,8 @@ export class ProviderManager extends EventEmitter {
         return `${p.baseUrl.replace(/\/$/, '')}/models`
       case 'gemini':
         return `${p.baseUrl.replace(/\/$/, '')}/models?key=${encodeURIComponent(p.apiKey)}`
+      default:
+        return `${p.baseUrl.replace(/\/$/, '')}/models`
     }
   }
 

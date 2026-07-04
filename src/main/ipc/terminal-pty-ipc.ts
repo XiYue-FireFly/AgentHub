@@ -16,6 +16,7 @@ type TerminalSession = {
   sender: Electron.WebContents
   ringBuffer: string
   exited: boolean
+  cleanupOnDestroy?: () => void
 }
 
 const sessions = new Map<string, TerminalSession>()
@@ -55,6 +56,26 @@ function appendRingBuffer(current: string, data: string): string {
   return combined.slice(combined.length - RING_BUFFER_MAX)
 }
 
+function replayRingBuffer(sender: Electron.WebContents, sessionId: string, ringBuffer: string): void {
+  if (!ringBuffer || sender.isDestroyed()) return
+  sender.send('terminal:data', { sessionId, data: ringBuffer })
+}
+
+function attachSenderToSession(sessionId: string, session: TerminalSession, sender: Electron.WebContents): void {
+  if (session.cleanupOnDestroy && !session.sender.isDestroyed()) {
+    session.sender.removeListener('destroyed', session.cleanupOnDestroy)
+  }
+  session.sender = sender
+  const cleanupOnDestroy = () => {
+    if (session.exited) return
+    try { session.pty.kill() } catch { /* ignore */ }
+    session.exited = true
+    sessions.delete(sessionId)
+  }
+  session.cleanupOnDestroy = cleanupOnDestroy
+  sender.once('destroyed', cleanupOnDestroy)
+}
+
 export function registerTerminalPtyIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('terminal:create', async (_event, payload: {
     sessionId: string
@@ -69,10 +90,13 @@ export function registerTerminalPtyIpc(getMainWindow: () => BrowserWindow | null
 
     const { sessionId, cwd, cols = 80, rows = 24 } = payload
 
-    // Dispose existing session if any
     const existing = sessions.get(sessionId)
     if (existing && !existing.exited) {
-      try { existing.pty.kill() } catch { /* ignore */ }
+      attachSenderToSession(sessionId, existing, _event.sender)
+      replayRingBuffer(_event.sender, sessionId, existing.ringBuffer)
+      return { ok: true, reattached: true }
+    }
+    if (existing?.exited) {
       sessions.delete(sessionId)
     }
 
@@ -101,36 +125,24 @@ export function registerTerminalPtyIpc(getMainWindow: () => BrowserWindow | null
 
       pty.onData((data: string) => {
         session.ringBuffer = appendRingBuffer(session.ringBuffer, data)
-        if (!sender.isDestroyed()) {
-          sender.send('terminal:data', { sessionId, data })
+        if (!session.sender.isDestroyed()) {
+          session.sender.send('terminal:data', { sessionId, data })
         }
       })
 
       pty.onExit(({ exitCode }: { exitCode: number; signal?: number }) => {
         session.exited = true
-        if (!sender.isDestroyed()) {
-          sender.send('terminal:exit', { sessionId, exitCode })
+        if (session.cleanupOnDestroy && !session.sender.isDestroyed()) {
+          session.sender.removeListener('destroyed', session.cleanupOnDestroy)
+        }
+        if (!session.sender.isDestroyed()) {
+          session.sender.send('terminal:exit', { sessionId, exitCode })
         }
         sessions.delete(sessionId)
       })
 
-      // WebContents 销毁时清理关联的 PTY 进程，防止泄漏
-      const cleanupOnDestroy = () => {
-        if (session.exited) return
-        try { session.pty.kill() } catch { /* ignore */ }
-        session.exited = true
-        sessions.delete(sessionId)
-      }
-      sender.once('destroyed', cleanupOnDestroy)
-
       sessions.set(sessionId, session)
-
-      // Replay ring buffer on re-attach
-      if (session.ringBuffer) {
-        if (!sender.isDestroyed()) {
-          sender.send('terminal:data', { sessionId, data: session.ringBuffer })
-        }
-      }
+      attachSenderToSession(sessionId, session, sender)
 
       return { ok: true }
     } catch (error: any) {

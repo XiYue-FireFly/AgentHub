@@ -3,6 +3,7 @@ import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { WorkspaceItem } from './types'
 import { styledConfirm } from '../lib/confirm'
+import type { ViewMode } from './viewModes'
 
 const PERSONAL_WORKSPACE_KEY = '__personal__'
 const SIDEBAR_WIDTH_KEY = 'agenthub.workbench.sidebarWidth.v1'
@@ -28,8 +29,8 @@ export function SessionSidebar({
   proxyHost,
   pendingThreadId
 }: {
-  view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows' | 'requirements'
-  setView: (view: 'chat' | 'write' | 'tasks' | 'settings' | 'workflows' | 'requirements') => void
+  view: ViewMode
+  setView: (view: ViewMode) => void
   workspaces: WorkspaceItem[]
   workspaceId: string | null
   selectWorkspace: (id: string | null) => void

@@ -43,6 +43,10 @@ docs/
 config.json
 *.bak
 agenthub-screen*.png
+diff_*.txt
+ss*.png
+screenshot*.png
+ws-*/
 
 # 目标迭代工作笔记（本地 brainstorm，非权威文档）
 GOAL_ITERATION_V2*.md
