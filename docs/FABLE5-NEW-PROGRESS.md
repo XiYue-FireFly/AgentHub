@@ -54,6 +54,13 @@
     implementation from `WorkbenchLayout.tsx`
   - preserved the previous status labels and worktree create/sync/open/remove
     behavior in the extracted component
+- Continued fable5 1.3.0 Workbench decomposition:
+  - connected `WorkbenchLayout.tsx` to the extracted
+    `src/renderer/workbench/components/panels/BrowserPanel.tsx`
+  - removed the inline `BrowserPanelV2` plus duplicate browser URL and capture
+    attachment helpers from `WorkbenchLayout.tsx`
+  - aligned the extracted browser panel with the current inline behavior,
+    including stable `open()` dependencies and markdown attachment metadata
 
 ## Validation Log
 
@@ -127,9 +134,24 @@
   - `npm run lint` passed with 0 errors and 36 existing warnings.
   - `npm test` passed with 158 files and 1034 tests.
   - `npm run build` passed.
+- Workbench BrowserPanel extraction validation:
+  - `npm run typecheck` passed.
+  - Targeted eslint for `WorkbenchLayout.tsx`, `components/panels/BrowserPanel.tsx`,
+    and `utils/browserUtils.ts` passed.
+  - Targeted Workbench tests passed with 4 files and 9 tests:
+    `titlebar-menu-copy`, `keyboard-shortcuts`, `viewModes`, and
+    `git-dock-layout`.
+  - `git diff --check` passed.
+  - Read-only subagent review returned `APPROVE` with no blockers and confirmed
+    behavior parity for URL opening, initial URL handling, webview listeners,
+    capture attachment, AI summary/analyze, loading/error UI, and external-open.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 158 files and 1034 tests.
+  - `npm run build` passed.
 
 ## Pending
 
 - Continue fable5 1.3.0 Workbench decomposition in small verified batches.
-- Next likely pure-move candidate: `BrowserPanelV2`.
+- Next likely candidates: remove now-redundant older workbench component shards
+  if unused, or extract pure command/runtime helpers with direct unit coverage.
 - Re-run full validation after the next patch batch before commit.
