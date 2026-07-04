@@ -38,6 +38,17 @@ export function isBufferedRuntimeEvent(event: WorkbenchRuntimeEvent): boolean {
   return event.kind === 'agent:delta' || event.kind === 'agent:activity'
 }
 
+export function isTaskHistoryEvent(event: WorkbenchRuntimeEvent): boolean {
+  return event.kind === 'turn:created' ||
+    event.kind === 'turn:status' ||
+    event.kind === 'agent:done' ||
+    event.kind === 'agent:error' ||
+    event.kind === 'agent:activity' ||
+    event.kind === 'orchestrate' ||
+    event.kind === 'run:created' ||
+    event.kind === 'run:status'
+}
+
 /**
  * Check if this is the first stream delta for a given agent/turn/channel combination.
  * Used to trigger immediate flush on first content delta.

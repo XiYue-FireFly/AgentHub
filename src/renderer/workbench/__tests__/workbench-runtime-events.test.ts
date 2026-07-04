@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { mergeRuntimeEventLists, shouldFlushFirstStreamDelta } from "../utils/eventUtils"
+import { isTaskHistoryEvent, mergeRuntimeEventLists, shouldFlushFirstStreamDelta } from "../utils/eventUtils"
 
 describe("Workbench runtime event loading", () => {
   it("merges live runtime events that arrive while a snapshot is loading", () => {
@@ -12,11 +12,13 @@ describe("Workbench runtime event loading", () => {
     expect(utils).toContain("function mergeRuntimeEventLists")
     expect(source).toContain("setEvents(prev => mergeRuntimeEventLists(prev, nextEvents))")
     expect(source).toContain("const loadedEvents = await window.electronAPI.runtime.eventsSince")
+    expect(source).toContain("const pendingForVisible = pendingRuntimeEvents.current.filter(event => event.threadId === nextVisibleThreadId)")
     expect(source).toContain("...prev.filter(event => event.threadId === nextVisibleThreadId)")
-    expect(source).toContain("...pendingRuntimeEvents.current.filter(event => event.threadId === nextVisibleThreadId)")
+    expect(source).toContain("...pendingForVisible")
     expect(source).toContain("const pendingForSelected = selected ? pendingRuntimeEvents.current.filter(event => event.threadId === selected)")
     expect(source).toContain("...prev.filter(event => event.threadId === selected)")
     expect(source).toContain("...pendingForSelected")
+    expect(source).toContain("[selected]: mergeRuntimeEventLists(loadedEvents, pendingForSelected)")
     expect(source).not.toContain("setEvents(await window.electronAPI.runtime.eventsSince")
   })
 
@@ -73,5 +75,18 @@ describe("Workbench runtime event loading", () => {
     expect(shouldFlushFirstStreamDelta(event, seen)).toBe(true)
     expect(shouldFlushFirstStreamDelta(event, seen)).toBe(false)
     expect(shouldFlushFirstStreamDelta({ ...event, id: "delta-2", payload: { channel: "thinking" } }, new Set())).toBe(false)
+  })
+
+  it("keeps task history events for non-visible threads", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const taskHistoryCacheIndex = source.indexOf("if (!isVisibleThreadEvent && isTaskHistoryEvent(event))")
+    const pendingReturnIndex = source.indexOf("if (pendingActiveThreadId) {")
+
+    expect(isTaskHistoryEvent({ kind: "agent:activity", threadId: "t2", turnId: "turn", seq: 1 })).toBe(true)
+    expect(isTaskHistoryEvent({ kind: "orchestrate", threadId: "t2", turnId: "turn", seq: 1 })).toBe(true)
+    expect(isTaskHistoryEvent({ kind: "agent:delta", threadId: "t2", turnId: "turn", seq: 1 })).toBe(false)
+    expect(taskHistoryCacheIndex).toBeGreaterThan(-1)
+    expect(pendingReturnIndex).toBeGreaterThan(-1)
+    expect(taskHistoryCacheIndex).toBeLessThan(pendingReturnIndex)
   })
 })

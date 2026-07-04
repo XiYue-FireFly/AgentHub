@@ -384,16 +384,6 @@ function AppInner() {
     setApprovals(qs => qs.filter(q => q.id !== item.id))
   }, [])
 
-  const onCancelTask = useCallback((id: string) => {
-    const backendIds = [...localTaskId.current.entries()].filter(([, l]) => l === id).map(([b]) => b)
-    const targets = backendIds.length ? backendIds : [id]
-    for (const tid of targets) {
-      ignoredTasks.current.add(tid)
-      window.electronAPI.hub.cancel(tid).catch(() => {})
-    }
-    setTasks(ts => ts.map(t => t.id === id ? { ...t, status: 'cancelled' } : t))
-  }, [])
-
   const onDeleteTask = useCallback(async (id: string) => {
     const ok = await styledConfirm({ message: '删除这条任务历史？对应的运行详情也会从当前会话记录中移除。', danger: true })
     if (!ok) return
@@ -500,11 +490,9 @@ function AppInner() {
       providers={providers}
       bindings={bindings}
       fallbackChain={fallbackChain}
-      tasks={tasks}
       approvals={approvals}
       runtimeRefreshNonce={runtimeRefreshNonce}
       onApprovalDecide={onApprovalDecide}
-      onCancelTask={onCancelTask}
       onDeleteTask={onDeleteTask}
       onClearCompletedTasks={onClearCompletedTasks}
       providerActions={{

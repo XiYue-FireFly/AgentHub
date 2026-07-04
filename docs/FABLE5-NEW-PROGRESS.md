@@ -81,6 +81,20 @@
   - removed the inline `WorkbenchChatTopBar` implementation from
     `WorkbenchLayout.tsx`
   - reduced `WorkbenchLayout.tsx` to 1502 lines
+- Started fable5 1.3.0 runtime-pipeline consolidation:
+  - moved the Tasks screen data source off `App.tsx` legacy task state and onto
+    derived Workbench runtime data
+  - added `src/renderer/workbench/utils/taskItems.ts` to derive `TaskItem[]`
+    from `WorkbenchSnapshot` plus per-thread runtime events
+  - made `WorkbenchLayout` maintain full task-history event caches per thread
+    so task history includes non-selected threads in the current workspace
+  - changed Tasks cancel to use turn ids through `turns.cancel`
+  - made task delete/clear remove runtime turns through `runtimeStore` before
+    legacy dispatcher cleanup
+  - fixed the pending-thread-switch event route so non-visible task-history
+    events are still cached before the pending-switch early return
+  - kept legacy `dispatch:stream` renderer subscription in place for the
+    remaining chat-bubble and approval path; this is the next 3.1 slice
 
 ## Validation Log
 
@@ -210,10 +224,46 @@
     `git-dock-layout`.
   - `npm test` passed with 158 files and 1038 tests.
   - `npm run build` passed.
+- Runtime-derived Tasks screen validation:
+  - Initial read-only subagent review found two blockers:
+    selected-thread loaded events were not written into the task event cache,
+    and non-visible thread `agent:activity`/`orchestrate` events were not kept
+    live for task history. Both were fixed before completion.
+  - Follow-up read-only subagent review returned `APPROVE` with no blockers.
+  - A later read-only re-review found one additional blocker: events for an
+    already-loaded non-visible thread could be dropped during
+    `pendingActiveThreadId` thread switching because the task-history append
+    was after the early return. The event route was reordered and
+    `isTaskHistoryEvent` was extracted for direct test coverage.
+  - Follow-up read-only re-review returned `APPROVE` with no blockers for the
+    pending-thread-switch fix.
+  - Targeted tests passed with 4 files and 23 tests:
+    `taskItems`, `runtime store`, `missing-ipc-tasks`, and
+    `workbench-runtime-events`.
+  - Extended targeted tests passed:
+    - renderer workbench set: 8 files, 25 tests
+    - main runtime/ipc set: 4 files, 18 tests
+  - `npm run typecheck` passed.
+  - Targeted eslint for changed files passed.
+  - `git diff --check` passed.
+  - `npm run lint` passed with 0 errors and 36 existing warnings.
+  - `npm test` passed with 160 files and 1046 tests.
+  - `npm run build` passed.
+  - Final fresh validation after the pending-thread-switch fix:
+    - `npx vitest run src/renderer/workbench/__tests__/workbench-runtime-events.test.ts src/renderer/workbench/__tests__/taskItems.test.ts`
+      passed with 2 files and 9 tests.
+    - targeted eslint for the changed workbench runtime-event files passed.
+    - `git diff --check` passed.
+    - `npm run typecheck` passed.
+    - `npm run lint` passed with 0 errors and 36 existing warnings.
+    - `npm test` passed with 160 files and 1046 tests.
+    - `npm run build` passed.
 
 ## Pending
 
-- Continue fable5 1.3.0 Workbench decomposition in small verified batches.
-- Next likely candidates: remove now-redundant older workbench component shards
-  if unused, or start a guarded store migration design slice.
+- Continue fable5 1.3.0 runtime-pipeline consolidation in small verified
+  batches.
+- Next likely candidates: move approval requests from legacy `dispatch:stream`
+  into runtime events, then remove the renderer `hub.onStream` subscription and
+  legacy `messages/tasks` memory persistence from `App.tsx`.
 - Re-run full validation after the next patch batch before commit.

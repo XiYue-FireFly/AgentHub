@@ -38,7 +38,7 @@ interface MissingIpcDeps {
 }
 
 export function registerMissingIpc(deps: MissingIpcDeps): void {
-  const { dispatcher, providerMgr, proxy, getMainWindow } = deps
+  const { dispatcher, runtimeStore, providerMgr, proxy, getMainWindow } = deps
 
   // --- Turns (turns:create/cancel/cancelAgent/resolveGuard/retry are in index.ts) ---
 
@@ -50,11 +50,13 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
 
   // --- Tasks ---
   ipcMain.handle("tasks:delete", async (_event, taskId: string) => {
+    runtimeStore?.deleteTask?.(taskId)
     if (dispatcher) dispatcher.deleteTask?.(taskId)
     return true
   })
 
   ipcMain.handle("tasks:clearCompleted", async () => {
+    runtimeStore?.clearCompletedTasks?.()
     if (dispatcher) dispatcher.clearCompleted?.()
     return true
   })

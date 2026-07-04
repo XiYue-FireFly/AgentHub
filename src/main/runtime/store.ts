@@ -219,6 +219,20 @@ export class WorkbenchRuntimeStore extends EventEmitter {
   deleteTask(taskId: string): boolean {
     const state = this.load()
     let changed = false
+    const directTurn = state.turns.find(turn => turn.id === taskId)
+    if (directTurn) {
+      state.turns = state.turns.filter(turn => turn.id !== directTurn.id)
+      state.runs = state.runs.filter(run => run.turnId !== directTurn.id)
+      state.events = state.events.filter(event => event.turnId !== directTurn.id)
+      const thread = state.threads.find(item => item.id === directTurn.threadId)
+      if (thread) {
+        const latest = [...state.turns].reverse().find(turn => turn.threadId === thread.id)
+        thread.lastTurnStatus = latest?.status
+        thread.updatedAt = latest?.createdAt ?? thread.updatedAt
+      }
+      this.save()
+      return true
+    }
     const affectedTurnIds = new Set<string>()
     const affectedThreadIds = new Set<string>()
     state.turns = state.turns.flatMap(turn => {
@@ -246,14 +260,11 @@ export class WorkbenchRuntimeStore extends EventEmitter {
 
   clearCompletedTasks(): string[] {
     const state = this.load()
-    const removableTaskIds = new Set<string>()
-    for (const turn of state.turns) {
-      if (turn.status === "completed" || turn.status === "failed" || turn.status === "cancelled") {
-        for (const taskId of turn.taskIds) removableTaskIds.add(taskId)
-      }
-    }
-    for (const taskId of removableTaskIds) this.deleteTask(taskId)
-    return [...removableTaskIds]
+    const removableTurnIds = state.turns
+      .filter(turn => turn.status === "completed" || turn.status === "failed" || turn.status === "cancelled")
+      .map(turn => turn.id)
+    for (const turnId of removableTurnIds) this.deleteTask(turnId)
+    return removableTurnIds
   }
 
   appendSystemEvent(threadId: string, turnId: string, kind: RuntimeEvent["kind"], agentId: string | undefined, payload: any): RuntimeEvent {

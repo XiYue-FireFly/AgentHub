@@ -198,6 +198,36 @@ describe("WorkbenchRuntimeStore", () => {
     expect(reviewStatus?.payload).toMatchObject({ status: "failed", scheduleRole: "reviewer", scheduleStepId: "reviewer" })
   })
 
+  it("deletes a runtime task by turn id for the renderer task history", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = runtime.createTurn({ prompt: "delete me", mode: "auto", workspaceId: "ws-1" })
+    runtime.appendStreamEvent(turn.id, { kind: "start", taskId: "task-1", agentId: "codex" })
+    runtime.attachTask(turn.id, "task-1")
+    runtime.setTurnStatus(turn.id, "completed", { taskId: "task-1" })
+
+    expect(runtime.deleteTask(turn.id)).toBe(true)
+    expect(runtime.snapshot("ws-1").turns).toHaveLength(0)
+    expect(runtime.snapshot("ws-1").runs).toHaveLength(0)
+    expect(runtime.eventsSince(thread.id, 0)).toHaveLength(0)
+  })
+
+  it("clears completed runtime turns even when they have no backend task id", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const done = runtime.createTurn({ prompt: "done", mode: "custom", workspaceId: "ws-1" }).turn
+    const failed = runtime.createTurn({ prompt: "failed", mode: "custom", workspaceId: "ws-1" }).turn
+    const running = runtime.createTurn({ prompt: "running", mode: "custom", workspaceId: "ws-1" }).turn
+
+    runtime.setTurnStatus(done.id, "completed")
+    runtime.setTurnStatus(failed.id, "failed")
+
+    expect(runtime.clearCompletedTasks().sort()).toEqual([done.id, failed.id].sort())
+    expect(runtime.snapshot("ws-1").turns.map(turn => turn.id)).toEqual([running.id])
+  })
+
   it("prunes old stream deltas before completion events", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
