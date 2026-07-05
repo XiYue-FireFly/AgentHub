@@ -72,6 +72,20 @@ describe('SDD Trace', () => {
       expect(items[1].status).toBe('completed')
     })
 
+    it('should parse plan items with Chinese covers punctuation', () => {
+      const plan = `
+- [ ] T-1： 实现登录 API（covers：R-1，R-2）
+- [x] 添加测试（cover：r-3）
+`
+      const items = parsePlanCovers(plan)
+
+      expect(items).toHaveLength(2)
+      expect(items[0].id).toBe('T-1')
+      expect(items[0].covers).toEqual(['R-1', 'R-2'])
+      expect(items[1].covers).toEqual(['R-3'])
+      expect(items[1].status).toBe('completed')
+    })
+
     it('should handle plan items without covers', () => {
       const plan = `
 - [ ] 普通任务
@@ -80,6 +94,17 @@ describe('SDD Trace', () => {
       const items = parsePlanCovers(plan)
       expect(items).toHaveLength(2)
       expect(items[0].covers).toEqual([])
+    })
+
+    it('keeps explicit T task ids for SDD Todo trace matching', () => {
+      const plan = `
+- [ ] T-1: Implement checkout (covers: R-1)
+- [x] T-2: Add checkout tests (covers: R-1)
+`
+      const items = parsePlanCovers(plan)
+
+      expect(items.map(item => item.id)).toEqual(['T-1', 'T-2'])
+      expect(items[0].text).toBe('T-1: Implement checkout (covers: R-1)')
     })
 
     it('should handle empty plan', () => {
@@ -216,6 +241,30 @@ describe('SDD Trace', () => {
       expect(trace.planItems).toHaveLength(2)
       expect(trace.coverage['R-1']).toEqual(['P-1'])
       expect(trace.coverage['R-2']).toEqual(['P-2'])
+    })
+
+    it('should compute trace coverage from Chinese covers punctuation', () => {
+      const requirementMarkdown = `
+### R-1: 登录 {draft}
+- [ ] 验收1
+
+### R-2: 注册 {draft}
+- [ ] 验收2
+`
+      const planMarkdown = `
+- [ ] T-1： 实现登录和注册（covers：R-1，R-2）
+`
+
+      const trace = computeTrace({
+        draftId: 'test-draft',
+        requirementMarkdown,
+        planMarkdown
+      })
+
+      expect(trace.planItems[0].covers).toEqual(['R-1', 'R-2'])
+      expect(trace.coverage['R-1']).toEqual(['T-1'])
+      expect(trace.coverage['R-2']).toEqual(['T-1'])
+      expect(trace.uncoveredRequirementIds).toEqual([])
     })
   })
 

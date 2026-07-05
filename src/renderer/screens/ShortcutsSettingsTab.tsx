@@ -51,7 +51,7 @@ export function ShortcutsSettingsTab() {
   useEffect(() => {
     let alive = true
     window.electronAPI.store.get(KEYBOARD_SHORTCUT_STORE_KEY)
-      .then(value => { if (alive) setSettings(normalizeKeyboardShortcuts(value || { bindings: {} })) })
+      .then(value => { if (alive) setSettings(normalizeKeyboardShortcuts(value && typeof value === 'object' ? value : null)) })
       .catch(() => { if (alive) setSettings({ bindings: {} }) })
     return () => { alive = false }
   }, [])

@@ -1,4 +1,3 @@
-import { ipcMain } from "electron"
 import {
   buildModelList,
   exportCodexCatalog,
@@ -10,6 +9,7 @@ import {
   toggleModelHidden,
   updateModelRoute
 } from "../runtime/models-center"
+import { typedHandle } from "./typed-ipc"
 
 interface ModelsIpcDeps {
   providerMgr: any
@@ -23,14 +23,14 @@ export function registerModelsIpc(deps: ModelsIpcDeps): void {
 
   const { providerMgr } = deps
 
-  ipcMain.handle("models:list", (_e, providers?: any[]) => Array.isArray(providers) ? buildModelList(providers) : listGlobalModels())
-  ipcMain.handle("models:routeSettings:get", () => providerMgr.getModelRouteSettings())
-  ipcMain.handle("models:routeSettings:set", (_e, patch: any) => providerMgr.setModelRouteSettings(patch || {}))
-  ipcMain.handle("models:updateRoute", (_e, providerId: string, modelId: string, patch: any) => updateModelRoute(providerId, modelId, patch || {}))
-  ipcMain.handle("models:test", (_e, input: { providerId: string; modelId: string; upstreamModel?: string }) => testModelRoute(input))
-  ipcMain.handle("models:exportCodexCatalog", () => exportCodexCatalog())
-  ipcMain.handle("models:toggleFavorite", (_e, providerId: string, modelId: string) => toggleModelFavorite(providerId, modelId))
-  ipcMain.handle("models:toggleHidden", (_e, providerId: string, modelId: string) => toggleModelHidden(providerId, modelId))
-  ipcMain.handle("models:favorites", () => [...getModelFavorites()])
-  ipcMain.handle("models:hidden", () => [...getModelHidden()])
+  typedHandle("models:list", (_e, providers) => Array.isArray(providers) ? buildModelList(providers) : listGlobalModels())
+  typedHandle("models:routeSettings:get", () => providerMgr.getModelRouteSettings())
+  typedHandle("models:routeSettings:set", (_e, patch) => providerMgr.setModelRouteSettings(patch || {}))
+  typedHandle("models:updateRoute", (_e, providerId, modelId, patch) => updateModelRoute(providerId, modelId, patch || {}))
+  typedHandle("models:test", (_e, input) => testModelRoute(input))
+  typedHandle("models:exportCodexCatalog", () => exportCodexCatalog())
+  typedHandle("models:toggleFavorite", (_e, providerId, modelId) => toggleModelFavorite(providerId, modelId))
+  typedHandle("models:toggleHidden", (_e, providerId, modelId) => toggleModelHidden(providerId, modelId))
+  typedHandle("models:favorites", () => [...getModelFavorites()])
+  typedHandle("models:hidden", () => [...getModelHidden()])
 }

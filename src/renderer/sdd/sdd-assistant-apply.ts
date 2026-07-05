@@ -7,6 +7,13 @@ export interface ApplyAssistantRequirementOptions {
   now?: Date
 }
 
+export interface AssistantRequirementPreview {
+  content: string
+  changed: boolean
+  added: string[]
+  removed: string[]
+}
+
 export function cleanAssistantMarkdown(content: string): string {
   const trimmed = content.trim()
   const fullFence = trimmed.match(/^```(?:markdown|md)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i)
@@ -62,6 +69,24 @@ export function applyAssistantRequirementResponse(
   }
 
   return currentTrimmed ? `${currentTrimmed}\n\n${section}\n` : `${section}\n`
+}
+
+export function previewAssistantRequirementResponse(
+  current: string,
+  response: string,
+  options: ApplyAssistantRequirementOptions = {}
+): AssistantRequirementPreview {
+  const content = applyAssistantRequirementResponse(current, response, options)
+  const currentLines = current.split('\n')
+  const nextLines = content.split('\n')
+  const currentSet = new Set(currentLines)
+  const nextSet = new Set(nextLines)
+  return {
+    content,
+    changed: content !== current,
+    added: nextLines.filter(line => line.trim() && !currentSet.has(line)),
+    removed: currentLines.filter(line => line.trim() && !nextSet.has(line))
+  }
 }
 
 function findManagedSectionStart(content: string): number {

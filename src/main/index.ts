@@ -1,5 +1,5 @@
 import "./startup-paths"
-import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, ipcMain, shell, WebContents } from "electron"
+import { app, BrowserWindow, Tray, Menu, nativeImage, Notification } from "electron"
 import { join, resolve } from "path"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import { randomBytes } from "crypto"
@@ -18,11 +18,11 @@ import { MemoryLibrary } from "./memory-library"
 import { getWorkspaceManager } from "./hub/workspace"
 import { optionalWorkbenchWorkspace } from "./runtime/workspace-helpers"
 // --- AgentHub skills + native agentic (Claude-B 新增) ---
-import { ChatCompletionMessage } from "./providers/types"
+import { ChatCompletionMessage, ThinkingConfig } from "./providers/types"
 // --- /AgentHub skills + native agentic ---
 import { getWorkbenchRuntimeStore } from "./runtime/store"
-import { DispatchPreset, ModelSelection, SchedulePreview, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
-import { getCachedLocalAgentStatuses } from "./runtime/local-agents"
+import { ModelSelection, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
+import { refreshLocalAgentStatusCache } from "./runtime/local-agents"
 import { resolveGuardApproval, cancelGuardApprovalsForTurn, clearAllGuardApprovals } from "./runtime/guard-approval-service"
 import { getWorkbenchGoal, promptWithGoalContext } from "./runtime/goals"
 import { buildAgentOptions } from "./runtime/agent-options"
@@ -42,6 +42,8 @@ import { appendAppEventLog, installGlobalAppEventLogging } from "./runtime/app-e
 import { registerAllIpcHandlers } from "./ipc"
 import { registerProviderIpc } from "./ipc/provider-ipc"
 import { registerModelsIpc } from "./ipc/models-ipc"
+import { typedHandle } from "./ipc/typed-ipc"
+import { installWebviewGuards } from "./security/webview-guards"
 import { hub as hubLog, window_ as windowLog, pipeline as pipelineLog, proxy as proxyLog } from "./logger"
 import {
   runCustomScheduleTurn
@@ -291,8 +293,8 @@ function memory(): MemoryLibrary {
   return memoryLibrary
 }
 
-function dispatchableLocalAgentIds(): string[] {
-  return buildAgentOptions(getCachedLocalAgentStatuses()).map(agent => agent.agentId)
+async function dispatchableLocalAgentIds(): Promise<string[]> {
+  return buildAgentOptions(await refreshLocalAgentStatusCache()).map(agent => agent.agentId)
 }
 
 function appAssetPath(fileName: string): string {
@@ -303,34 +305,6 @@ function appAssetPath(fileName: string): string {
   if (existsSync(fromAppPath)) return fromAppPath
 
   return join(process.cwd(), "build", fileName)
-}
-
-function safeBrowserUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    return ["http:", "https:"].includes(parsed.protocol)
-  } catch {
-    return false
-  }
-}
-
-function installWebviewGuards(contents: WebContents): void {
-  contents.on("will-attach-webview", (event, webPreferences, params) => {
-    const src = String(params.src || "")
-    if (src && !safeBrowserUrl(src)) {
-      event.preventDefault()
-      return
-    }
-    delete (webPreferences as any).preload
-    delete (webPreferences as any).preloadURL
-    webPreferences.nodeIntegration = false
-    webPreferences.contextIsolation = true
-    webPreferences.sandbox = true
-  })
-  contents.setWindowOpenHandler(({ url }) => {
-    if (safeBrowserUrl(url)) shell.openExternal(url).catch(() => {})
-    return { action: "deny" }
-  })
 }
 
 function showWindowsNotification(title: string, body: string): void {
@@ -525,9 +499,6 @@ async function initHub(): Promise<void> {
       runtimeStore.appendStreamEvent(turnId, event)
       ;(event as any).__runtimeTurnId = turnId
     }
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("dispatch:stream", event)
-    }
   })
 
   try {
@@ -549,7 +520,7 @@ async function initHub(): Promise<void> {
 
 // Hub, threads, runtime, context, git:query handlers moved to ipc/hub-threads-ipc.ts
 
-ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | null; workspaceId?: string | null; prompt: string; mode?: DispatchPreset; targetAgent?: string | null; thinking?: any; modelSelection?: ModelSelection; attachments?: WorkbenchAttachment[]; customSchedule?: SchedulePreview }) => {
+typedHandle("turns:create", async (_event, payload) => {
   if (!dispatcher) {
     await Promise.race([
       dispatcherReadyPromise,
@@ -558,7 +529,11 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
   }
   const activeDispatcher = dispatcher!
   const mode = payload.mode || "auto"
-  const directTarget = payload.targetAgent?.trim() || undefined
+  const requestedDirectTarget = payload.targetAgent?.trim() || undefined
+  const usableLocalAgentIds = await dispatchableLocalAgentIds()
+  const directTarget = requestedDirectTarget && usableLocalAgentIds.includes(requestedDirectTarget)
+    ? requestedDirectTarget
+    : undefined
   const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)
   const localDirect = !!directTarget
   const directRun = providerDirect || localDirect
@@ -580,7 +555,7 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
     directRun,
     directTarget,
     customSchedule: payload.customSchedule,
-    availableAgentIds: dispatchableLocalAgentIds(),
+    availableAgentIds: usableLocalAgentIds,
     attachments,
     optimization: promptOptimization
   })
@@ -638,7 +613,7 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
       dispatchPrompt,
       turnModelSelection,
       {
-        thinking: payload.thinking,
+        thinking: payload.thinking as ThinkingConfig | undefined,
         workspaceId: workspaceId ?? thread.workspaceId ?? null,
         turnId: turn.id,
         threadId: thread.id,
@@ -656,7 +631,7 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
         threadId: thread.id,
         messages,
         isCancelled: () => runtimeStore.getTurn(turn.id)?.status === "cancelled",
-        thinking: payload.thinking,
+        thinking: payload.thinking as ThinkingConfig | undefined,
         modelSelection: turnModelSelection,
         routeDecision,
         recentUserMessages: recentUserPrompts(thread.id, turn.id),
@@ -667,7 +642,7 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
       dispatchMode,
       directTarget,
       {
-        thinking: payload.thinking,
+        thinking: payload.thinking as ThinkingConfig | undefined,
         modelSelection: turnModelSelection,
         workspaceId: workspaceId ?? thread.workspaceId ?? null,
         turnId: turn.id,
@@ -697,7 +672,7 @@ ipcMain.handle("turns:create", async (_event, payload: { threadId?: string | nul
     })
   return { thread, turn }
 })
-ipcMain.handle("turns:cancel", (_event, turnId: string) => {
+typedHandle("turns:cancel", (_event, turnId) => {
   const snapshot = runtimeStore.snapshot()
   const turn = snapshot.turns.find(t => t.id === turnId)
   if (!turn) return false
@@ -706,7 +681,7 @@ ipcMain.handle("turns:cancel", (_event, turnId: string) => {
   runtimeStore.setTurnStatus(turnId, "cancelled")
   return true
 })
-ipcMain.handle("turns:cancelAgent", (_event, turnId: string, agentId: string) => {
+typedHandle("turns:cancelAgent", (_event, turnId, agentId) => {
   const snapshot = runtimeStore.snapshot()
   const turn = snapshot.turns.find(t => t.id === turnId)
   if (!turn) return false
@@ -721,8 +696,8 @@ ipcMain.handle("turns:cancelAgent", (_event, turnId: string, agentId: string) =>
   }
   return cancelled
 })
-ipcMain.handle("turns:resolveGuard", (_event, requestId: string, approved: boolean) => resolveGuardApproval(requestId, approved))
-ipcMain.handle("turns:retry", async (_event, turnId: string) => {
+typedHandle("turns:resolveGuard", (_event, requestId, approved) => resolveGuardApproval(requestId, approved))
+typedHandle("turns:retry", async (_event, turnId) => {
   const snapshot = runtimeStore.snapshot()
   const turn = snapshot.turns.find(t => t.id === turnId)
   if (!turn) throw new Error(`Turn not found: ${turnId}`)
@@ -735,7 +710,11 @@ ipcMain.handle("turns:retry", async (_event, turnId: string) => {
     ])
   }
   const activeDispatcher = dispatcher!
-  const retryTargetAgent = turn.targetAgent || undefined
+  const retryRequestedTargetAgent = turn.targetAgent || undefined
+  const retryUsableLocalAgentIds = await dispatchableLocalAgentIds()
+  const retryTargetAgent = retryRequestedTargetAgent && retryUsableLocalAgentIds.includes(retryRequestedTargetAgent)
+    ? retryRequestedTargetAgent
+    : undefined
   const retryProviderDirect = !retryTargetAgent && isProviderDirectSelection(turn.modelSelection)
   const retryDirectRun = retryProviderDirect || !!retryTargetAgent
   const retryModelSelection = retryProviderDirect ? turn.modelSelection : retryTargetAgent ? undefined : turn.modelSelection
@@ -750,7 +729,7 @@ ipcMain.handle("turns:retry", async (_event, turnId: string) => {
     directRun: retryDirectRun,
     directTarget: retryTargetAgent,
     customSchedule: turn.customSchedule,
-    availableAgentIds: dispatchableLocalAgentIds(),
+    availableAgentIds: retryUsableLocalAgentIds,
     attachments: turn.attachments ?? [],
     optimization: retryOptimization
   })
@@ -902,10 +881,11 @@ if (process.defaultApp) {
   app.setAsDefaultProtocolClient('agenthub')
 }
 
-const gotLock = app.requestSingleInstanceLock()
+const skipSingleInstanceLock = process.env.AGENTHUB_E2E === '1'
+const gotLock = skipSingleInstanceLock || app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
-} else {
+} else if (!skipSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const url = argv.find(a => a.startsWith('agenthub://'))
     if (url) handleDeepLink(url)
@@ -926,35 +906,30 @@ app.whenReady().then(async () => {
   registerProviderIpc({ providerMgr, registerAgentsFromBindings })
   registerModelsIpc({ providerMgr })
   providerMgr.unlockSecrets()   // app ready 后解密落盘的 apiKey 到内存（safeStorage 此时可用）
-  let hubInitOk = false
   try {
     await initHub()
-    hubInitOk = true
   } catch (e: any) {
     console.error('[AgentHub] initHub failed:', e?.message || String(e))
   }
 
   // Register domain-specific IPC handlers (extracted from monolithic index.ts)
-  // 如果 initHub 失败导致 dispatcher 为 null，跳过 IPC 注册以避免下游 crash
-  if (!hubInitOk || !dispatcher) {
-    console.error('[AgentHub] Skipping IPC registration: dispatcher not initialized (initHub failed)')
-  } else {
-    registerAllIpcHandlers({
-      memory: memory,
-      providerMgr: providerMgr,
-      registerAgentsFromBindings: registerAgentsFromBindings,
-      resolveAppVersionFromMain,
-      getWorkspaceManager,
-      store,
-      registry,
-      runtimeStore,
-      dispatcher,
-      hub,
-      router,
-      proxy,
-      getMainWindow: () => mainWindow
-    })
-  }
+  // Keep settings, workspace, provider, and diagnostic IPC available even if
+  // Hub/Dispatcher startup fails; dispatch-only handlers already guard later.
+  registerAllIpcHandlers({
+    memory: memory,
+    providerMgr: providerMgr,
+    registerAgentsFromBindings: registerAgentsFromBindings,
+    resolveAppVersionFromMain,
+    getWorkspaceManager,
+    store,
+    registry,
+    runtimeStore,
+    dispatcher,
+    hub,
+    router,
+    proxy,
+    getMainWindow: () => mainWindow
+  })
 
   createWindow()
   createTray()

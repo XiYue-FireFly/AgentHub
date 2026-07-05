@@ -2,23 +2,17 @@ import React from 'react'
 import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
 
-export type ThreadTodoStatus = 'pending' | 'in_progress' | 'completed'
-
-export interface ThreadTodo {
-  id: string
-  content: string
-  status: ThreadTodoStatus
-  threadId: string
-}
-
 interface TodoPopoverRowProps {
   todo: ThreadTodo
   onStatus: (todo: ThreadTodo, status: ThreadTodoStatus) => void
   onDelete: (todoId: string) => void
+  onDispatch?: (todo: ThreadTodo) => void
+  dispatching?: boolean
 }
 
-export function TodoPopoverRow({ todo, onStatus, onDelete }: TodoPopoverRowProps) {
+export function TodoPopoverRow({ todo, onStatus, onDelete, onDispatch, dispatching = false }: TodoPopoverRowProps) {
   const nextStatus: ThreadTodoStatus = todo.status === 'completed' ? 'pending' : 'completed'
+  const canDispatch = !!onDispatch && todo.status !== 'completed'
   return (
     <div className={'wb-top-todo-row status-' + todo.status}>
       <button
@@ -52,6 +46,17 @@ export function TodoPopoverRow({ todo, onStatus, onDelete }: TodoPopoverRowProps
           ))}
         </div>
       </div>
+      {canDispatch && (
+        <button
+          className="wb-top-todo-run"
+          type="button"
+          onClick={() => onDispatch(todo)}
+          disabled={dispatching}
+          title={todo.source?.turnId ? tr('重新派发到 Agent', 'Run again with agent') : tr('派发到 Agent', 'Run with agent')}
+        >
+          <Icon d={dispatching ? IC.pulse : IC.send} size={12} />
+        </button>
+      )}
       <button className="wb-top-todo-delete" type="button" onClick={() => onDelete(todo.id)} title={tr('删除', 'Delete')}>
         <Icon d={IC.x} size={12} />
       </button>

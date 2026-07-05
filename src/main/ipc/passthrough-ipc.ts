@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, app } from 'electron'
+import { BrowserWindow, app } from 'electron'
 import { configureLocalAgent, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from '../runtime/local-agents'
 import { readLocalModelConfig, scanLocalModels } from '../runtime/local-models'
 import { getRunTimeoutMs, setRunTimeoutMs, RUN_TIMEOUT_DEFAULTS } from '../runtime/run-preferences'
@@ -27,10 +27,10 @@ import { createFireflyState, completeRole, getRoleContext, isComplete, getFinalO
 import { getBudgetConfig, checkBudget, updateBudgetConfig } from '../runtime/budget-center'
 import { registerModelsIpc } from './models-ipc'
 import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from '../runtime/inline-edit'
-import { appEventLogPath } from '../runtime/app-event-log'
-import { DispatchPreset } from '../runtime/types'
+import { appEventLogPath, readRecentAppEventLogs } from '../runtime/app-event-log'
 import { runReleaseChecks } from '../runtime/release-workspace'
 import { listMcpServers } from '../runtime/mcp'
+import { typedHandle } from './typed-ipc'
 
 interface PassthroughDeps {
   memory: () => any
@@ -49,109 +49,109 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
   const { memory, store, runtimeStore, registry, providerMgr, resolveAppVersionFromMain, registerAgentsFromBindings, getWorkspaceManager, getMainWindow } = deps
 
   // Window controls
-  ipcMain.handle("win:minimize", () => { getMainWindow()?.minimize() })
-  ipcMain.handle("win:maximizeToggle", () => {
+  typedHandle("win:minimize", () => { getMainWindow()?.minimize() })
+  typedHandle("win:maximizeToggle", () => {
     const win = getMainWindow()
     if (!win) return false
     if (win.isMaximized()) win.unmaximize()
     else win.maximize()
     return win.isMaximized()
   })
-  ipcMain.handle("win:isMaximized", () => getMainWindow()?.isMaximized() ?? false)
-  ipcMain.handle("win:close", () => {
+  typedHandle("win:isMaximized", () => getMainWindow()?.isMaximized() ?? false)
+  typedHandle("win:close", () => {
     if (store.get("minimizeToTray") !== false) getMainWindow()?.hide()
     else getMainWindow()?.close()
   })
 
-  ipcMain.handle("localAgents:detect", () => refreshLocalAgentStatusCache())
-  ipcMain.handle("localAgents:status", () => getCachedLocalAgentStatuses())
-  ipcMain.handle("localAgents:options", () => buildAgentOptions(getCachedLocalAgentStatuses()))
-  ipcMain.handle("localAgents:configure", (_event, agentId: string, patch: { binary?: string; args?: string; protocol?: "stdio-plain" | "acp" }) => {
-    const result = configureLocalAgent(agentId, patch)
+  typedHandle("localAgents:detect", () => refreshLocalAgentStatusCache())
+  typedHandle("localAgents:status", () => getCachedLocalAgentStatuses())
+  typedHandle("localAgents:options", () => buildAgentOptions(getCachedLocalAgentStatuses()))
+  typedHandle("localAgents:configure", async (_event, agentId, patch) => {
+    const result = await configureLocalAgent(agentId, patch)
     registerAgentsFromBindings()
     return result
   })
-  ipcMain.handle("localModels:scan", (_event, agentId?: string | null) => scanLocalModels(agentId))
-  ipcMain.handle("localModels:readConfig", (_event, agentId: string) => readLocalModelConfig(agentId))
+  typedHandle("localModels:scan", (_event, agentId) => scanLocalModels(agentId))
+  typedHandle("localModels:readConfig", (_event, agentId) => readLocalModelConfig(agentId))
 
-  ipcMain.handle("settings:getRunTimeout", () => ({ value: getRunTimeoutMs(), ...RUN_TIMEOUT_DEFAULTS }))
-  ipcMain.handle("settings:setRunTimeout", (_event, value: number) => ({ value: setRunTimeoutMs(value), ...RUN_TIMEOUT_DEFAULTS }))
+  typedHandle("settings:getRunTimeout", () => ({ value: getRunTimeoutMs(), ...RUN_TIMEOUT_DEFAULTS }))
+  typedHandle("settings:setRunTimeout", (_event, value) => ({ value: setRunTimeoutMs(value), ...RUN_TIMEOUT_DEFAULTS }))
 
-  ipcMain.handle("goals:get", (_event, threadId?: string | null) => getWorkbenchGoal(threadId))
-  ipcMain.handle("goals:set", (_event, threadId: string, goal: string, loopLimit?: number) => setWorkbenchGoal(threadId, goal, loopLimit))
-  ipcMain.handle("goals:clear", (_event, threadId: string) => clearWorkbenchGoal(threadId))
+  typedHandle("goals:get", (_event, threadId) => getWorkbenchGoal(threadId))
+  typedHandle("goals:set", (_event, threadId, goal, loopLimit) => setWorkbenchGoal(threadId, goal, loopLimit))
+  typedHandle("goals:clear", (_event, threadId) => clearWorkbenchGoal(threadId))
 
-  ipcMain.handle("schedules:list", () => listSchedules())
-  ipcMain.handle("schedules:runPreview", (_event, preset: DispatchPreset) => previewSchedule(preset))
+  typedHandle("schedules:list", () => listSchedules())
+  typedHandle("schedules:runPreview", (_event, preset) => previewSchedule(preset))
 
-  ipcMain.handle("commands:list", () => listWorkbenchCommands())
-  ipcMain.handle("commands:run", (_event, input: { id?: string; text?: string }) => runWorkbenchCommand(input))
+  typedHandle("commands:list", () => listWorkbenchCommands())
+  typedHandle("commands:run", (_event, input) => runWorkbenchCommand(input))
 
-  ipcMain.handle("ecc:status", () => eccCommandStatus())
-  ipcMain.handle("ecc:update", () => updateEccCommands())
+  typedHandle("ecc:status", () => eccCommandStatus())
+  typedHandle("ecc:update", () => updateEccCommands())
 
-  ipcMain.handle("todos:list", (_event, threadId: string) => listThreadTodos(threadId))
-  ipcMain.handle("todos:set", (_event, threadId: string, todos: any[]) => setThreadTodos(threadId, todos))
-  ipcMain.handle("todos:upsert", (_event, input: { threadId: string; id?: string; content: string; status?: any; source?: any }) => upsertThreadTodo(input))
-  ipcMain.handle("todos:delete", (_event, threadId: string, todoId: string) => deleteThreadTodo(threadId, todoId))
-  ipcMain.handle("todos:clear", (_event, threadId: string) => clearThreadTodos(threadId))
-  ipcMain.handle("todos:syncFromMarkdown", (_event, threadId: string, markdown: string) => syncTodosFromMarkdown(threadId, markdown))
+  typedHandle("todos:list", (_event, threadId) => listThreadTodos(threadId))
+  typedHandle("todos:set", (_event, threadId, todos) => setThreadTodos(threadId, todos))
+  typedHandle("todos:upsert", (_event, input) => upsertThreadTodo(input))
+  typedHandle("todos:delete", (_event, threadId, todoId) => deleteThreadTodo(threadId, todoId))
+  typedHandle("todos:clear", (_event, threadId) => clearThreadTodos(threadId))
+  typedHandle("todos:syncFromMarkdown", (_event, threadId, markdown, sourceContext) => syncTodosFromMarkdown(threadId, markdown, sourceContext))
 
-  ipcMain.handle("updates:status", () => updateStatus())
-  ipcMain.handle("updates:check", (_event, channel?: "stable" | "preview") => checkUpdates(channel))
-  ipcMain.handle("updates:setChannel", (_event, channel: "stable" | "preview") => setUpdateChannel(channel))
-  ipcMain.handle("updates:openDownload", () => openUpdateDownload())
+  typedHandle("updates:status", () => updateStatus())
+  typedHandle("updates:check", (_event, channel) => checkUpdates(channel))
+  typedHandle("updates:setChannel", (_event, channel) => setUpdateChannel(channel))
+  typedHandle("updates:openDownload", () => openUpdateDownload())
 
-  ipcMain.handle("usage:stats", (_event, range?: any, view?: any) => usageStats(range, view))
-  ipcMain.handle("usage:records", (_event, filter?: any, page?: any, pageSize?: any) => usageRecords(filter || {}, page, pageSize))
-  ipcMain.handle("usage:recordDetail", (_event, id: string) => usageRecordDetail(String(id || "")))
-  ipcMain.handle("usage:pricing:list", () => listUsagePricingRules())
-  ipcMain.handle("usage:pricing:upsert", (_event, rule: any) => upsertUsagePricingRule(rule || {}))
-  ipcMain.handle("usage:pricing:delete", (_event, idOrModelId: string, providerId?: string) => deleteUsagePricingRule(String(idOrModelId || ""), providerId))
+  typedHandle("usage:stats", (_event, range, view) => usageStats(range, view))
+  typedHandle("usage:records", (_event, filter, page, pageSize) => usageRecords(filter || {}, page, pageSize))
+  typedHandle("usage:recordDetail", (_event, id) => usageRecordDetail(String(id || "")))
+  typedHandle("usage:pricing:list", () => listUsagePricingRules())
+  typedHandle("usage:pricing:upsert", (_event, rule) => upsertUsagePricingRule(rule || {}))
+  typedHandle("usage:pricing:delete", (_event, idOrModelId, providerId) => deleteUsagePricingRule(String(idOrModelId || ""), providerId))
 
-  ipcMain.handle("prompts:list", (_e, category?: string) => listPrompts(category as any))
-  ipcMain.handle("prompts:get", (_e, id: string) => getPrompt(id))
-  ipcMain.handle("prompts:upsert", (_e, input: any) => upsertPrompt(input))
-  ipcMain.handle("prompts:delete", (_e, id: string) => deletePrompt(id))
-  ipcMain.handle("prompts:search", (_e, query: string) => searchPrompts(query))
-  ipcMain.handle("prompts:slashCommands", () => getSlashCommands())
-  ipcMain.handle("prompts:incrementUse", (_e, id: string) => incrementUseCount(id))
-  ipcMain.handle("prompts:seedDefaults", () => seedDefaultPrompts())
+  typedHandle("prompts:list", (_e, category) => listPrompts(category))
+  typedHandle("prompts:get", (_e, id) => getPrompt(id))
+  typedHandle("prompts:upsert", (_e, input) => upsertPrompt(input))
+  typedHandle("prompts:delete", (_e, id) => deletePrompt(id))
+  typedHandle("prompts:search", (_e, query) => searchPrompts(query))
+  typedHandle("prompts:slashCommands", () => getSlashCommands())
+  typedHandle("prompts:incrementUse", (_e, id) => incrementUseCount(id))
+  typedHandle("prompts:seedDefaults", () => seedDefaultPrompts())
 
-  ipcMain.handle("memory:scoreQuality", (_e, entry: any) => scoreMemoryQuality(entry))
-  ipcMain.handle("memory:detectConflicts", (_e, entries: any[]) => detectMemoryConflicts(entries))
+  typedHandle("memory:scoreQuality", (_e, entry) => scoreMemoryQuality(entry))
+  typedHandle("memory:detectConflicts", (_e, entries) => detectMemoryConflicts(entries))
 
-  ipcMain.handle("workflow:substituteVars", (_e, template: string, vars: any[]) => substituteVariables(template, vars))
-  ipcMain.handle("workflow:evaluateCondition", (_e, condition: string, vars: any[]) => evaluateCondition(condition, vars))
-  ipcMain.handle("workflow:saveRun", (_e, record: any) => { saveRunRecord(record); return true })
-  ipcMain.handle("workflow:runHistory", () => loadRunHistory())
-  ipcMain.handle("workflow:runHistoryFor", (_e, workflowId: string) => getWorkflowRunHistory(workflowId))
+  typedHandle("workflow:substituteVars", (_e, template, vars) => substituteVariables(template, vars))
+  typedHandle("workflow:evaluateCondition", (_e, condition, vars) => evaluateCondition(condition, vars))
+  typedHandle("workflow:saveRun", (_e, record) => { saveRunRecord(record); return true })
+  typedHandle("workflow:runHistory", () => loadRunHistory())
+  typedHandle("workflow:runHistoryFor", (_e, workflowId) => getWorkflowRunHistory(workflowId))
 
-  ipcMain.handle("teams:list", () => listTeamPresets())
-  ipcMain.handle("teams:save", (_e, input: any) => saveTeamPreset(input))
-  ipcMain.handle("teams:delete", (_e, id: string) => deleteTeamPreset(id))
-  ipcMain.handle("teams:defaultFirefly", (_e, agentIds: string[]) => getDefaultFireflyTeam(agentIds))
+  typedHandle("teams:list", () => listTeamPresets())
+  typedHandle("teams:save", (_e, input) => saveTeamPreset(input))
+  typedHandle("teams:delete", (_e, id) => deleteTeamPreset(id))
+  typedHandle("teams:defaultFirefly", (_e, agentIds) => getDefaultFireflyTeam(agentIds))
 
-  ipcMain.handle("knowledge:detectTechStack", (_e, rootPath: string) => detectTechStack(rootPath))
-  ipcMain.handle("knowledge:generateSummary", (_e, rootPath: string, entries: any[]) => generateWorkspaceSummary(rootPath, entries))
+  typedHandle("knowledge:detectTechStack", (_e, rootPath) => detectTechStack(rootPath))
+  typedHandle("knowledge:generateSummary", (_e, rootPath, entries) => generateWorkspaceSummary(rootPath, entries))
 
-  ipcMain.handle("firefly:createState", () => createFireflyState())
-  ipcMain.handle("firefly:completeRole", (_e, state: any, role: string, output: string) => completeRole(state, role as any, output))
-  ipcMain.handle("firefly:getRoleContext", (_e, state: any, role: string, prompt: string, memory?: string, project?: string) => getRoleContext(state, role as any, prompt, memory, project))
-  ipcMain.handle("firefly:isComplete", (_e, state: any) => isComplete(state))
-  ipcMain.handle("firefly:getOutput", (_e, state: any) => getFinalOutput(state))
+  typedHandle("firefly:createState", () => createFireflyState())
+  typedHandle("firefly:completeRole", (_e, state, role, output) => completeRole(state, role, output))
+  typedHandle("firefly:getRoleContext", (_e, state, role, prompt, memory, project) => getRoleContext(state, role, prompt, memory, project))
+  typedHandle("firefly:isComplete", (_e, state) => isComplete(state))
+  typedHandle("firefly:getOutput", (_e, state) => getFinalOutput(state))
 
   registerModelsIpc({ providerMgr })
 
-  ipcMain.handle("budget:get", () => getBudgetConfig())
-  ipcMain.handle("budget:update", (_e, patch: any) => updateBudgetConfig(patch))
-  ipcMain.handle("budget:check", (_e, dailySpent: number, monthlySpent: number, requestTokens: number) => checkBudget(getBudgetConfig(), dailySpent, monthlySpent, requestTokens))
+  typedHandle("budget:get", () => getBudgetConfig())
+  typedHandle("budget:update", (_e, patch) => updateBudgetConfig(patch))
+  typedHandle("budget:check", (_e, dailySpent, monthlySpent, requestTokens) => checkBudget(getBudgetConfig(), dailySpent, monthlySpent, requestTokens))
 
-  ipcMain.handle("inlineEdit:buildPrompt", (_e, request: any) => buildInlineEditPrompt(request))
-  ipcMain.handle("inlineEdit:validate", (_e, original: string, replacement: string) => validateEditResult(original, replacement))
-  ipcMain.handle("inlineEdit:apply", (_e, content: string, startLine: number, endLine: number, replacement: string) => applyInlineEdit(content, startLine, endLine, replacement))
+  typedHandle("inlineEdit:buildPrompt", (_e, request) => buildInlineEditPrompt(request))
+  typedHandle("inlineEdit:validate", (_e, original, replacement) => validateEditResult(original, replacement))
+  typedHandle("inlineEdit:apply", (_e, content, startLine, endLine, replacement) => applyInlineEdit(content, startLine, endLine, replacement))
 
-  ipcMain.handle("routes:explain", async (_event, turnId: string) => {
+  typedHandle("routes:explain", async (_event, turnId) => {
     const snapshot = runtimeStore.snapshot(undefined)
     const turn = snapshot.turns.find((item: any) => item.id === turnId)
     if (!turn) return []
@@ -159,9 +159,10 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
       .filter((event: any) => event.turnId === turnId && event.kind === "route:decision")
       .map((event: any) => event.payload)
   })
-  ipcMain.handle("logs:path", () => ({ path: appEventLogPath() }))
+  typedHandle("logs:path", () => ({ path: appEventLogPath() }))
+  typedHandle("logs:recent", (_event, limit) => readRecentAppEventLogs(limit))
 
-  ipcMain.handle("diagnostics:runSuite", async () => {
+  typedHandle("diagnostics:runSuite", async () => {
     return runDiagnosticSuite({
       appVersion: resolveAppVersionFromMain(),
       hasProviders: ((providerMgr?.getConfig?.()?.providers?.length ?? 0) > 0),
@@ -172,7 +173,7 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
     })
   })
 
-  ipcMain.handle("release:checks", async () => {
+  typedHandle("release:checks", async () => {
     const { execFile } = require("child_process")
     const { join } = require("path")
     const { existsSync } = require("fs")

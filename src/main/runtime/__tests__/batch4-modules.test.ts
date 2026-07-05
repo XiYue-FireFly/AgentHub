@@ -38,6 +38,32 @@ describe("conversation-import", () => {
     expect(result.warnings![0]).toContain("Legacy")
   })
 
+  it("drops invalid metadata values during import", async () => {
+    const { importConversationFromJson } = await import("../conversation-import")
+    const stringMetadata = importConversationFromJson(JSON.stringify({
+      version: 1,
+      title: "Invalid metadata",
+      metadata: "not-object",
+      messages: [{ role: "user", content: "Hello" }]
+    }))
+    const arrayMetadata = importConversationFromJson(JSON.stringify({
+      version: 1,
+      title: "Array metadata",
+      metadata: [],
+      messages: [{ role: "user", content: "Hello" }]
+    }))
+    const objectMetadata = importConversationFromJson(JSON.stringify({
+      version: 1,
+      title: "Object metadata",
+      metadata: { workspaceId: "w1" },
+      messages: [{ role: "user", content: "Hello" }]
+    }))
+
+    expect(stringMetadata.conversation?.metadata).toBeUndefined()
+    expect(arrayMetadata.conversation?.metadata).toBeUndefined()
+    expect(objectMetadata.conversation?.metadata).toEqual({ workspaceId: "w1" })
+  })
+
   it("branches from checkpoint", async () => {
     const { importConversationFromJson, branchFromCheckpoint } = await import("../conversation-import")
     const result = importConversationFromJson(JSON.stringify({
@@ -152,10 +178,12 @@ describe("plugin-manager", () => {
     const localPlugins = plugins.filter(p => p.source === 'local')
     expect(localPlugins).toHaveLength(1)
     expect(localPlugins[0].manifest.name).toBe("Codex Style")
+    expect(localPlugins[0].manifest.contributes?.skills?.[0]?.path).toBe("skill-pack/1.0.0/skills/sample-skill/SKILL.md")
+    expect(localPlugins[0].manifest.contributes?.skills?.[0]?.path.startsWith(root)).toBe(false)
     const contribs = getPluginContributions(localPlugins)
     expect(contribs.skills).toHaveLength(1)
     expect(contribs.skills[0].id).toBe("sample-skill")
-    expect(contribs.skills[0].path.endsWith(join("sample-skill", "SKILL.md"))).toBe(true)
+    expect(contribs.skills[0].path.endsWith("sample-skill/SKILL.md")).toBe(true)
     expect(contribs.skills[0].content).toContain("# Sample")
   })
 
@@ -178,6 +206,8 @@ describe("plugin-manager", () => {
     expect(localPlugins[0].id).toBe("local::codex-repo/writing-plans")
     expect(localPlugins[0].manifest.name).toBe("Writing Plans")
     expect(localPlugins[0].manifest.version).toBe("5.1.0")
+    expect(localPlugins[0].manifest.contributes?.skills?.[0]?.path).toBe("skills/writing-plans/SKILL.md")
+    expect(localPlugins[0].manifest.contributes?.skills?.[0]?.path.startsWith(root)).toBe(false)
     const contributions = getPluginContributions(localPlugins)
     expect(contributions.skills[0].id).toBe("writing-plans")
     expect(contributions.skills[0].content).toContain("# Writing Plans")

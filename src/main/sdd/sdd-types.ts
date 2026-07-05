@@ -109,6 +109,24 @@ export interface SddPlanItem {
   covers: string[]              // 关联的需求 ID，如 ['R-1', 'R-2']
   status: 'pending' | 'in_progress' | 'completed'
   lineNumber: number
+  turnId?: string
+  commits?: SddCommitEvidence[]
+}
+
+export interface SddCommitEvidence {
+  sha: string
+  shortSha: string
+  summary?: string
+  files?: Array<{
+    path: string
+    oldPath?: string | null
+    status: string
+    additions?: number
+    deletions?: number
+  }>
+  linkedAt: string
+  turnId?: string
+  threadId?: string
 }
 
 // ============================================================

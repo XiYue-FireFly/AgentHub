@@ -26,6 +26,15 @@ export interface DraftHistoryState {
   maxVersions: number
 }
 
+export interface DraftHistorySummary {
+  version: number
+  timestamp: string
+  message: string
+  author: DraftHistoryEntry['author']
+  title: string
+  truncated?: boolean
+}
+
 // ============================================================
 // 常量
 // ============================================================
@@ -38,6 +47,70 @@ const STORAGE_KEY_PREFIX = 'sdd-history-'
 // ============================================================
 
 const historyCache = new Map<string, DraftHistoryEntry[]>()
+const diskHydrateInFlight = new Set<string>()
+
+function normalizeHistoryRoot(workspaceRoot?: string): string {
+  return (workspaceRoot || '').trim().replaceAll('\\', '/').replace(/\/+$/, '')
+}
+
+function historyKey(draftId: string, workspaceRoot?: string): string {
+  const normalizedRoot = normalizeHistoryRoot(workspaceRoot)
+  if (!normalizedRoot) return `${STORAGE_KEY_PREFIX}${draftId}`
+  return `${STORAGE_KEY_PREFIX}${encodeURIComponent(normalizedRoot)}::${draftId}`
+}
+
+function cloneHistory(history: DraftHistoryEntry[]): DraftHistoryEntry[] {
+  return history.map(entry => ({ ...entry }))
+}
+
+function normalizeHistoryEntries(entries: DraftHistoryEntry[]): DraftHistoryEntry[] {
+  return entries
+    .filter(entry => entry && typeof entry.version === 'number' && typeof entry.content === 'string')
+    .slice(-MAX_HISTORY_VERSIONS)
+    .map(entry => ({
+      version: entry.version,
+      timestamp: entry.timestamp,
+      content: entry.content,
+      title: entry.title,
+      message: entry.message,
+      author: entry.author,
+      truncated: !!entry.truncated
+    }))
+}
+
+function setCachedHistory(draftId: string, workspaceRoot: string | undefined, entries: DraftHistoryEntry[]): DraftHistoryEntry[] {
+  const key = historyKey(draftId, workspaceRoot)
+  const normalized = normalizeHistoryEntries(entries)
+  historyCache.set(key, normalized)
+  saveToLocalStorage(key, normalized)
+  return normalized
+}
+
+function saveToDisk(workspaceRoot: string | undefined, draftId: string, history: DraftHistoryEntry[]): void {
+  if (!workspaceRoot || !window.electronAPI?.sdd?.saveHistory) return
+  window.electronAPI.sdd.saveHistory(workspaceRoot, draftId, normalizeHistoryEntries(history)).catch(() => {})
+}
+
+function hydrateFromDiskIfNeeded(draftId: string, workspaceRoot?: string): void {
+  if (!workspaceRoot || !window.electronAPI?.sdd?.getHistory) return
+  const key = historyKey(draftId, workspaceRoot)
+  if (diskHydrateInFlight.has(key)) return
+  diskHydrateInFlight.add(key)
+  window.electronAPI.sdd.getHistory(workspaceRoot, draftId)
+    .then(entries => {
+      if (Array.isArray(entries) && entries.length > 0) {
+        setCachedHistory(draftId, workspaceRoot, entries)
+      }
+    })
+    .catch(() => {})
+    .finally(() => diskHydrateInFlight.delete(key))
+}
+
+export async function hydrateDraftHistoryFromDisk(draftId: string, workspaceRoot?: string): Promise<DraftHistoryEntry[]> {
+  if (!workspaceRoot || !window.electronAPI?.sdd?.getHistory) return getDraftHistory(draftId, workspaceRoot)
+  const entries = await window.electronAPI.sdd.getHistory(workspaceRoot, draftId)
+  return cloneHistory(setCachedHistory(draftId, workspaceRoot, entries))
+}
 
 // ============================================================
 // 历史记录管理
@@ -46,19 +119,20 @@ const historyCache = new Map<string, DraftHistoryEntry[]>()
 /**
  * 获取草稿的历史记录
  */
-export function getDraftHistory(draftId: string): DraftHistoryEntry[] {
-  // 先从内存缓存获取
-  const cached = historyCache.get(draftId)
-  if (cached) return cached
+export function getDraftHistory(draftId: string, workspaceRoot?: string): DraftHistoryEntry[] {
+  const key = historyKey(draftId, workspaceRoot)
+  const cached = historyCache.get(key)
+  if (cached) return cloneHistory(cached)
+  hydrateFromDiskIfNeeded(draftId, workspaceRoot)
 
   // 尝试从 localStorage 获取
   try {
-    const key = `${STORAGE_KEY_PREFIX}${draftId}`
     const raw = localStorage.getItem(key)
     if (raw) {
       const entries = JSON.parse(raw) as DraftHistoryEntry[]
-      historyCache.set(draftId, entries)
-      return entries
+      historyCache.set(key, entries)
+      hydrateFromDiskIfNeeded(draftId, workspaceRoot)
+      return cloneHistory(entries)
     }
   } catch { /* localStorage 读取失败，忽略 */ }
 
@@ -73,9 +147,11 @@ export function addHistoryEntry(
   content: string,
   title: string,
   message: string = '自动保存',
-  author: 'user' | 'system' | 'ai' = 'system'
+  author: 'user' | 'system' | 'ai' = 'system',
+  workspaceRoot?: string
 ): DraftHistoryEntry {
-  const history = getDraftHistory(draftId)
+  const key = historyKey(draftId, workspaceRoot)
+  const history = getDraftHistory(draftId, workspaceRoot)
   const version = history.length > 0 ? history[history.length - 1].version + 1 : 1
 
   const entry: DraftHistoryEntry = {
@@ -88,16 +164,17 @@ export function addHistoryEntry(
   }
 
   // 添加新条目
-  history.push(entry)
+  const nextHistory = [...history, entry]
 
   // 限制历史记录数量
-  while (history.length > MAX_HISTORY_VERSIONS) {
-    history.shift()
+  while (nextHistory.length > MAX_HISTORY_VERSIONS) {
+    nextHistory.shift()
   }
 
   // 保存到缓存和 localStorage
-  historyCache.set(draftId, history)
-  saveToLocalStorage(draftId, history)
+  historyCache.set(key, nextHistory)
+  saveToLocalStorage(key, nextHistory)
+  saveToDisk(workspaceRoot, draftId, nextHistory)
 
   return entry
 }
@@ -105,21 +182,22 @@ export function addHistoryEntry(
 /**
  * 获取特定版本的历史记录
  */
-export function getHistoryEntry(draftId: string, version: number): DraftHistoryEntry | undefined {
-  const history = getDraftHistory(draftId)
+export function getHistoryEntry(draftId: string, version: number, workspaceRoot?: string): DraftHistoryEntry | undefined {
+  const history = getDraftHistory(draftId, workspaceRoot)
   return history.find(e => e.version === version)
 }
 
 /**
  * 恢复到指定版本
  */
-export function restoreFromHistory(draftId: string, version: number): boolean {
-  const entry = getHistoryEntry(draftId, version)
+export function restoreFromHistory(draftId: string, version: number, workspaceRoot?: string): boolean {
+  const entry = getHistoryEntry(draftId, version, workspaceRoot)
   if (!entry) return false
 
   const store = useSddDraftStore.getState()
   const draft = store.activeDraft
   if (!draft || draft.id !== draftId) return false
+  if (workspaceRoot && draft.workspaceRoot !== workspaceRoot) return false
 
   // 检查内容是否被截断
   if (entry.truncated) {
@@ -127,11 +205,10 @@ export function restoreFromHistory(draftId: string, version: number): boolean {
   }
 
   // 保存当前版本到历史（恢复前快照）
-  addHistoryEntry(draftId, store.content, draft.title, `恢复前快照 (v${version})`, 'system')
+  addHistoryEntry(draftId, store.content, draft.title, `恢复前快照 (v${version})`, 'system', draft.workspaceRoot)
 
   // 恢复内容
   store.setContent(entry.content)
-  store.markSaved()
 
   return true
 }
@@ -142,10 +219,11 @@ export function restoreFromHistory(draftId: string, version: number): boolean {
 export function diffHistoryVersions(
   draftId: string,
   versionA: number,
-  versionB: number
+  versionB: number,
+  workspaceRoot?: string
 ): { added: string[]; removed: string[]; changed: boolean } {
-  const entryA = getHistoryEntry(draftId, versionA)
-  const entryB = getHistoryEntry(draftId, versionB)
+  const entryA = getHistoryEntry(draftId, versionA, workspaceRoot)
+  const entryB = getHistoryEntry(draftId, versionB, workspaceRoot)
 
   if (!entryA || !entryB) {
     return { added: [], removed: [], changed: false }
@@ -169,22 +247,28 @@ export function diffHistoryVersions(
 /**
  * 清除草稿的历史记录
  */
-export function clearDraftHistory(draftId: string): void {
-  historyCache.delete(draftId)
+export function clearDraftHistory(draftId: string, workspaceRoot?: string): void {
+  const key = historyKey(draftId, workspaceRoot)
+  historyCache.delete(key)
   try {
-    localStorage.removeItem(`${STORAGE_KEY_PREFIX}${draftId}`)
+    localStorage.removeItem(key)
   } catch { /* localStorage 清除失败，忽略 */ }
+  if (workspaceRoot && window.electronAPI?.sdd?.clearHistory) {
+    window.electronAPI.sdd.clearHistory(workspaceRoot, draftId).catch(() => {})
+  }
 }
 
 /**
  * 获取历史摘要
  */
-export function getHistorySummary(draftId: string): Array<{ version: number; timestamp: string; message: string; author: string }> {
-  return getDraftHistory(draftId).map(e => ({
+export function getHistorySummary(draftId: string, workspaceRoot?: string): DraftHistorySummary[] {
+  return getDraftHistory(draftId, workspaceRoot).map(e => ({
     version: e.version,
     timestamp: e.timestamp,
     message: e.message,
-    author: e.author
+    author: e.author,
+    title: e.title,
+    truncated: e.truncated
   }))
 }
 
@@ -192,20 +276,18 @@ export function getHistorySummary(draftId: string): Array<{ version: number; tim
 // 辅助函数
 // ============================================================
 
-function saveToLocalStorage(draftId: string, history: DraftHistoryEntry[]): void {
+function saveToLocalStorage(key: string, history: DraftHistoryEntry[]): void {
   try {
-    const key = `${STORAGE_KEY_PREFIX}${draftId}`
-    // 只保存摘要信息以节省空间（最近 10 条）
-    const summary = history.slice(-10).map(e => ({
+    const entries = history.slice(-MAX_HISTORY_VERSIONS).map(e => ({
       version: e.version,
       timestamp: e.timestamp,
-      content: e.content.slice(0, 5000), // 限制内容长度
-      truncated: e.content.length > 5000, // 标记是否被截断
+      content: e.content,
+      truncated: false,
       title: e.title,
       message: e.message,
       author: e.author
     }))
-    localStorage.setItem(key, JSON.stringify(summary))
+    localStorage.setItem(key, JSON.stringify(entries))
   } catch { /* localStorage 保存失败（可能超出容量），忽略 */ }
 }
 
@@ -213,12 +295,12 @@ function saveToLocalStorage(draftId: string, history: DraftHistoryEntry[]): void
  * 在保存草稿时自动记录历史
  */
 export function recordSaveHistory(draft: SddDraft, content: string): void {
-  addHistoryEntry(draft.id, content, draft.title, '手动保存', 'user')
+  addHistoryEntry(draft.id, content, draft.title, '手动保存', 'user', draft.workspaceRoot)
 }
 
 /**
  * 在 AI 修改后记录历史
  */
 export function recordAiHistory(draft: SddDraft, content: string, message: string): void {
-  addHistoryEntry(draft.id, content, draft.title, `AI: ${message}`, 'ai')
+  addHistoryEntry(draft.id, content, draft.title, `AI: ${message}`, 'ai', draft.workspaceRoot)
 }

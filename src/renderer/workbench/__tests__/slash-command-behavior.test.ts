@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { addPaletteQuery, replaceAddToken, shouldRunComposerCommand } from "../ComposerBar"
+import { addPaletteQuery, replaceAddToken, shouldRunComposerCommand } from "../utils/composerCommandUtils"
+import { parseLoopLimit, parseSlashInput, stripLoopFlags } from "../utils/slashCommandUtils"
+import { reasoningFromCommand, resolveModelCommand } from "../utils/modelUtils"
 
 describe("workbench slash command behavior", () => {
   it("keeps model and reasoning commands wired into the runtime", () => {
@@ -12,6 +14,8 @@ describe("workbench slash command behavior", () => {
     expect(commands).toContain('{ template: "review" }')
     expect(commands).toContain('{ template: "model" }')
     expect(commands).toContain('{ template: "reasoning" }')
+    expect(layout).toContain("from './utils/slashCommandUtils'")
+    expect(layout).toContain("from './utils/modelUtils'")
     expect(layout).toContain("resolveModelCommand(args, selectableModels)")
     expect(layout).toContain("reasoningFromCommand(args, thinking)")
     expect(layout).toContain("请以代码审查方式回答")
@@ -19,12 +23,37 @@ describe("workbench slash command behavior", () => {
     expect(layout).toContain("await sendPrompt(args)")
   })
 
+  it("parses slash commands and loop flags in extracted utilities", () => {
+    expect(parseSlashInput("/model deepseek/deepseek-chat")).toEqual({ label: "/model", args: "deepseek/deepseek-chat" })
+    expect(parseSlashInput("@minimax-code fix this")).toEqual({ label: "/agent:opencode", args: "fix this" })
+    expect(parseLoopLimit("--limit=25", 5)).toBe(20)
+    expect(parseLoopLimit("循环 3", 5)).toBe(3)
+    expect(stripLoopFlags("fix this --times=4")).toBe("fix this")
+  })
+
+  it("resolves provider model and reasoning commands in extracted utilities", () => {
+    const options = [
+      { providerId: "deepseek", modelId: "deepseek-chat", label: "DeepSeek / Chat", searchable: "deepseek/deepseek-chat deepseek chat" }
+    ]
+
+    expect(resolveModelCommand("deepseek/deepseek-chat", options)).toEqual({
+      selection: { providerId: "deepseek", modelId: "deepseek-chat", source: "provider" },
+      label: "DeepSeek / Chat"
+    })
+    expect(reasoningFromCommand("高", { mode: "auto", level: "medium", collapseInUI: true })).toEqual({
+      mode: "enabled",
+      level: "high",
+      collapseInUI: true
+    })
+  })
+
   it("keeps unknown slash input from silently becoming a normal prompt", () => {
     const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+    const commandUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/composerCommandUtils.ts"), "utf8")
 
     expect(composer).toContain("commandTextForSelection")
     expect(composer).toContain("normalizeCommandToken")
-    expect(composer).toContain("currentText.length > rawFirstToken.length")
+    expect(commandUtils).toContain("currentText.length > rawFirstToken.length")
     expect(composer).toContain("未识别的指令")
   })
 
@@ -88,15 +117,16 @@ describe("workbench slash command behavior", () => {
 
   it("prioritizes workflow commands in the slash palette", () => {
     const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+    const commandUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/composerCommandUtils.ts"), "utf8")
 
     expect(composer).toContain("rankCommandsForPalette")
-    expect(composer).toContain("command.source === 'ecc' ? 0")
+    expect(commandUtils).toContain("command.source === 'ecc' ? 0")
     expect(composer).toContain("slice(0, 12)")
-    expect(composer).toContain("['/plan', 0]")
-    expect(composer).toContain("['/goal', 1]")
-    expect(composer).toContain("['/loop', 2]")
-    expect(composer).toContain("['/tdd', 3]")
-    expect(composer).toContain("['/code-review', 4]")
+    expect(commandUtils).toContain("['/plan', 0]")
+    expect(commandUtils).toContain("['/goal', 1]")
+    expect(commandUtils).toContain("['/loop', 2]")
+    expect(commandUtils).toContain("['/tdd', 3]")
+    expect(commandUtils).toContain("['/code-review', 4]")
   })
 
   it("renders localized slash command descriptions", () => {
@@ -157,19 +187,25 @@ describe("workbench slash command behavior", () => {
 
   it("routes provider model selections through provider direct runs", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const dispatchRequest = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/dispatchRequest.ts"), "utf8")
+    const modelUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/modelUtils.ts"), "utf8")
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
     const main = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
-    const hubThreads = readFileSync(join(process.cwd(), "src/main/ipc/hub-threads-ipc.ts"), "utf8")
     const dispatcher = readFileSync(join(process.cwd(), "src/main/hub/dispatcher.ts"), "utf8")
 
-    expect(layout).toContain("selectedProviderDirect")
+    expect(layout).toContain("resolveDispatchRequest")
+    expect(dispatchRequest).toContain("selectedProviderDirect")
+    expect(dispatchRequest).toContain("requestedModelSelection?.source === 'provider'")
     expect(layout).toContain("setTargetAgent(null)")
-    expect(layout).toContain("source: 'provider'")
+    expect(modelUtils).toContain("source: 'provider'")
+    expect(composer).toContain("source: 'provider'")
     expect(main).toContain("isProviderDirectSelection")
     expect(main).toContain("dispatcher.dispatchProviderDirect")
     expect(main).toContain("retryProviderDirect")
-    expect(main).toContain("const directTarget = payload.targetAgent?.trim()")
-    expect(hubThreads).toContain("return dispatcher.dispatchProviderDirect(payload.text, payload.modelSelection")
+    expect(main).toContain("const requestedDirectTarget = payload.targetAgent?.trim()")
+    expect(main).toContain("usableLocalAgentIds.includes(requestedDirectTarget)")
     expect(main).toContain("await dispatcher.dispatchProviderDirect(message.payload.text, modelSelection")
+    expect(main).toContain("activeDispatcher.dispatchProviderDirect(")
     expect(main).toContain("const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)")
     expect(main).toContain("const turnModelSelection = providerDirect ? payload.modelSelection : directTarget ? undefined : payload.modelSelection")
     expect(main).not.toContain("isProviderDirectSelection(payload.modelSelection, directTarget)")

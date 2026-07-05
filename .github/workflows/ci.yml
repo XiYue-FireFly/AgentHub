@@ -7,15 +7,17 @@ on:
 
 jobs:
   verify:
-    # Windows runner 匹配开发环境（适配器探测/mock-codex.cmd 等为 Windows 相关）
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          # 与开发环境一致(Node 24 / npm 11)：npm 11 才会正确跳过 esbuild 平台 optional 依赖；
-          # Node 20/npm 10 会对 @esbuild/<其它平台> 报 EBADPLATFORM。
           node-version: 24
           cache: npm
 
@@ -33,3 +35,11 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: E2E (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:e2e
+
+      - name: E2E (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:e2e

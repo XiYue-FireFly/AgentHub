@@ -7,11 +7,13 @@ interface WorktreeItem {
   id: string
   branch: string
   path: string
-  status: 'clean' | 'dirty' | 'locked' | 'missing'
+  status: 'clean' | 'dirty' | 'missing'
 }
 
 function worktreeStatusLabel(status: WorktreeItem['status']): string {
-  return status === 'clean' ? tr('干净', 'Clean') : status === 'dirty' ? tr('有变更', 'Dirty') : status === 'missing' ? tr('缺失', 'Missing') : tr('锁定', 'Locked')
+  if (status === 'dirty') return tr('有变更', 'Dirty')
+  if (status === 'missing') return tr('路径丢失', 'Missing')
+  return tr('干净', 'Clean')
 }
 
 interface WorktreePanelProps {

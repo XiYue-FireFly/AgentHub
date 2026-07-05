@@ -1,23 +1,5 @@
 import { tr } from '../../glass/i18n'
 
-export interface BrowserContextAttachment {
-  title?: string
-  url?: string
-  headings?: string[]
-  links?: Array<{ text: string; href: string }>
-  forms?: string[]
-  text?: string
-}
-
-export interface WorkbenchAttachment {
-  id: string
-  kind: string
-  name: string
-  mime: string
-  text: string
-  createdAt: number
-}
-
 /**
  * Normalize a URL value, adding https:// if missing.
  */
@@ -51,5 +33,17 @@ export function browserCaptureToAttachment(capture: BrowserContextAttachment): W
     mime: 'text/markdown',
     text,
     createdAt: Date.now()
+  }
+}
+
+export function browserCaptureToSnapshot(capture: BrowserContextAttachment): BrowserPageSnapshot {
+  return {
+    url: capture.url || '',
+    title: capture.title || '',
+    textContent: capture.text || '',
+    meta: {},
+    links: Array.isArray(capture.links) ? capture.links : [],
+    hasForms: Array.isArray(capture.forms) && capture.forms.length > 0,
+    capturedAt: new Date(capture.capturedAt || Date.now()).toISOString()
   }
 }

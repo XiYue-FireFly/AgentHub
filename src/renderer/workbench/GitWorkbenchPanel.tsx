@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { styledConfirm } from '../lib/confirm'
+import { useSddDraftStore } from '../sdd/sdd-draft-store'
+import { persistSddPlanCommitEvidence } from '../sdd/sdd-trace-dispatch'
 
 type GitViewMode = 'changes' | 'branches' | 'commits'
 type GitDiffMode = 'working' | 'commit'
@@ -9,10 +11,11 @@ type GitChangeSection = 'staged' | 'unstaged'
 
 interface GitWorkbenchPanelProps {
   workspaceId: string | null
+  activeThreadId?: string | null
   onClose: () => void
 }
 
-export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelProps) {
+export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose }: GitWorkbenchPanelProps) {
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [branches, setBranches] = useState<GitBranchListResponse | null>(null)
   const [log, setLog] = useState<GitLogResponse | null>(null)
@@ -34,7 +37,10 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [sddPlanItemId, setSddPlanItemId] = useState('')
   const mountedRef = useRef(true)
+  const activeSddDraft = useSddDraftStore(state => state.activeDraft)
+  const activeSddTrace = useSddDraftStore(state => state.trace)
 
   const changedFiles = status?.files ?? []
   const stagedFiles = status?.stagedFiles ?? []
@@ -136,7 +142,7 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
         setWorkingDiffCache(current => ({ ...current, [selectedPath]: '' }))
       })
     return () => { cancelled = true }
-  }, [workspaceId, diffMode, selectedPath])
+  }, [workspaceId, diffMode, selectedPath, workingDiffCache])
 
   const runAction = async (label: string, action: () => Promise<any>, after?: () => void) => {
     setActionLoading(label)
@@ -198,12 +204,58 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
   }
 
   const selectedCommit = log?.entries.find(entry => entry.sha === selectedCommitSha) ?? null
+  const sddLinkablePlanItems = useMemo(() => {
+    if (!activeSddDraft || !activeSddTrace) return []
+    if (!status?.rootPath || activeSddDraft.workspaceRoot !== status.rootPath) return []
+    if (activeSddTrace.draftId !== activeSddDraft.id) return []
+    return activeSddTrace.planItems
+  }, [activeSddDraft, activeSddTrace, status?.rootPath])
   const localBranches = branches?.localBranches ?? []
   const remoteBranches = branches?.remoteBranches ?? []
   const branchNeedle = branchQuery.trim().toLowerCase()
   const filteredLocalBranches = localBranches.filter(branch => branch.name.toLowerCase().includes(branchNeedle))
   const filteredRemoteBranches = remoteBranches.filter(branch => branch.name.toLowerCase().includes(branchNeedle))
   const selectedCount = checkedKeys.length
+  const selectedSddPlanItem = sddLinkablePlanItems.find(item => item.id === sddPlanItemId) ?? null
+  const selectedCommitAlreadyLinked = !!(selectedSddPlanItem && commitDetails && isCommitLinkedToPlanItem(selectedSddPlanItem, commitDetails, activeThreadId))
+
+  useEffect(() => {
+    if (sddPlanItemId && !sddLinkablePlanItems.some(item => item.id === sddPlanItemId)) {
+      setSddPlanItemId('')
+    }
+  }, [sddLinkablePlanItems, sddPlanItemId])
+
+  useEffect(() => {
+    if (!commitDetails || sddPlanItemId) return
+    const suggestedPlanItemId = suggestSddPlanItemForCommit(sddLinkablePlanItems, commitDetails)
+    if (suggestedPlanItemId) setSddPlanItemId(suggestedPlanItemId)
+  }, [commitDetails, sddLinkablePlanItems, sddPlanItemId])
+
+  const linkCommitToSddPlan = async () => {
+    if (!activeSddDraft || !commitDetails || !selectedSddPlanItem) return
+    setActionLoading('sdd-link-commit')
+    try {
+      setError(null)
+      setNotice(null)
+      const nextTrace = await persistSddPlanCommitEvidence({
+        workspaceRoot: activeSddDraft.workspaceRoot,
+        draftId: activeSddDraft.id,
+        planItemId: selectedSddPlanItem.id,
+        commit: commitDetails,
+        turnId: selectedSddPlanItem.turnId,
+        threadId: activeThreadId ?? undefined
+      })
+      if (!nextTrace) {
+        setNotice(tr('该提交已关联，或当前需求追踪不可用。', 'Commit already linked, or the current requirement trace is unavailable.'))
+        return
+      }
+      setNotice(tr('已将提交关联到当前需求追踪。', 'Commit linked to the current requirement trace.'))
+    } catch (e: any) {
+      setError(e?.message || tr('关联需求追踪失败。', 'Failed to link requirement trace.'))
+    } finally {
+      setActionLoading(null)
+    }
+  }
 
   return (
     <div className="wb-tool-panel wb-git-workbench-panel">
@@ -349,6 +401,32 @@ export function GitWorkbenchPanel({ workspaceId, onClose }: GitWorkbenchPanelPro
                   <div className="wb-git-commit-files">
                     {commitDetails.files.map(file => <span key={file.path}>{file.status} {file.path}</span>)}
                   </div>
+                  {sddLinkablePlanItems.length > 0 && (
+                    <div className="wb-git-sdd-link">
+                      <div className="wb-git-section-head">
+                        <strong>{tr('需求追踪', 'Requirement trace')}</strong>
+                        <span>{activeSddDraft?.title}</span>
+                      </div>
+                      <select value={sddPlanItemId} onChange={event => setSddPlanItemId(event.target.value)}>
+                        <option value="">{tr('选择计划任务', 'Select plan item')}</option>
+                        {sddLinkablePlanItems.map(item => (
+                          <option key={item.id} value={item.id}>
+                            {item.id} - {stripPlanItemText(item.text)}
+                          </option>
+                        ))}
+                      </select>
+                      {selectedSddPlanItem && (
+                        <small>
+                          {selectedCommitAlreadyLinked
+                            ? tr('该提交已关联到此计划任务。', 'This commit is already linked to this plan item.')
+                            : tr('已自动选择可能的计划任务，请确认后写入验收证据。', 'A likely plan item was selected. Confirm to write it into verification evidence.')}
+                        </small>
+                      )}
+                      <button onClick={linkCommitToSddPlan} disabled={!selectedSddPlanItem || selectedCommitAlreadyLinked || actionLoading === 'sdd-link-commit'}>
+                        {actionLoading === 'sdd-link-commit' ? tr('关联中', 'Linking') : tr('关联提交', 'Link commit')}
+                      </button>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="wb-muted-box">{tr('从提交历史选择一条提交查看详情。', 'Select a commit to view details.')}</div>
@@ -490,3 +568,48 @@ function formatGitTime(timestamp: number): string {
   if (!timestamp) return '-'
   return new Date(timestamp * 1000).toLocaleString()
 }
+
+function stripPlanItemText(text: string): string {
+  return String(text || '')
+    .replace(/^(T-\d+|P-\d+)\s*[:：]\s*/i, '')
+    .replace(/\s*\(covers?:\s*[^)]+\)\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isCommitLinkedToPlanItem(item: SddTracePlanItemLike, commit: GitCommitDetails, activeThreadId?: string | null): boolean {
+  return (item.commits ?? []).some(existing => {
+    if (existing.sha !== commit.sha) return false
+    if (!activeThreadId) return true
+    return existing.threadId === activeThreadId
+  })
+}
+
+function suggestSddPlanItemForCommit(items: SddTracePlanItemLike[], commit: GitCommitDetails): string {
+  const summary = normalizeSearchText(`${commit.summary} ${commit.message}`)
+  const best = items
+    .map(item => ({
+      id: item.id,
+      score: scorePlanItemMatch(normalizeSearchText(item.text), summary)
+    }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)[0]
+  return best?.id ?? ''
+}
+
+function scorePlanItemMatch(planText: string, commitText: string): number {
+  if (!planText || !commitText) return 0
+  if (commitText.includes(planText) || planText.includes(commitText)) return 100
+  const tokens = new Set(planText.split(' ').filter(token => token.length >= 3))
+  let score = 0
+  for (const token of commitText.split(' ')) {
+    if (tokens.has(token)) score += 1
+  }
+  return score
+}
+
+function normalizeSearchText(value: string): string {
+  return stripPlanItemText(value).toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, ' ').trim()
+}
+
+type SddTracePlanItemLike = NonNullable<ReturnType<typeof useSddDraftStore.getState>['trace']>['planItems'][number]

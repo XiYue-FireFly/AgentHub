@@ -21,7 +21,7 @@ import * as http from "http"
 import { EventEmitter } from "events"
 import { URL } from "url"
 import type { AddressInfo } from "net"
-import { getProviderManager } from "../providers/manager"
+import { getProviderManager, isProviderRuntimeUsable } from "../providers/manager"
 import { buildProviderClient, ProviderClient } from "../providers/client"
 import { ChatCompletionMessage, ChatCompletionRequest, ProviderDefinition, ModelDefinition, ThinkingConfig } from "../providers/types"
 import { createLogger } from '../logger'
@@ -200,7 +200,7 @@ export class LocalProxy extends EventEmitter {
   /* ---------------- 路由解析 ---------------- */
 
   private usable(p?: ProviderDefinition | null): p is ProviderDefinition {
-    return !!p && p.enabled && !!p.apiKey && p.models.length > 0
+    return isProviderRuntimeUsable(p) && p.models.length > 0
   }
 
   /**
@@ -551,6 +551,7 @@ export class LocalProxy extends EventEmitter {
         baseUrl: p.baseUrl,
         enabled: p.enabled,
         hasKey: !!p.apiKey,
+        keyLocked: !!p.apiKeyLocked,
         health: p.health || null,
         breakerOpen: this.breakerOpen(p.id),
         modelCount: p.models.length,

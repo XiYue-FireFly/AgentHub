@@ -3,6 +3,7 @@ import {
   findKeyboardShortcutCommand,
   findKeyboardShortcutConflict,
   keyboardEventToShortcut,
+  KEYBOARD_SHORTCUT_COMMANDS,
   normalizeKeyboardShortcuts,
   normalizeKeyboardShortcut,
   resolveKeyboardShortcutBindings
@@ -35,5 +36,14 @@ describe('keyboard shortcuts', () => {
     expect(findKeyboardShortcutCommand(bindings, 'Ctrl+Alt+G')).toBe('panel-git')
     expect(findKeyboardShortcutCommand(bindings, 'Ctrl+Shift+X')).toBeNull()
     expect(findKeyboardShortcutConflict(bindings, 'view-chat', 'Ctrl+Alt+G')).toBe('panel-git')
+  })
+
+  it('exposes requirements as a first-class workbench shortcut', () => {
+    const commandIds = KEYBOARD_SHORTCUT_COMMANDS.map(command => command.id)
+    const bindings = resolveKeyboardShortcutBindings()
+
+    expect(commandIds).toContain('view-requirements')
+    expect(findKeyboardShortcutCommand(bindings, 'Ctrl+4')).toBe('view-requirements')
+    expect(findKeyboardShortcutCommand(bindings, 'Ctrl+5')).toBe('view-settings')
   })
 })

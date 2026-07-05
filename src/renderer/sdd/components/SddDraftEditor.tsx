@@ -9,6 +9,8 @@ import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
 import { useSddDraftStore } from '../sdd-draft-store'
 import { saveDraftToDisk, parseRequirementBlocks } from '../sdd-draft-actions'
+import { diffHistoryVersions, getHistorySummary, restoreFromHistory, type DraftHistorySummary } from '../sdd-draft-history'
+import { SddTracePanel } from './SddTracePanel'
 
 const SDD_AUTOSAVE_MS = 650
 
@@ -156,6 +158,135 @@ function statusLabel(saveStatus: string, operationStatus: string): { text: strin
   return { text: tr('已保存', 'Saved'), className: 'sdd-status-saved' }
 }
 
+function formatHistoryTime(timestamp: string): string {
+  try {
+    return new Date(timestamp).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return timestamp
+  }
+}
+
+function SddHistoryPanel({ draftId, workspaceRoot }: { draftId: string; workspaceRoot: string }) {
+  const content = useSddDraftStore((s) => s.content)
+  const [open, setOpen] = useState(false)
+  const [entries, setEntries] = useState<DraftHistorySummary[]>(() => getHistorySummary(draftId, workspaceRoot))
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
+  const [status, setStatus] = useState<string | null>(null)
+  const [restoring, setRestoring] = useState(false)
+
+  const refresh = () => {
+    const next = getHistorySummary(draftId, workspaceRoot)
+    setEntries(next)
+    setSelectedVersion(current => current && next.some(entry => entry.version === current) ? current : next.at(-1)?.version ?? null)
+  }
+
+  useEffect(() => {
+    refresh()
+    setStatus(null)
+  }, [draftId, workspaceRoot, content])
+
+  const selectedEntry = selectedVersion ? entries.find(entry => entry.version === selectedVersion) : undefined
+  const latestVersion = entries.at(-1)?.version
+  const diff = selectedVersion && latestVersion && selectedVersion !== latestVersion
+    ? diffHistoryVersions(draftId, selectedVersion, latestVersion, workspaceRoot)
+    : null
+
+  const handleRestore = async () => {
+    if (!selectedVersion || restoring) return
+    setRestoring(true)
+    setStatus(null)
+    try {
+      const restored = restoreFromHistory(draftId, selectedVersion, workspaceRoot)
+      if (!restored) {
+        setStatus(tr('未找到可恢复的历史版本', 'History version not found'))
+        return
+      }
+      const saved = await saveDraftToDisk()
+      if (!saved) {
+        setStatus(tr('恢复后保存失败', 'Restore failed to save'))
+        return
+      }
+      await parseRequirementBlocks()
+      refresh()
+      setStatus(tr('已恢复并保存', 'Restored and saved'))
+    } catch (error: any) {
+      setStatus(error?.message || tr('恢复失败', 'Restore failed'))
+    } finally {
+      setRestoring(false)
+    }
+  }
+
+  if (entries.length === 0) return null
+
+  return (
+    <section className="sdd-history-panel" aria-label={tr('需求历史版本', 'Requirement history')}>
+      <button type="button" className="sdd-history-toggle" onClick={() => setOpen(value => !value)}>
+        <span className="sdd-history-title">
+          <Icon d={IC.refresh} size={14} />
+          {tr('历史版本', 'Version History')}
+        </span>
+        <span className="sdd-history-summary">
+          {tr(`${entries.length} 个快照`, `${entries.length} snapshots`)}
+        </span>
+      </button>
+      {open && (
+        <div className="sdd-history-body">
+          <div className="sdd-history-list">
+            {entries.slice().reverse().map(entry => (
+              <button
+                type="button"
+                key={entry.version}
+                className={`sdd-history-entry ${selectedVersion === entry.version ? 'active' : ''}`}
+                onClick={() => setSelectedVersion(entry.version)}
+              >
+                <span className="sdd-history-entry-main">
+                  <span className="sdd-history-version">v{entry.version}</span>
+                  <span className="sdd-history-message">{entry.message}</span>
+                </span>
+                <span className="sdd-history-entry-meta">
+                  {entry.author} · {formatHistoryTime(entry.timestamp)}
+                </span>
+              </button>
+            ))}
+          </div>
+          {selectedEntry && (
+            <div className="sdd-history-detail">
+              <div className="sdd-history-detail-title">
+                <span>{tr('选中版本', 'Selected version')} v{selectedEntry.version}</span>
+                <button
+                  type="button"
+                  className="sdd-history-restore"
+                  onClick={handleRestore}
+                  disabled={restoring}
+                >
+                  {restoring ? tr('恢复中', 'Restoring') : tr('恢复', 'Restore')}
+                </button>
+              </div>
+              {diff && (
+                <div className="sdd-history-diff">
+                  <span className="sdd-history-diff-added">+{diff.added.length}</span>
+                  <span className="sdd-history-diff-removed">-{diff.removed.length}</span>
+                </div>
+              )}
+              {selectedEntry.truncated && (
+                <div className="sdd-history-warning">
+                  {tr('该历史版本内容已截断，恢复可能不完整。', 'This history entry is truncated; restore may be incomplete.')}
+                </div>
+              )}
+              {status && <div className="sdd-history-status">{status}</div>}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 // ============================================================
 // 主编辑器组件
 // ============================================================
@@ -163,18 +294,21 @@ function statusLabel(saveStatus: string, operationStatus: string): { text: strin
 interface SddDraftEditorProps {
   onOpenAssistant?: () => void
   onNext?: () => void
+  onVerify?: () => void
   onClose?: () => void
   nextDisabled?: boolean
+  verifyDisabled?: boolean
 }
 
-export function SddDraftEditor({ onOpenAssistant, onNext, onClose, nextDisabled }: SddDraftEditorProps) {
+export function SddDraftEditor({ onOpenAssistant, onNext, onVerify, onClose, nextDisabled, verifyDisabled }: SddDraftEditorProps) {
   const {
     activeDraft,
     content,
     saveStatus,
     operationStatus,
     error,
-    requirementBlocks
+    requirementBlocks,
+    trace
   } = useSddDraftStore()
 
   const setContent = useSddDraftStore((s) => s.setContent)
@@ -249,6 +383,17 @@ export function SddDraftEditor({ onOpenAssistant, onNext, onClose, nextDisabled 
               <span>✨</span>
             </button>
           )}
+          {onVerify && (
+            <button
+              className="sdd-toolbar-btn"
+              onClick={onVerify}
+              disabled={verifyDisabled || readOnly}
+              title={tr('Verify Acceptance', 'Verify Acceptance')}
+            >
+              <Icon d={IC.check} size={14} />
+              <span>{tr('Verify', 'Verify')}</span>
+            </button>
+          )}
           {onNext && (
             <button
               className="sdd-toolbar-btn sdd-toolbar-btn-primary"
@@ -268,6 +413,8 @@ export function SddDraftEditor({ onOpenAssistant, onNext, onClose, nextDisabled 
 
       {/* 设计上下文栏 */}
       <SddDesignContextBar />
+
+      <SddHistoryPanel draftId={activeDraft.id} workspaceRoot={activeDraft.workspaceRoot} />
 
       {/* 错误提示 */}
       {error && (
@@ -318,6 +465,8 @@ export function SddDraftEditor({ onOpenAssistant, onNext, onClose, nextDisabled 
           </div>
         </div>
       )}
+
+      <SddTracePanel trace={trace} blocks={requirementBlocks} />
     </div>
   )
 }

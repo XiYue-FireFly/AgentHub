@@ -12,7 +12,7 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { buildProviderClient } from '../providers/client'
-import { getProviderManager } from '../providers/manager'
+import { getProviderManager, isProviderRuntimeUsable } from '../providers/manager'
 import type { ModelDefinition, ProviderDefinition, ThinkingMode } from '../providers/types'
 
 const FAVORITES_KEY = 'models.favorites.v1'
@@ -23,6 +23,7 @@ export interface ModelInfo {
   providerName: string
   providerEnabled: boolean
   providerHasKey: boolean
+  providerKeyLocked: boolean
   providerProtocol: string
   modelId: string
   label: string
@@ -72,11 +73,12 @@ export function toggleModelHidden(providerId: string, modelId: string): boolean 
 /**
  * Build a unified model list from all providers.
  */
-export function buildModelList(providers: Array<{ id: string; name: string; enabled: boolean; apiKey?: string; models: Array<{ id: string; label: string; contextWindow?: number; supportsTools?: boolean; supportsVision?: boolean; supportsThinking?: boolean }> }>): ModelInfo[] {
+export function buildModelList(providers: Array<{ id: string; name: string; enabled: boolean; apiKey?: string; apiKeyLocked?: boolean; models: Array<{ id: string; label: string; contextWindow?: number; supportsTools?: boolean; supportsVision?: boolean; supportsThinking?: boolean }> }>): ModelInfo[] {
   const favs = getModelFavorites()
   const hidden = getModelHidden()
   const result: ModelInfo[] = []
   for (const provider of providers) {
+    if (!provider.enabled || !provider.apiKey || provider.apiKeyLocked) continue
     for (const model of provider.models) {
       const key = `${provider.id}/${model.id}`
       result.push({
@@ -84,6 +86,7 @@ export function buildModelList(providers: Array<{ id: string; name: string; enab
         providerName: provider.name,
         providerEnabled: !!provider.enabled,
         providerHasKey: !!provider.apiKey,
+        providerKeyLocked: !!provider.apiKeyLocked,
         providerProtocol: protocolForProvider(provider as any),
         modelId: model.id,
         label: model.label || model.id,
@@ -223,6 +226,7 @@ export function buildCodexCatalog(): { models: any[] } {
   const used = new Set<string>()
   const models: any[] = []
   for (const provider of config.providers) {
+    if (!isProviderRuntimeUsable(provider as any)) continue
     for (const model of provider.models) {
       if (model.enabled === false) continue
       models.push({

@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { buildClaudeProviderReorderIds, deriveModelListCandidates, parseFetchedModels } from "../manager"
+import { buildClaudeProviderReorderIds, deriveModelListCandidates, parseFetchedModels, sortProvidersForClaude } from "../manager"
 
 const storeMock = vi.hoisted(() => ({
   memory: {} as Record<string, any>,
   encryptSecret: vi.fn((value: string) => value),
-  decryptSecret: vi.fn((value: string) => value)
+  decryptSecret: vi.fn((value: string) => value),
+  decryptSecretDetailed: vi.fn((value: string) => ({ ok: true, value, encrypted: value.startsWith("enc:v1:") }))
 }))
 
 vi.mock("../../store", () => ({
@@ -13,7 +14,8 @@ vi.mock("../../store", () => ({
     set: (key: string, value: any) => { storeMock.memory[key] = value }
   },
   encryptSecret: storeMock.encryptSecret,
-  decryptSecret: storeMock.decryptSecret
+  decryptSecret: storeMock.decryptSecret,
+  decryptSecretDetailed: storeMock.decryptSecretDetailed
 }))
 
 describe("ProviderManager.fetchModels", () => {
@@ -21,6 +23,7 @@ describe("ProviderManager.fetchModels", () => {
     for (const key of Object.keys(storeMock.memory)) delete storeMock.memory[key]
     storeMock.encryptSecret.mockImplementation((value: string) => value)
     storeMock.decryptSecret.mockImplementation((value: string) => value)
+    storeMock.decryptSecretDetailed.mockImplementation((value: string) => ({ ok: true, value, encrypted: value.startsWith("enc:v1:") }))
     vi.resetModules()
     vi.restoreAllMocks()
   })
@@ -228,6 +231,15 @@ describe("ProviderManager.fetchModels", () => {
     })
   })
 
+  it("does not resolve disabled models for direct model routes", async () => {
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    manager.setProviderApiKey("openai", "key")
+    manager.updateModelRoute("openai", "gpt-4o", { enabled: false })
+
+    expect(manager.resolveModelRoute("openai", "gpt-4o", { allowFallback: false })).toBeNull()
+  })
+
   it("persists Claude provider order without changing binding, enabled state, or api key", async () => {
     const { ProviderManager } = await import("../manager")
     const manager = new ProviderManager()
@@ -244,6 +256,52 @@ describe("ProviderManager.fetchModels", () => {
     expect(manager.getProvider("anthropic")).toMatchObject({ apiKey: "anthropic-key", enabled: true })
     expect(manager.getProvider("openai")?.sortOrder).toBe(0)
     expect(manager.getProvider("deepseek")?.sortOrder).toBe(2)
+  })
+
+  it("returns isolated sorted config snapshots from getConfig", async () => {
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    manager.setProviderApiKey("openai", "openai-key")
+    manager.setProviderApiKey("anthropic", "anthropic-key")
+    manager.upsertBinding({
+      ...manager.getBinding("claude")!,
+      providerId: "anthropic"
+    })
+    manager.reorderProvidersForClaude(["deepseek", "openai", "anthropic"])
+
+    const first = manager.getConfig()
+    const second = manager.getConfig()
+
+    expect(first).not.toBe(second)
+    expect(first.providers).not.toBe(second.providers)
+    expect(first.providers.map(provider => provider.id).slice(0, 3)).toEqual(["anthropic", "openai", "deepseek"])
+
+    first.providers[0].apiKey = "mutated-key"
+    first.providers[0].models[0].label = "Mutated Label"
+    first.routing.fallbackChain.push("mutated-fallback")
+
+    const fresh = manager.getConfig()
+    expect(fresh.providers.find(provider => provider.id === "anthropic")?.apiKey).toBe("anthropic-key")
+    expect(fresh.providers.find(provider => provider.id === "anthropic")?.models[0].label).not.toBe("Mutated Label")
+    expect(fresh.routing.fallbackChain).not.toContain("mutated-fallback")
+  })
+
+  it("invalidates getConfig snapshots after provider and routing changes", async () => {
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+
+    const before = manager.getConfig()
+    expect(before.providers.find(provider => provider.id === "openai")?.enabled).toBe(false)
+
+    manager.setProviderApiKey("openai", "openai-key")
+    manager.setFallbackChain(["openai"])
+
+    const after = manager.getConfig()
+    expect(after.providers.find(provider => provider.id === "openai")).toMatchObject({
+      apiKey: "openai-key",
+      enabled: true
+    })
+    expect(after.routing.fallbackChain).toEqual(["openai"])
   })
 
   it("continues saving provider config when secret encryption is unavailable", async () => {
@@ -271,6 +329,112 @@ describe("ProviderManager.fetchModels", () => {
       apiKey: "new-plain-key",
       enabled: true
     })
+  })
+
+  it("puts enabled providers before disabled providers after pinned providers", () => {
+    const sorted = sortProvidersForClaude([
+      { id: "disabled-low", name: "Disabled Low", enabled: false, sortOrder: 0, createdAt: 0 } as any,
+      { id: "enabled-high", name: "Enabled High", enabled: true, sortOrder: 99, createdAt: 1 } as any,
+      { id: "current", name: "Current", enabled: false, sortOrder: 100, createdAt: 2 } as any
+    ], "current")
+
+    expect(sorted.map(provider => provider.id)).toEqual(["current", "enabled-high", "disabled-low"])
+  })
+
+  it("preserves encrypted API keys when safeStorage decryption fails", async () => {
+    const encryptedKey = "enc:v1:locked-secret"
+    storeMock.memory["providers.config.v1"] = {
+      providers: [{
+        id: "locked-custom",
+        name: "Locked Custom",
+        kind: "openai-compatible",
+        baseUrl: "https://locked.example/v1",
+        apiKey: encryptedKey,
+        enabled: true,
+        builtIn: false,
+        models: [{
+          id: "kept-model",
+          label: "Kept Model",
+          contextWindow: 128000,
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: false
+        }],
+        capabilities: {
+          protocol: "chat_completions",
+          stream: true,
+          nativeThinking: false,
+          budgetTokens: false,
+          toolCalls: true,
+          systemPrompt: true
+        },
+        defaultThinking: { mode: "auto", level: "medium", collapseInUI: true }
+      }],
+      routing: { bindings: [], fallbackChain: [], strategy: "single" },
+      activeBindingId: null
+    }
+    storeMock.decryptSecretDetailed.mockImplementation((value: string) => (
+      value === encryptedKey
+        ? { ok: false, value, encrypted: true, error: "decrypt failed" }
+        : { ok: true, value, encrypted: value.startsWith("enc:v1:") }
+    ))
+    const { ProviderManager, isProviderRuntimeUsable } = await import("../manager")
+    const manager = new ProviderManager()
+
+    manager.unlockSecrets()
+    const locked = manager.getProvider("locked-custom")!
+    manager.setProviderEnabled("locked-custom", true)
+
+    expect(locked).toMatchObject({ apiKey: encryptedKey, apiKeyLocked: true, apiKeyError: "decrypt failed" })
+    expect(isProviderRuntimeUsable(locked)).toBe(false)
+    expect(storeMock.memory["providers.config.v1"].providers.find((provider: any) => provider.id === "locked-custom")).toMatchObject({
+      apiKey: encryptedKey,
+      enabled: true
+    })
+    expect(storeMock.memory["providers.config.v1"].providers.find((provider: any) => provider.id === "locked-custom").apiKeyLocked).toBeUndefined()
+  })
+
+  it("does not send locked API keys during provider health checks", async () => {
+    const encryptedKey = "enc:v1:locked-secret"
+    storeMock.memory["providers.config.v1"] = {
+      providers: [{
+        id: "locked-custom",
+        name: "Locked Custom",
+        kind: "openai-compatible",
+        baseUrl: "https://locked.example/v1",
+        apiKey: encryptedKey,
+        enabled: true,
+        builtIn: false,
+        models: [],
+        capabilities: {
+          protocol: "chat_completions",
+          stream: true,
+          nativeThinking: false,
+          budgetTokens: false,
+          toolCalls: true,
+          systemPrompt: true
+        },
+        defaultThinking: { mode: "auto", level: "medium", collapseInUI: true }
+      }],
+      routing: { bindings: [], fallbackChain: [], strategy: "single" },
+      activeBindingId: null
+    }
+    storeMock.decryptSecretDetailed.mockImplementation((value: string) => (
+      value === encryptedKey
+        ? { ok: false, value, encrypted: true, error: "decrypt failed" }
+        : { ok: true, value, encrypted: value.startsWith("enc:v1:") }
+    ))
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    const { ProviderManager } = await import("../manager")
+    const manager = new ProviderManager()
+    manager.unlockSecrets()
+
+    await expect(manager.checkProviderHealth("locked-custom")).resolves.toMatchObject({
+      status: "unauthorized",
+      error: "API key is locked; re-enter it to unlock this provider."
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("falls back to a models health URL for unknown provider kinds", async () => {

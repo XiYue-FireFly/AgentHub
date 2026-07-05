@@ -8,6 +8,13 @@ const log = createLogger('Store')
 
 const ENC_PREFIX = 'enc:v1:'
 
+export interface DecryptSecretResult {
+  ok: boolean
+  value: string
+  encrypted: boolean
+  error?: string
+}
+
 /**
  * 用 OS 级 safeStorage（Windows DPAPI / macOS Keychain / Linux libsecret）加密密钥后落盘。
  * 幂等：已加密的值原样返回，避免重复加密。safeStorage 不可时抛错（拒绝明文存储密钥）。
@@ -24,12 +31,26 @@ export function encryptSecret(plain: string): string {
 
 /** 解密 encryptSecret 的产物；旧明文（无前缀）原样返回；解密失败返回空串（视为未配置，提示重填）。 */
 export function decryptSecret(stored: string): string {
-  if (!stored) return ''
-  if (!stored.startsWith(ENC_PREFIX)) return stored
+  const result = decryptSecretDetailed(stored)
+  return result.ok ? result.value : ''
+}
+
+export function decryptSecretDetailed(stored: string): DecryptSecretResult {
+  if (!stored) return { ok: true, value: '', encrypted: false }
+  if (!stored.startsWith(ENC_PREFIX)) return { ok: true, value: stored, encrypted: false }
   try {
-    return safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64'))
-  } catch {
-    return ''
+    return {
+      ok: true,
+      value: safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64')),
+      encrypted: true
+    }
+  } catch (error: any) {
+    return {
+      ok: false,
+      value: stored,
+      encrypted: true,
+      error: error?.message || String(error)
+    }
   }
 }
 

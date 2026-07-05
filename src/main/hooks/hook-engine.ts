@@ -253,12 +253,16 @@ interface HookExecutionOutcome {
 }
 
 async function executeHook(hook: ResolvedHook, invocation: HookInvocation): Promise<HookExecutionOutcome> {
-  const result = await withTimeout(
-    Promise.resolve(hook.run(invocation)),
-    hook.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS,
-    `${hook.phase} hook timed out`
-  )
-  return result ? { result } : {}
+  try {
+    const result = await withTimeout(
+      Promise.resolve().then(() => hook.run(invocation)),
+      hook.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS,
+      `${hook.phase} hook timed out`
+    )
+    return result ? { result } : {}
+  } catch (error) {
+    return { warning: `${hook.phase} hook failed: ${errorMessage(error)}` }
+  }
 }
 
 function errorMessage(error: unknown): string {

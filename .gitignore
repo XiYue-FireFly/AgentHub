@@ -36,9 +36,6 @@ COLLAB.md
 output/
 test-results/
 
-# Local iteration/reference documents
-docs/
-
 # 本地临时配置 / 截图 / 目标迭代笔记（不入库）
 config.json
 *.bak

@@ -1,81 +1,61 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Icon, IC, AgentMark } from '../glass/ui'
-import { BindingDef, ProviderDef, TaskItem } from '../glass/meta'
+import { BindingDef, ProviderDef } from '../glass/meta'
 import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
-import { SettingsScreen } from '../screens/Settings'
 type MotionLevel = 'off' | 'subtle' | 'rich'
-// Phase 3.2 lazy loading: secondary heavy views loaded on demand
-const WorkflowsPanel = React.lazy(() => import('./WorkflowsPanel').then(m => ({ default: m.WorkflowsPanel })))
-import { TerminalPanel } from './TerminalPanel'
-import { TasksScreen } from '../screens/Tasks'
-import { SetupTab, summarizeAgentConnections } from '../glass/connection-status'
+import { summarizeAgentConnections } from '../glass/connection-status'
 import { tr } from '../glass/i18n'
 import { SessionSidebar } from './SessionSidebar'
-import { ThreadView } from './ThreadView'
-import { ComposerBar } from './ComposerBar'
-import { RunTimeline } from './RunTimeline'
-import { WriteWorkspace } from './WriteWorkspace'
-import { GitWorkbenchPanel } from './GitWorkbenchPanel'
+import { WorkbenchMainContent } from './WorkbenchMainContent'
+import { WorkbenchAnnouncementModal } from './WorkbenchAnnouncementModal'
+import { CreateWorkspaceDialog } from './CreateWorkspaceDialog'
+import { WorkbenchPanelContainers } from './WorkbenchPanelContainers'
 import { WorkspaceItem, AgentMap } from './types'
-import { CommandPalette, PaletteCommand } from './CommandPalette'
-import { ErrorBoundary } from '../ErrorBoundary'
-import { styledConfirm } from '../lib/confirm'
-import { GitBranchControl } from './GitBranchControl'
-import { FileTreePanel } from './FileTreePanel'
-import { SubagentDetailPanel } from './SubagentDetailPanel'
-import { SideConversationPanel } from './SideConversationPanel'
-import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
-import { localAgentLabel, localAgentOptions } from './localAgentOptions'
-import { isWorkbenchViewMode, type ViewMode } from './viewModes'
+import { CommandPalette } from './CommandPalette'
+import { NativeTitlebar } from './NativeTitlebar'
+import { clampInspectorWidth } from './WorkbenchPanels'
+import { localAgentOptions } from './localAgentOptions'
 import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
-import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides, sanitizeCustomSchedule } from './customSchedule'
-import { defaultDialogPath, readAppearanceLocal, rememberDialogPath } from '../appearance'
+import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides } from './customSchedule'
+import { readAppearanceLocal } from '../appearance'
+import { styledConfirm } from '../lib/confirm'
+import {
+  findSddPlanTodosForRuntimeEvent,
+  getSddPlanDispatchGitBaseline,
+  isSddPlanTodo,
+  persistSddPlanCompletedTurnGitEvidence,
+  persistSddPlanDispatch,
+  persistSddPlanTodoStatus
+} from '../sdd/sdd-trace-dispatch'
+import { mergeRuntimeEventLists, isBufferedRuntimeEvent, isTaskHistoryEvent, runtimeAgentStatusFromEvent, shouldFlushFirstStreamDelta } from './utils/eventUtils'
+import { parseSlashInput, parseLoopLimit, stripLoopFlags } from './utils/slashCommandUtils'
+import { selectableModelOptions, isSelectableModel, resolveModelCommand, reasoningFromCommand, reasoningLabel, type WorkbenchThinking } from './utils/modelUtils'
+import { deriveTaskItems, type RuntimeTaskEventsByThread } from './utils/taskItems'
+import { approvalItemFromRuntimeEvent } from './utils/approvalEvents'
+import { watchTerminalRun } from './utils/terminalRunWatcher'
+import { buildPaletteCommands, resolvePaletteExtraAction } from './utils/paletteCommands'
+import { resolveShortcutCommandAction } from './utils/shortcutCommands'
+import { resolveWorkbenchMenuCommand } from './utils/menuCommands'
+import { resolveDispatchRequest } from './utils/dispatchRequest'
+import { resolveWorkbenchRoutingSelectionPatch, type WorkbenchRoutingSelectionPatch } from './state/routingSelectionState'
+import {
+  INSPECTOR_WIDTH_STORE_KEY,
+  useWorkbenchUiStore,
+  type WorkbenchUiSettingsTabKey
+} from './state/ui-store'
 import {
   findKeyboardShortcutCommand,
   keyboardEventToShortcut,
   KEYBOARD_SHORTCUT_STORE_KEY,
-  KEYBOARD_SHORTCUT_COMMANDS,
   KEYBOARD_SHORTCUTS_CHANGED,
   KeyboardShortcutsConfigV1,
-  resolveKeyboardShortcutBindings,
-  shortcutDisplay
+  normalizeKeyboardShortcuts,
+  resolveKeyboardShortcutBindings
 } from '../keyboard-shortcuts'
 
-type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage' | 'agentLoop' | 'requirements'
-type RightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | 'files' | 'side-chat' | null
-type ThinkingLevelChoice = 'low' | 'medium' | 'high' | 'xhigh'
-type WorkbenchThinking = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
-
-const AGENT_SLOT_STORE_KEY = 'agenthub.workbench.agentSlots.v1'
-const INSPECTOR_WIDTH_STORE_KEY = 'agenthub.workbench.inspectorWidth.v1'
-const LAST_VIEW_STORE_KEY = 'agenthub.workbench.lastView.v1'
 const LAST_THREAD_STORE_KEY = 'agenthub.workbench.lastThread.v1'
 const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
 const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
 const SCHEDULE_OVERRIDES_STORE_KEY = 'agenthub.workbench.scheduleOverrides.v1'
-const ANNOUNCEMENT_STORE_KEY = 'agenthub.workbench.announcement.v0.5.4'
-const DEFAULT_INSPECTOR_WIDTH = 460
-const MIN_INSPECTOR_WIDTH = 340
-const MAX_INSPECTOR_WIDTH = 760
-
-const MAX_EVENTS = 5000
-
-function mergeRuntimeEventLists(base: RuntimeEvent[], incoming: RuntimeEvent[]): RuntimeEvent[] {
-  if (incoming.length === 0) return base
-  const seen = new Set(base.map(event => event.id || `${event.threadId}:${event.seq}`))
-  const additions = incoming.filter(event => {
-    const key = event.id || `${event.threadId}:${event.seq}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-  if (additions.length === 0) return base
-  const last = base[base.length - 1]
-  const ordered = !last || additions.every(event => event.seq > last.seq)
-  const merged = ordered ? [...base, ...additions] : [...base, ...additions].sort((a, b) => a.seq - b.seq)
-  if (merged.length > MAX_EVENTS) return merged.slice(merged.length - MAX_EVENTS)
-  return merged
-}
 
 interface WorkbenchLayoutProps {
   hubRunning: boolean
@@ -84,13 +64,6 @@ interface WorkbenchLayoutProps {
   providers: ProviderDef[]
   bindings: BindingDef[]
   fallbackChain: string[]
-  tasks: TaskItem[]
-  approvals: ApprovalItem[]
-  runtimeRefreshNonce?: number
-  onApprovalDecide: (item: ApprovalItem, approved: boolean, remember: boolean) => void
-  onCancelTask: (id: string) => void
-  onDeleteTask: (id: string) => void
-  onClearCompletedTasks: () => void
   providerActions: {
     onSetEnabled: (id: string, enabled: boolean) => void
     onSetKey: (id: string, key: string) => void
@@ -101,17 +74,33 @@ interface WorkbenchLayoutProps {
     onDeleteProvider: (id: string) => void
     onReorderProvidersForClaude: (orderedIds: string[]) => void
   }
+  configLoadError?: string | null
+  onRuntimeAgentStatus?: (agentId: string, status: 'busy' | 'idle', runKey: string) => void
   motion: MotionLevel
   setMotion: (m: MotionLevel) => void
 }
 
 export function WorkbenchLayout(props: WorkbenchLayoutProps) {
-  const [view, setViewState] = useState<ViewMode>('chat')
-  const [settingsTab, setSettingsTab] = useState<SettingsTabKey>('providers')
+  const view = useWorkbenchUiStore(state => state.view)
+  const setView = useWorkbenchUiStore(state => state.setView)
+  const applyStartupView = useWorkbenchUiStore(state => state.applyStartupView)
+  const settingsTab = useWorkbenchUiStore(state => state.settingsTab)
+  const setSettingsTab = useWorkbenchUiStore(state => state.setSettingsTab)
+  const rightPanel = useWorkbenchUiStore(state => state.rightPanel)
+  const setRightPanel = useWorkbenchUiStore(state => state.setRightPanel)
+  const inspectorWidth = useWorkbenchUiStore(state => state.inspectorWidth)
+  const setInspectorWidth = useWorkbenchUiStore(state => state.setInspectorWidth)
+  const hydrateInspectorWidth = useWorkbenchUiStore(state => state.hydrateInspectorWidth)
+  const announcementOpen = useWorkbenchUiStore(state => state.announcementOpen)
+  const closeAnnouncement = useWorkbenchUiStore(state => state.closeAnnouncement)
+  const commandPaletteOpen = useWorkbenchUiStore(state => state.commandPaletteOpen)
+  const setCommandPaletteOpen = useWorkbenchUiStore(state => state.setCommandPaletteOpen)
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot>({ threads: [], turns: [], runs: [], activeThreadId: null })
   const [selectedThreadId, setSelectedThreadIdState] = useState<string | null>(null)
   const [allThreads, setAllThreads] = useState<WorkbenchThread[]>([])
   const [events, setEvents] = useState<RuntimeEvent[]>([])
+  const [taskEventsByThread, setTaskEventsByThread] = useState<RuntimeTaskEventsByThread>({})
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([])
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [pendingActiveThreadId, setPendingActiveThreadId] = useState<string | null>(null)
@@ -123,6 +112,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [schedules, setSchedules] = useState<SchedulePreview[]>([])
   const [activeGoal, setActiveGoal] = useState<WorkbenchGoal | null>(null)
   const [threadTodos, setThreadTodosState] = useState<ThreadTodo[]>([])
+  const [dispatchingTodoId, setDispatchingTodoId] = useState<string | null>(null)
   const [customSchedule, setCustomScheduleState] = useState<SchedulePreview>(() => defaultCustomSchedule())
   const [smartSchedule, setSmartScheduleState] = useState<SchedulePreview>(() => defaultSmartFiveRoleSchedule())
   const [scheduleOverrides, setScheduleOverridesState] = useState<Partial<Record<DispatchPreset, SchedulePreview>>>({})
@@ -130,22 +120,14 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [sending, setSending] = useState(false)
   const [search, setSearch] = useState('')
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
-  const [projectDraft, setProjectDraft] = useState({ name: '', rootPath: '' })
-  const [projectError, setProjectError] = useState<string | null>(null)
-  const [rightPanel, setRightPanel] = useState<RightPanel>(null)
   const [selectedAgentDetail, setSelectedAgentDetail] = useState<{ agentId: string; turnId: string } | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
 
   useEffect(() => { setSendError(null) }, [view])
-  const [_agentSlots, setAgentSlots] = useState<string[]>([])
-  const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH)
   const [viewportWidth, setViewportWidth] = useState(typeof window === 'undefined' ? 1280 : window.innerWidth)
   const [terminalRuns, setTerminalRuns] = useState<TerminalRun[]>([])
   const [pendingComposerAttachments, setPendingComposerAttachments] = useState<WorkbenchAttachment[]>([])
   const [pendingBrowserUrl, setPendingBrowserUrl] = useState<string | null>(null)
-  const [announcementOpen, setAnnouncementOpen] = useState(() => {
-    try { return localStorage.getItem(ANNOUNCEMENT_STORE_KEY) !== 'seen' } catch { return true }
-  })
   const [keyboardShortcuts, setKeyboardShortcuts] = useState<KeyboardShortcutsConfigV1>({ bindings: {} })
   const snapshotRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingRuntimeEvents = useRef<RuntimeEvent[]>([])
@@ -156,10 +138,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const runtimeEventFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const threadScrollRef = useRef<HTMLElement | null>(null)
   const shouldStickToBottom = useRef(true)
-  const startupViewApplied = useRef(false)
+  const fullyLoadedTaskThreadIds = useRef<Set<string>>(new Set())
   const smartScheduleStoreLoaded = useRef(false)
   const userExplicitAgentRef = useRef<string | null>(null)  // 跟踪用户明确选择的 agent
   const selectedThreadIdRef = useRef<string | null>(null)
+  const threadTodosRef = useRef<ThreadTodo[]>([])
   const terminalWatchAbortRef = useRef<AbortController | null>(null)
 
   // Cleanup terminal watch on unmount
@@ -176,15 +159,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     } catch { /* noop */ }
   }, [])
 
-  const rememberWorkspaceId = useCallback((id: string | null) => {
-    rememberWorkbenchWorkspaceId(id)
+  const setThreadTodos = useCallback((todos: ThreadTodo[]) => {
+    threadTodosRef.current = todos
+    setThreadTodosState(todos)
   }, [])
 
-  const setView = useCallback((next: ViewMode) => {
-    setViewState(next)
-    if (startupViewApplied.current) {
-      try { localStorage.setItem(LAST_VIEW_STORE_KEY, next) } catch { /* noop */ }
-    }
+  const rememberWorkspaceId = useCallback((id: string | null) => {
+    rememberWorkbenchWorkspaceId(id)
   }, [])
 
   const setCustomSchedule = useCallback((schedule: SchedulePreview) => {
@@ -223,16 +204,59 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   const refreshThreadTodos = useCallback(async (threadId = activeThreadId) => {
     if (!threadId) {
-      setThreadTodosState([])
+      if (!selectedThreadIdRef.current) setThreadTodosState([])
+      if (!selectedThreadIdRef.current) threadTodosRef.current = []
       return
     }
     const todos = await window.electronAPI.todos.list(threadId)
-    setThreadTodosState(todos)
+    if (selectedThreadIdRef.current === threadId) {
+      threadTodosRef.current = todos
+      setThreadTodosState(todos)
+    }
   }, [activeThreadId])
+
+  const syncSddPlanTodoForRuntimeEvent = useCallback(async (event: RuntimeEvent, seedTodos?: ThreadTodo[]) => {
+    const persistedTodos = await window.electronAPI.todos.list(event.threadId).catch(() => [])
+    const seedOnlyTodos = (seedTodos ?? []).filter(seed => !persistedTodos.some(todo => todo.id === seed.id))
+    const todosForEventThread = [...persistedTodos, ...seedOnlyTodos]
+    const sddTodoStatusUpdates = findSddPlanTodosForRuntimeEvent(todosForEventThread, event)
+    for (const { todo, status } of sddTodoStatusUpdates) {
+      const nextSource = { ...(todo.source || { kind: 'manual' as const }), threadId: event.threadId }
+      const nextTodo = { ...todo, status, source: nextSource }
+      await window.electronAPI.todos.upsert({
+        threadId: event.threadId,
+        id: todo.id,
+        content: todo.content,
+        status,
+        source: nextSource
+      })
+      await persistSddPlanTodoStatus(nextTodo, status)
+      if (status === 'completed') {
+        await persistSddPlanCompletedTurnGitEvidence({ workspaceId, todo: nextTodo, event })
+      }
+    }
+    if (sddTodoStatusUpdates.length > 0) {
+      await refreshThreadTodos(event.threadId)
+    }
+  }, [refreshThreadTodos, workspaceId])
 
   const appendRuntimeEvents = useCallback((nextEvents: RuntimeEvent[]) => {
     if (nextEvents.length === 0) return
     setEvents(prev => mergeRuntimeEventLists(prev, nextEvents))
+  }, [])
+
+  const appendTaskRuntimeEvents = useCallback((threadId: string, nextEvents: RuntimeEvent[]) => {
+    if (nextEvents.length === 0) return
+    setTaskEventsByThread(prev => ({
+      ...prev,
+      [threadId]: mergeRuntimeEventLists(prev[threadId] || [], nextEvents)
+    }))
+  }, [])
+
+  const appendApprovalFromRuntimeEvent = useCallback((event: RuntimeEvent) => {
+    const item = approvalItemFromRuntimeEvent(event)
+    if (!item) return
+    setApprovals(prev => prev.some(existing => existing.id === item.id) ? prev : [...prev, item])
   }, [])
 
   const flushRuntimeEvents = useCallback(() => {
@@ -330,19 +354,25 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       loadingThreadIdRef.current = nextVisibleThreadId
       const loadedEvents = await window.electronAPI.runtime.eventsSince(nextVisibleThreadId, 0)
       if (loadWorkbenchGenRef.current !== gen) return
+      const pendingForVisible = pendingRuntimeEvents.current.filter(event => event.threadId === nextVisibleThreadId)
+      fullyLoadedTaskThreadIds.current.add(nextVisibleThreadId)
+      setTaskEventsByThread(prev => ({
+        ...prev,
+        [nextVisibleThreadId]: mergeRuntimeEventLists(loadedEvents, pendingForVisible)
+      }))
       setEvents(prev => mergeRuntimeEventLists(
         loadedEvents,
         [
           ...prev.filter(event => event.threadId === nextVisibleThreadId),
-          ...pendingRuntimeEvents.current.filter(event => event.threadId === nextVisibleThreadId)
+          ...pendingForVisible
         ]
       ))
-      setThreadTodosState(await window.electronAPI.todos.list(nextVisibleThreadId).catch(() => []))
+      setThreadTodos(await window.electronAPI.todos.list(nextVisibleThreadId).catch(() => []))
       if (loadWorkbenchGenRef.current !== gen) return
       if (loadingThreadIdRef.current === nextVisibleThreadId) loadingThreadIdRef.current = null
     } else {
       setEvents([])
-      setThreadTodosState([])
+      setThreadTodos([])
       loadingThreadIdRef.current = null
       if (nextWorkspaceId === undefined && wsList.length === 0) {
         window.setTimeout(() => {
@@ -357,28 +387,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [])
 
   useEffect(() => {
-    if (startupViewApplied.current) return
-    startupViewApplied.current = true
-    const target = readAppearanceLocal().startupOpenTarget
-    if (target === 'settings') {
-      setSettingsTab('appearance')
-      setView('settings')
-      return
-    }
-    if (target === 'last') {
-      let lastView: ViewMode = 'chat'
-      try {
-        const saved = localStorage.getItem(LAST_VIEW_STORE_KEY)
-        if (isWorkbenchViewMode(saved)) lastView = saved
-      } catch { /* noop */ }
-      setView(lastView)
-    }
-  }, [setView])
-
-  useEffect(() => {
-    if (props.runtimeRefreshNonce === undefined) return
-    loadWorkbench(workspaceId).catch(() => {})
-  }, [props.runtimeRefreshNonce, loadWorkbench, workspaceId])
+    applyStartupView(readAppearanceLocal().startupOpenTarget)
+  }, [applyStartupView])
 
   useEffect(() => {
     // LOW-16: rAF throttle to avoid excessive re-renders during resize
@@ -395,9 +405,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [])
 
   useEffect(() => {
-    window.electronAPI.store.get(AGENT_SLOT_STORE_KEY)
-      .then(value => { if (Array.isArray(value)) setAgentSlots(value.filter(Boolean).slice(0, 3)) })
-      .catch(() => {})
     window.electronAPI.store.get(CUSTOM_SCHEDULE_STORE_KEY)
       .then(value => { if (isStoredSchedule(value, 'custom')) setCustomScheduleState(value) })
       .catch(() => {})
@@ -411,26 +418,31 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       .then(value => setScheduleOverridesState(normalizeStoredScheduleOverrides(value)))
       .catch(() => {})
     window.electronAPI.store.get(INSPECTOR_WIDTH_STORE_KEY)
-      .then(value => {
-        if (typeof value === 'number' && Number.isFinite(value)) {
-          setInspectorWidth(clampInspectorWidth(value))
-        }
-      })
+      .then(value => hydrateInspectorWidth(value))
       .catch(() => {})
     window.electronAPI.terminal.history().then(setTerminalRuns).catch(() => {})
-  }, [])
+  }, [hydrateInspectorWidth])
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.runtime.onEvent(event => {
       const isPendingThreadEvent = pendingActiveThreadId !== null && event.threadId === loadingThreadIdRef.current
       const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current
+      appendApprovalFromRuntimeEvent(event)
+      const runtimeAgentStatus = runtimeAgentStatusFromEvent(event)
+      if (runtimeAgentStatus) {
+        props.onRuntimeAgentStatus?.(runtimeAgentStatus.agentId, runtimeAgentStatus.status, runtimeAgentStatus.runKey)
+      }
+
+      void syncSddPlanTodoForRuntimeEvent(event).catch(() => {})
 
       if (isPendingThreadEvent) {
+        appendTaskRuntimeEvents(event.threadId, [event])
         pendingRuntimeEvents.current.push(event)
         return
       }
 
       if (isVisibleThreadEvent) {
+        appendTaskRuntimeEvents(event.threadId, [event])
         if (isBufferedRuntimeEvent(event)) enqueueRuntimeEvent(event)
         else {
           flushRuntimeEvents()
@@ -439,6 +451,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         if (event.kind === 'orchestrate' && event.payload?.kind === 'orchestrate:plan') {
           void refreshThreadTodos(event.threadId)
         }
+      }
+
+      if (!isVisibleThreadEvent && isTaskHistoryEvent(event)) {
+        appendTaskRuntimeEvents(event.threadId, [event])
       }
 
       if (pendingActiveThreadId) {
@@ -470,7 +486,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       clearRuntimeEventBuffer()
     }
-  }, [activeThreadId, pendingActiveThreadId, workspaceId, refreshThreadTodos, appendRuntimeEvents, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+  }, [activeThreadId, pendingActiveThreadId, workspaceId, props.onRuntimeAgentStatus, syncSddPlanTodoForRuntimeEvent, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+
+  const onApprovalDecide = useCallback((item: ApprovalItem, approved: boolean, remember: boolean) => {
+    if (remember) {
+      window.electronAPI.agentic.setApprovalOverride(item.agentId, item.tool, approved ? 'allow' : 'deny').catch(() => {})
+    }
+    window.electronAPI.agentic.resolveApproval(item.id, approved).catch(() => {})
+    setApprovals(prev => prev.filter(existing => existing.id !== item.id))
+  }, [])
 
   useEffect(() => {
     refreshThreadTodos().catch(() => {})
@@ -485,9 +509,21 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     () => activeThread ? snapshot.turns.filter(t => t.threadId === activeThread.id) : [],
     [snapshot.turns, activeThread]
   )
+  const cancelLatest = useCallback(async () => {
+    const running = [...activeTurns].reverse().find(t => t.status === 'running')
+    if (running) {
+      await window.electronAPI.turns.cancel(running.id)
+      await loadWorkbench(workspaceId)
+    }
+  }, [activeTurns, loadWorkbench, workspaceId])
+
   const activeEvents = useMemo(
     () => visibleThreadId === activeThreadId ? events : events.filter(event => event.threadId === visibleThreadId),
     [events, visibleThreadId, activeThreadId]
+  )
+  const runtimeTasks = useMemo(
+    () => deriveTaskItems(snapshot, taskEventsByThread),
+    [snapshot, taskEventsByThread]
   )
 
   const connectionSummary = useMemo(
@@ -515,14 +551,16 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     return () => window.clearTimeout(timer)
   }, [props.providers.length, props.providerActions])
 
+  const applyRoutingSelectionPatch = useCallback((patch: WorkbenchRoutingSelectionPatch) => {
+    if (patch.targetAgent !== undefined) setTargetAgent(patch.targetAgent)
+    if (patch.modelSelection !== undefined) setModelSelection(patch.modelSelection)
+    if (patch.mode !== undefined) setMode(patch.mode)
+  }, [])
+
   const selectTargetAgent = useCallback((agentId: string | null) => {
     userExplicitAgentRef.current = agentId  // 记录用户明确选择
-    setTargetAgent(agentId)
-    if (agentId) {
-      setModelSelection(null)
-      setMode('auto')
-    }
-  }, [])
+    applyRoutingSelectionPatch(resolveWorkbenchRoutingSelectionPatch({ type: 'select-agent', agentId }))
+  }, [applyRoutingSelectionPatch])
 
   useEffect(() => {
     if (!smartScheduleStoreLoaded.current) return
@@ -547,17 +585,59 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     return scheduleOverrides[preset]
   }, [customSchedule, smartSchedule, scheduleOverrides])
 
-  const openSetup = useCallback((tab: SettingsTabKey = 'providers') => {
+  const openSetup = useCallback((tab: WorkbenchUiSettingsTabKey = 'providers') => {
     setSettingsTab(tab)
     setView('settings')
   }, [setView])
 
-  const closeAnnouncement = () => {
-    try { localStorage.setItem(ANNOUNCEMENT_STORE_KEY, 'seen') } catch { /* noop */ }
-    setAnnouncementOpen(false)
-  }
+  const ensureTaskEventsLoaded = useCallback(() => {
+    const unloadedThreadIds = snapshot.threads
+      .map(thread => thread.id)
+      .filter(threadId => !fullyLoadedTaskThreadIds.current.has(threadId))
+    if (unloadedThreadIds.length === 0) return
+    Promise.all(unloadedThreadIds.map(async threadId => {
+      const loaded = await window.electronAPI.runtime.eventsSince(threadId, 0).catch(() => [])
+      return { threadId, loaded }
+    })).then(results => {
+      setTaskEventsByThread(prev => {
+        const next = { ...prev }
+        for (const { threadId, loaded } of results) {
+          fullyLoadedTaskThreadIds.current.add(threadId)
+          next[threadId] = mergeRuntimeEventLists(next[threadId] || [], loaded)
+        }
+        return next
+      })
+    }).catch(() => {})
+  }, [snapshot.threads])
 
-  const openAnnouncementSetup = (tab: SettingsTabKey) => {
+  useEffect(() => {
+    if (view === 'tasks') ensureTaskEventsLoaded()
+  }, [view, ensureTaskEventsLoaded])
+
+  const cancelRuntimeTask = useCallback(async (id: string) => {
+    await window.electronAPI.turns.cancel(id).catch(() => false)
+    loadWorkbench(workspaceId).catch(() => {})
+  }, [loadWorkbench, workspaceId])
+
+  const deleteRuntimeTask = useCallback(async (id: string) => {
+    const ok = await styledConfirm({ message: tr('删除这条任务历史？对应的运行详情也会从当前会话记录中移除。', 'Delete this task history? Its run details will also be removed from the current conversation.'), danger: true })
+    if (!ok) return
+    await window.electronAPI.tasks.delete(id).catch(() => false)
+    fullyLoadedTaskThreadIds.current.clear()
+    setTaskEventsByThread({})
+    loadWorkbench(workspaceId).catch(() => {})
+  }, [loadWorkbench, workspaceId])
+
+  const clearCompletedRuntimeTasks = useCallback(async () => {
+    const ok = await styledConfirm({ message: tr('清理所有已结束的任务历史？对应的运行详情也会从当前会话记录中移除。', 'Clear all finished task history? Matching run details will also be removed from the current conversation.'), danger: true })
+    if (!ok) return
+    await window.electronAPI.tasks.clearCompleted().catch(() => false)
+    fullyLoadedTaskThreadIds.current.clear()
+    setTaskEventsByThread({})
+    loadWorkbench(workspaceId).catch(() => {})
+  }, [loadWorkbench, workspaceId])
+
+  const openAnnouncementSetup = (tab: WorkbenchUiSettingsTabKey) => {
     closeAnnouncement()
     openSetup(tab)
   }
@@ -565,6 +645,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const selectWorkspace = async (id: string | null) => {
     setWorkspaceId(id)
     rememberWorkspaceId(id)
+    fullyLoadedTaskThreadIds.current.clear()
+    setTaskEventsByThread({})
     await window.electronAPI.workspaces.setActive(id).catch(() => null)
     await loadWorkbench(id)
     setView('chat')
@@ -599,6 +681,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (selectThreadGenRef.current !== gen) return // stale — newer call before final writes
       setSnapshot({ ...snap, activeThreadId: selected })
       setAllThreads(allSnap.threads)
+      if (selected) fullyLoadedTaskThreadIds.current.add(selected)
+      if (selected) {
+        setTaskEventsByThread(prev => ({
+          ...prev,
+          [selected]: mergeRuntimeEventLists(loadedEvents, pendingForSelected)
+        }))
+      }
       setEvents(prev => selected ? mergeRuntimeEventLists(
         loadedEvents,
         [
@@ -609,7 +698,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setWorkspaceId(threadWorkspaceId)
       rememberWorkspaceId(threadWorkspaceId)
       setSelectedThreadId(selected)
-      setThreadTodosState(todos)
+      setThreadTodos(todos)
       setActiveGoal(goal)
       shouldStickToBottom.current = true
       setView('chat')
@@ -630,6 +719,9 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       status,
       source: todo.source
     })
+    if (isSddPlanTodo(todo)) {
+      await persistSddPlanTodoStatus(todo, status)
+    }
     await refreshThreadTodos(activeThreadId)
   }, [activeThreadId, refreshThreadTodos])
 
@@ -665,8 +757,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [])
 
   const openCreateProject = useCallback(() => {
-    setProjectError(null)
-    setProjectDraft({ name: '', rootPath: '' })
     setProjectDialogOpen(true)
   }, [])
 
@@ -684,20 +774,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   useEffect(() => {
     return window.electronAPI.app.onMenuCommand?.((link) => {
-      const action = link?.action
-      const params = link?.params || {}
-      if (action === 'new-thread') void createThread()
-      else if (action === 'open-project') openCreateProject()
-      else if (action === 'view') {
-        if (isWorkbenchViewMode(params.view)) setView(params.view)
-      } else if (action === 'open-panel') {
-        const panel = params.panel
-        if (panel === 'runs' || panel === 'git' || panel === 'worktrees' || panel === 'browser') setRightPanel(panel)
-      } else if (action === 'setup') {
-        openSetup(params.tab as SettingsTabKey)
-      }
+      const action = resolveWorkbenchMenuCommand(link)
+      if (!action) return
+      if (action.type === 'new-thread') void createThread()
+      else if (action.type === 'open-project') openCreateProject()
+      else if (action.type === 'set-view') setView(action.view)
+      else if (action.type === 'set-panel') setRightPanel(action.panel)
+      else if (action.type === 'setup') openSetup(action.tab as WorkbenchUiSettingsTabKey)
     })
-  }, [createThread, openCreateProject, setView, openSetup])
+  }, [createThread, openCreateProject, setView, setRightPanel, openSetup])
 
   const shortcutBindings = useMemo(() => resolveKeyboardShortcutBindings(keyboardShortcuts), [keyboardShortcuts])
 
@@ -705,7 +790,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     let alive = true
     const load = () => {
       window.electronAPI.store.get(KEYBOARD_SHORTCUT_STORE_KEY)
-        .then(value => { if (alive) setKeyboardShortcuts(value || { bindings: {} }) })
+        .then(value => { if (alive) setKeyboardShortcuts(normalizeKeyboardShortcuts(value && typeof value === 'object' ? value : null)) })
         .catch(() => { if (alive) setKeyboardShortcuts({ bindings: {} }) })
     }
     load()
@@ -717,82 +802,37 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
   }, [])
 
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
-
   const runShortcutCommand = useCallback((commandId: string) => {
-    if (commandId === 'command-palette') { setCommandPaletteOpen(prev => !prev); return }
-    if (commandId === 'focus-composer') { document.querySelector<HTMLTextAreaElement>('.wb-composer-input')?.focus(); return }
-    if (commandId === 'new-chat') void createThread()
-    else if (commandId === 'choose-workspace') openCreateProject()
-    else if (commandId === 'view-chat') setView('chat')
-    else if (commandId === 'view-write') setView('write')
-    else if (commandId === 'view-tasks') setView('tasks')
-    else if (commandId === 'view-settings') setView('settings')
-    else if (commandId === 'panel-runs') setRightPanel('runs')
-    else if (commandId === 'panel-git') setRightPanel('git')
-    else if (commandId === 'panel-browser') setRightPanel('browser')
-    else if (commandId === 'panel-terminal') setRightPanel('terminal')
-    else if (commandId === 'settings-shortcuts') openSetup('shortcuts')
-    else if (commandId === 'settings-mcp') openSetup('mcp')
-    else if (commandId === 'open-workflows') setView('workflows')
-  }, [createThread, openCreateProject, setView, openSetup])
+    const action = resolveShortcutCommandAction(commandId)
+    if (!action) return
+    if (action.type === 'toggle-command-palette') setCommandPaletteOpen(prev => !prev)
+    else if (action.type === 'focus-composer') document.querySelector<HTMLTextAreaElement>('.wb-composer-input')?.focus()
+    else if (action.type === 'stop-task') void cancelLatest()
+    else if (action.type === 'new-chat') void createThread()
+    else if (action.type === 'choose-workspace') openCreateProject()
+    else if (action.type === 'set-view') setView(action.view)
+    else if (action.type === 'set-panel') setRightPanel(action.panel)
+    else if (action.type === 'setup') openSetup(action.tab as WorkbenchUiSettingsTabKey)
+  }, [cancelLatest, createThread, openCreateProject, setView, openSetup])
 
-  const paletteCommands: PaletteCommand[] = useMemo(() => {
-    const cmds = KEYBOARD_SHORTCUT_COMMANDS as readonly { id: string; labelZh: string; labelEn: string; descriptionZh: string; descriptionEn: string; defaultBindings: readonly string[] }[]
-    const fromShortcuts: PaletteCommand[] = cmds.map(cmd => ({
-      id: cmd.id,
-      label: cmd.labelEn || cmd.id,
-      labelZh: cmd.labelZh,
-      labelEn: cmd.labelEn,
-      descriptionZh: cmd.descriptionZh,
-      descriptionEn: cmd.descriptionEn,
-      category: 'keyboard'
-    }))
-    const extra: PaletteCommand[] = [
-      { id: 'open-memory', label: 'Open Memory', labelZh: '打开记忆', category: 'navigation' },
-      { id: 'open-skills', label: 'Open Skills', labelZh: '打开技能', category: 'navigation' },
-      { id: 'open-prompts', label: 'Open Prompts', labelZh: '打开提示词库', category: 'navigation' },
-      { id: 'open-plugins', label: 'Open Plugins', labelZh: '打开插件管理', category: 'navigation' },
-      { id: 'open-usage', label: 'Open Usage Stats', labelZh: '打开用量统计', category: 'navigation' },
-      { id: 'open-models', label: 'Open Models', labelZh: '打开模型列表', category: 'navigation' },
-      { id: 'open-diagnostics', label: 'Run Diagnostics', labelZh: '运行诊断', category: 'system' },
-      { id: 'open-backup', label: 'Create Backup', labelZh: '创建备份', category: 'system' },
-      { id: 'seed-workflows', label: 'Seed Default Workflows', labelZh: '加载默认工作流', category: 'system' },
-      // Agent switching commands
-      ...localAgentOptions(localAgents).map(id => ({
-        id: `switch-agent:${id}`,
-        label: `Switch to ${id}`,
-        labelZh: `切换到 ${id}`,
-        category: 'agent' as const
-      }))
-    ]
-    return [...fromShortcuts, ...extra]
-  }, [localAgents])
+  const paletteCommands = useMemo(() => buildPaletteCommands(localAgents), [localAgents])
 
   const executePaletteCommand = useCallback((id: string) => {
-    // Try shortcut handler first
-    runShortcutCommand(id)
-    // Handle extra commands
-    if (id === 'open-memory') openSetup('memory')
-    else if (id === 'open-skills') openSetup('skills')
-    else if (id === 'open-plugins') openSetup('plugins')
-    else if (id === 'open-usage') openSetup('usage')
-    else if (id === 'open-models') openSetup('models')
-    else if (id === 'open-prompts') openSetup('shortcuts') // prompts go in shortcuts for now
-    else if (id === 'open-diagnostics') openSetup('appearance')
-    else if (id === 'open-backup') openSetup('appearance')
-    else if (id === 'seed-workflows') {
+    const extraAction = resolvePaletteExtraAction(id, localAgents)
+    if (extraAction?.type === 'setup') {
+      openSetup(extraAction.tab as WorkbenchUiSettingsTabKey)
+      return
+    }
+    if (extraAction?.type === 'seed-workflows') {
       window.electronAPI.workflows.seed().catch(() => {})
+      return
     }
-    // Agent switching
-    else if (id.startsWith('switch-agent:')) {
-      const agentId = id.split(':')[1]
-      const usable = localAgentOptions(localAgents)
-      if (agentId && usable.includes(agentId)) {
-        setTargetAgent(agentId)
-        setView('chat')
-      }
+    if (extraAction?.type === 'switch-agent') {
+      setTargetAgent(extraAction.agentId)
+      setView('chat')
+      return
     }
+    runShortcutCommand(id)
   }, [runShortcutCommand, openSetup, localAgents, setTargetAgent, setView])
 
   useEffect(() => {
@@ -818,35 +858,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [shortcutBindings, runShortcutCommand])
 
-  const pickProjectFolder = async () => {
-    const picked = await window.electronAPI.app.pickFolder({ defaultPath: defaultDialogPath('folder', activeWorkspace?.rootPath) })
-    if (!picked) return
-    rememberDialogPath('folder', picked)
-    const inferred = picked.split(/[\\/]/).filter(Boolean).at(-1) || tr('新工作目录', 'New folder')
-    setProjectDraft(draft => ({ name: draft.name || inferred, rootPath: picked }))
-  }
-
-  const submitProject = async () => {
-    const name = projectDraft.name.trim()
-    const rootPath = projectDraft.rootPath.trim()
-    if (!name || !rootPath) {
-      setProjectError(tr('请选择本地目录并填写名称。', 'Choose a local folder and enter a name.'))
-      return
-    }
-    try {
-      setProjectError(null)
-      const ws = await window.electronAPI.workspaces.create({ name, rootPath })
-      await window.electronAPI.workspaces.setActive(ws.id)
-      setWorkspaceId(ws.id)
-      rememberWorkspaceId(ws.id)
-      setProjectDialogOpen(false)
-      await loadWorkbench(ws.id)
-      const thread = await window.electronAPI.threads.create({ workspaceId: ws.id, title: tr('新对话', 'New chat') })
-      await selectThread(thread.id)
-    } catch (e: any) {
-      setProjectError(e?.message || tr('添加工作目录失败。', 'Failed to add folder.'))
-    }
-  }
+  const handleProjectCreated = useCallback(async (ws: Pick<WorkspaceItem, 'id' | 'name' | 'rootPath'>) => {
+    await window.electronAPI.workspaces.setActive(ws.id)
+    setWorkspaceId(ws.id)
+    rememberWorkspaceId(ws.id)
+    setProjectDialogOpen(false)
+    await loadWorkbench(ws.id)
+    const thread = await window.electronAPI.threads.create({ workspaceId: ws.id, title: tr('新对话', 'New chat') })
+    await selectThread(thread.id)
+  }, [loadWorkbench, rememberWorkspaceId, selectThread])
 
   const deleteThread = async (threadId: string) => {
     await window.electronAPI.threads.delete(threadId)
@@ -860,26 +880,19 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }
 
   const sendPrompt = async (prompt: string, attachments: WorkbenchAttachment[] = [], overrides: { targetAgent?: string | null; mode?: DispatchPreset; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null } = {}) => {
-    if (!prompt.trim() || sending) return
-    const requestedTargetAgent = overrides.targetAgent !== undefined ? overrides.targetAgent : targetAgent
-    const requestedModelSelection = requestedTargetAgent ? null : (overrides.modelSelection !== undefined ? overrides.modelSelection : modelSelection)
-    const selectedProviderDirect = !requestedTargetAgent && requestedModelSelection?.source === 'provider'
-    const selectedLocalDirect = !!requestedTargetAgent
-    const nextTargetAgent = selectedProviderDirect ? null : requestedTargetAgent
-    const nextMode = selectedProviderDirect || selectedLocalDirect ? 'auto' : (overrides.mode || mode)
-    const rawCustomSchedule = selectedProviderDirect || selectedLocalDirect
-      ? undefined
-      : (overrides.customSchedule || (!nextTargetAgent ? dispatchScheduleForMode(nextMode) : undefined))
+    if (!prompt.trim() || sending) return null
     const usableLocalAgents = localAgentOptions(localAgents)
-    const safeCustomSchedule = rawCustomSchedule ? sanitizeCustomSchedule(rawCustomSchedule, usableLocalAgents) : undefined
-    const scheduleUnavailable = safeCustomSchedule
-      ? !customScheduleHasRunnableSteps(safeCustomSchedule)
-      : nextMode === 'custom' || nextMode === 'firefly-custom'
-        ? usableLocalAgents.length === 0
-        : false
-    if (scheduleUnavailable && !nextTargetAgent && !selectedProviderDirect) {
+    const dispatchRequest = resolveDispatchRequest({
+      targetAgent,
+      modelSelection,
+      mode,
+      overrides,
+      usableLocalAgents,
+      scheduleForMode: dispatchScheduleForMode
+    })
+    if (dispatchRequest.scheduleUnavailable && !dispatchRequest.targetAgent && !dispatchRequest.selectedProviderDirect) {
       setSendError(tr('智能/自定义调度需要至少一个可用本地 Agent。请先在设置 > 路由里配置 CLI。', 'Smart and custom schedules need at least one usable local agent. Configure a CLI in Settings > Routing first.'))
-      return
+      return null
     }
     setSendError(null)
     setSending(true)
@@ -888,12 +901,12 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         threadId: activeThreadId,
         workspaceId: workspaceId ?? null,
         prompt,
-        mode: nextMode,
-        targetAgent: nextTargetAgent,
+        mode: dispatchRequest.mode,
+        targetAgent: dispatchRequest.targetAgent,
         thinking,
-        modelSelection: selectedLocalDirect ? undefined : requestedModelSelection || undefined,
+        modelSelection: dispatchRequest.modelSelection,
         attachments,
-        customSchedule: selectedProviderDirect || selectedLocalDirect ? undefined : safeCustomSchedule
+        customSchedule: dispatchRequest.customSchedule
       })
       const threadId = result?.thread?.id || activeThreadId
       if (threadId) {
@@ -901,20 +914,55 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         await selectThread(threadId)
       }
       else await loadWorkbench(workspaceId)
+      return result
     } catch (e: any) {
       setSendError(e?.message || tr('启动运行失败。', 'Failed to start the run.'))
+      return null
     } finally {
       setSending(false)
     }
   }
 
-  const cancelLatest = async () => {
-    const running = [...activeTurns].reverse().find(t => t.status === 'running')
-    if (running) {
-      await window.electronAPI.turns.cancel(running.id)
-      await loadWorkbench(workspaceId)
+  const dispatchThreadTodo = useCallback(async (todo: ThreadTodo) => {
+    if (!activeThreadId || sending || dispatchingTodoId) return
+    setDispatchingTodoId(todo.id)
+    try {
+      const gitBaseline = await getSddPlanDispatchGitBaseline(workspaceId, todo)
+      const result = await sendPrompt(todo.content, [], { targetAgent, mode: 'auto' })
+      const turnId = result?.turn?.id
+      if (!turnId) return
+      const nextSource = { ...(todo.source || { kind: 'manual' as const }), threadId: activeThreadId, ...gitBaseline, turnId }
+      const dispatchedTodo = { ...todo, status: 'in_progress' as const, source: nextSource }
+      await window.electronAPI.todos.upsert({
+        threadId: activeThreadId,
+        id: todo.id,
+        content: todo.content,
+        status: 'in_progress',
+        source: nextSource
+      })
+      if (isSddPlanTodo(dispatchedTodo)) {
+        await persistSddPlanDispatch(dispatchedTodo, turnId)
+        const latestSnapshot = await window.electronAPI.runtime.snapshot(workspaceId).catch(() => null)
+        const latestTurn = latestSnapshot?.turns.find(turn => turn.id === turnId && turn.threadId === activeThreadId)
+        if (latestTurn && (latestTurn.status === 'completed' || latestTurn.status === 'failed' || latestTurn.status === 'cancelled')) {
+          await syncSddPlanTodoForRuntimeEvent({
+            id: `turn-status-${turnId}`,
+            threadId: activeThreadId,
+            turnId,
+            seq: 0,
+            kind: 'turn:status',
+            payload: { status: latestTurn.status },
+            createdAt: Date.now()
+          } as RuntimeEvent, [dispatchedTodo])
+        }
+      }
+      await refreshThreadTodos(activeThreadId)
+    } catch (e: any) {
+      setSendError(e?.message || tr('派发 Todo 失败。', 'Failed to dispatch Todo.'))
+    } finally {
+      setDispatchingTodoId(null)
     }
-  }
+  }, [activeThreadId, dispatchingTodoId, refreshThreadTodos, sendPrompt, sending, syncSddPlanTodoForRuntimeEvent, targetAgent, workspaceId])
 
   const cancelAgent = async (turnId: string, agentId: string) => {
     await window.electronAPI.turns.cancelAgent(turnId, agentId).catch(() => false)
@@ -941,13 +989,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const workspaceName = activeWorkspace?.name || (workspaceId ? tr('工作目录', 'Working folder') : tr('未绑定工作目录', 'No folder bound'))
   const _currentSchedule = schedules.find(schedule => schedule.preset === mode)
   const usableAgentIds = localAgentOptions(localAgents)
-  const selectedAgentId = targetAgent && usableAgentIds.includes(targetAgent) ? targetAgent : null
-  const visibleAgentIds = selectedAgentId
-    ? [selectedAgentId, ...usableAgentIds.filter(id => id !== selectedAgentId)].slice(0, 3)
-    : usableAgentIds.slice(0, 3)
-  const _overflowAgentIds = usableAgentIds.filter(id => !visibleAgentIds.includes(id))
   const readyLocalAgents = usableAgentIds.length
-  const _selectedAgentName = selectedAgentId ? agentShortName(selectedAgentId) : null
 
   useEffect(() => {
     // 不要重置用户明确选择的 agent（即使是通过 HTTP provider 绑定的）
@@ -956,21 +998,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
   }, [targetAgent, usableAgentIds.join('|')])
 
-  const _persistAgentSlots = useCallback((slots: string[]) => {
-    const clean = normalizeAgentSlots(slots, usableAgentIds)
-    setAgentSlots(clean)
-    window.electronAPI.store.set(AGENT_SLOT_STORE_KEY, clean).catch(() => {})
-  }, [usableAgentIds.join('|')])
-
   const setInspectorWidthPersisted = useCallback((width: number) => {
     const next = clampInspectorWidth(width, viewportWidth)
-    setInspectorWidth(next)
+    setInspectorWidth(next, viewportWidth)
     window.electronAPI.store.set(INSPECTOR_WIDTH_STORE_KEY, next).catch(() => {})
-  }, [viewportWidth])
+  }, [setInspectorWidth, viewportWidth])
 
   const previewInspectorWidth = useCallback((width: number) => {
-    setInspectorWidth(clampInspectorWidth(width, viewportWidth))
-  }, [viewportWidth])
+    setInspectorWidth(width, viewportWidth)
+  }, [setInspectorWidth, viewportWidth])
 
   const runSlashCommand = useCallback(async (input: { text: string; command?: WorkbenchCommand | null }) => {
     const raw = input.text.trim()
@@ -1041,8 +1077,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         'Constraints: preserve user intent, avoid destructive actions without confirmation, and summarize each iteration briefly.',
         extra && currentGoal?.goal ? `\nExtra instructions:\n${extra}` : ''
       ].filter(Boolean).join('\n\n')
-      setMode('firefly-custom')
-      setTargetAgent(null)
+      applyRoutingSelectionPatch(resolveWorkbenchRoutingSelectionPatch({ type: 'run-loop-command' }))
       await sendPrompt(nextPrompt, [], { targetAgent: null, mode: 'firefly-custom', modelSelection: null, customSchedule: smartSchedule })
       return true
     }
@@ -1095,8 +1130,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
     if (command.action === 'use-schedule' && command.payload?.preset) {
       // 保留用户选择的 agent，不重置为 null
-      setModelSelection(null)
-      setMode(command.payload.preset as DispatchPreset)
+      applyRoutingSelectionPatch(resolveWorkbenchRoutingSelectionPatch({ type: 'select-schedule-command', preset: command.payload.preset as DispatchPreset }))
       return true
     }
     if (command.action === 'use-agent' && command.payload?.agentId) {
@@ -1113,8 +1147,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (command.payload.template === 'model') {
         const result = resolveModelCommand(args, selectableModels)
         if (result.selection) {
-          setTargetAgent(null)
-          setModelSelection(result.selection)
+          applyRoutingSelectionPatch(resolveWorkbenchRoutingSelectionPatch({ type: 'select-provider-model-command', selection: result.selection }))
           setSendError(tr(`已切换模型：${result.label}`, `Model switched: ${result.label}`))
         } else {
           setSendError(result.message || tr('没有可用模型。请先在设置里启用供应商并填写 Key。', 'No available models. Enable a provider and API key in Settings first.'))
@@ -1181,7 +1214,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       return true
     }
     return false
-  }, [workspaceId, activeThreadId, activeGoal, createThread, sendPrompt, openSetup, usableAgentIds.join('|'), selectableModels, thinking])
+  }, [workspaceId, activeThreadId, activeGoal, createThread, sendPrompt, openSetup, applyRoutingSelectionPatch, usableAgentIds.join('|'), selectableModels, thinking])
 
   return (
     <div className="wb-root">
@@ -1218,353 +1251,114 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           proxyHost={props.proxyHost}
         />
 
-        <main className="wb-main">
-          {view === 'write' && (
-            <ErrorBoundary label="Write">
-            <WriteWorkspace
-              workspace={activeWorkspace}
-              hasWorkspace={!!workspaceId}
-              targetAgent={targetAgent}
-              setTargetAgent={selectTargetAgent}
-              agents={props.agents}
-              localAgents={localAgents}
-              sending={sending}
-              onSend={sendPrompt}
-              onCancel={cancelLatest}
-              onCreateProject={openCreateProject}
-              openChat={() => setView('chat')}
-              thread={activeThread}
-              turns={activeTurns}
-              events={activeEvents}
-            />
-            </ErrorBoundary>
-          )}
+        <WorkbenchMainContent
+          view={view}
+          setView={setView}
+          configLoadError={props.configLoadError}
+          onReloadConfig={props.providerActions.onReload}
+          activeWorkspace={activeWorkspace}
+          workspaceId={workspaceId}
+          activeThreadId={activeThreadId}
+          activeThread={activeThread}
+          activeTurns={activeTurns}
+          activeEvents={activeEvents}
+          activeGoal={activeGoal}
+          threadTodos={threadTodos}
+          readyLocalAgents={readyLocalAgents}
+          title={title}
+          workspaceName={workspaceName}
+          sendError={sendError}
+          rightPanel={rightPanel}
+          setRightPanel={setRightPanel}
+          selectWorkspace={selectWorkspace}
+          selectTargetAgent={selectTargetAgent}
+          targetAgent={targetAgent}
+          agents={props.agents}
+          localAgents={localAgents}
+          sending={sending}
+          sendPrompt={sendPrompt}
+          cancelLatest={cancelLatest}
+          openCreateProject={openCreateProject}
+          openSetup={openSetup}
+          updateTodoStatus={updateThreadTodoStatus}
+          deleteTodo={deleteThreadTodo}
+          dispatchTodo={dispatchThreadTodo}
+          dispatchingTodoId={dispatchingTodoId}
+          refreshThreadTodos={refreshThreadTodos}
+          runSlashCommand={runSlashCommand}
+          retryTurn={retryTurn}
+          cancelAgent={cancelAgent}
+          resolveGuard={resolveGuard}
+          createThread={createThread}
+          handleThreadScroll={handleThreadScroll}
+          threadScrollRef={threadScrollRef}
+          search={search}
+          runtimeTasks={runtimeTasks}
+          cancelRuntimeTask={cancelRuntimeTask}
+          deleteRuntimeTask={deleteRuntimeTask}
+          clearCompletedRuntimeTasks={clearCompletedRuntimeTasks}
+          providers={props.providers}
+          bindings={props.bindings}
+          fallbackChain={props.fallbackChain}
+          providerActions={props.providerActions}
+          motion={props.motion}
+          setMotion={props.setMotion}
+          settingsTab={settingsTab}
+          connectionSummary={connectionSummary}
+          mode={mode}
+          setMode={setMode}
+          modelSelection={modelSelection}
+          setModelSelection={setModelSelection}
+          thinking={thinking}
+          setThinking={setThinking}
+          schedules={schedules}
+          workspaces={workspaces}
+          pendingComposerAttachments={pendingComposerAttachments}
+          onExternalAttachmentsConsumed={() => setPendingComposerAttachments([])}
+        />
 
-          {view === 'chat' && (
-            <ErrorBoundary label="Chat">
-            <>
-              <div className="wb-chat-head">
-                <WorkbenchChatTopBar
-                  title={title}
-                  workspaceName={workspaceName}
-                  workspaceTitle={activeWorkspace?.rootPath || tr('添加工作目录', 'Add working folder')}
-                  openWorkspace={workspaceId ? () => selectWorkspace(workspaceId) : openCreateProject}
-                  workspaceRoot={activeWorkspace?.rootPath ?? null}
-                  activePanel={rightPanel}
-                  setPanel={setRightPanel}
-                  workspaceId={workspaceId}
-                  readyLocalAgents={readyLocalAgents}
-                  todos={threadTodos}
-                  activeThreadId={activeThreadId}
-                  openTasks={() => setView('tasks')}
-                  updateTodoStatus={updateThreadTodoStatus}
-                  deleteTodo={deleteThreadTodo}
-                />
-              </div>
-
-              {activeGoal && (
-                <div className="wb-goal-strip">
-                  <div>
-                    <strong>{tr('当前目标', 'Current goal')}</strong>
-                    <span>{activeGoal.goal}</span>
-                    <small>{tr(`Loop 上限 ${activeGoal.loopLimit} 轮`, `Loop limit ${activeGoal.loopLimit}`)}</small>
-                  </div>
-                  <button className="ah-btn sm" onClick={() => runSlashCommand({ text: `/loop --limit ${activeGoal.loopLimit}` })}>
-                    {tr('启动 Loop', 'Run loop')}
-                  </button>
-                  <button className="ah-btn sm" onClick={() => runSlashCommand({ text: '/goal clear' })}>
-                    {tr('清除', 'Clear')}
-                  </button>
-                </div>
-              )}
-
-              <ThreadView
-                thread={activeThread}
-                turns={activeTurns}
-                events={activeEvents}
-                onRetry={retryTurn}
-                onCancelAgent={cancelAgent}
-                onResolveGuard={resolveGuard}
-                openSetup={openSetup}
-                onCreateProject={openCreateProject}
-                onCreateThread={createThread}
-                hasWorkspace={!!workspaceId}
-                workspaceRoot={activeWorkspace?.rootPath ?? null}
-                scrollRef={threadScrollRef}
-                onScroll={handleThreadScroll}
-              />
-
-              {sendError && <div className="wb-send-error">{sendError}</div>}
-
-              <ComposerBar
-                mode={mode}
-                setMode={setMode}
-                providers={props.providers}
-                bindings={props.bindings}
-                modelSelection={modelSelection}
-                setModelSelection={setModelSelection}
-                thinking={thinking}
-                setThinking={setThinking}
-                schedules={schedules}
-                sending={sending}
-                onSend={sendPrompt}
-                onCancel={cancelLatest}
-                workspaceId={workspaceId}
-                workspaces={workspaces}
-                setWorkspaceId={selectWorkspace}
-                onCreateProject={openCreateProject}
-                localAgents={localAgents}
-                targetAgent={targetAgent}
-                setTargetAgent={selectTargetAgent}
-                agents={props.agents}
-                onRunCommand={runSlashCommand}
-                onOpenProviderSettings={() => openSetup('providers')}
-                onRefreshProviders={props.providerActions.onReload}
-                externalAttachments={pendingComposerAttachments}
-                onExternalAttachmentsConsumed={() => setPendingComposerAttachments([])}
-                gitBranchNode={
-                  <GitBranchControl
-                    workspaceId={workspaceId}
-                    onOpenGit={() => setRightPanel('git')}
-                    compact
-                  />
-                }
-                threadId={activeThread?.id ?? null}
-                turns={activeTurns}
-                events={activeEvents}
-              />
-            </>
-            </ErrorBoundary>
-          )}
-
-          {view === 'tasks' && (
-            <ErrorBoundary label="Tasks">
-            <div className="wb-scroll-surface">
-              <TasksScreen
-                tasks={props.tasks}
-                search={search}
-                onCancelTask={props.onCancelTask}
-                onDeleteTask={props.onDeleteTask}
-                onClearCompleted={props.onClearCompletedTasks}
-                openSetup={openSetup}
-              />
-            </div>
-            </ErrorBoundary>
-          )}
-
-          {view === 'requirements' && (
-            <ErrorBoundary label="Requirements">
-            <div className="wb-scroll-surface">
-              <SddRequirementsList workspaceRoot={activeWorkspace?.rootPath ?? null} />
-            </div>
-            </ErrorBoundary>
-          )}
-
-          {view === 'settings' && (
-            <ErrorBoundary label="Settings">
-            <div className="wb-scroll-surface wb-settings-surface">
-              <React.Suspense fallback={<div className="wb-muted-box">{tr('加载设置...', 'Loading settings...')}</div>}>
-              <SettingsScreen
-                providers={props.providers}
-                bindings={props.bindings}
-                onSetEnabled={props.providerActions.onSetEnabled}
-                onSetKey={props.providerActions.onSetKey}
-                onSetBinding={props.providerActions.onSetBinding}
-                fallbackChain={props.fallbackChain}
-                onSetFallback={props.providerActions.onSetFallback}
-                onReload={props.providerActions.onReload}
-                onUpsertProvider={props.providerActions.onUpsertProvider}
-                onDeleteProvider={props.providerActions.onDeleteProvider}
-                onReorderProvidersForClaude={props.providerActions.onReorderProvidersForClaude}
-                motion={props.motion}
-                setMotion={props.setMotion}
-                initialTab={settingsTab}
-                workspaceId={workspaceId}
-                connectionSummary={connectionSummary}
-                goChat={(agentId) => { selectTargetAgent(agentId); setView('chat') }}
-                openSetup={openSetup}
-              />
-              </React.Suspense>
-            </div>
-            </ErrorBoundary>
-          )}
-          {view === 'workflows' && (
-            <ErrorBoundary label="Workflows">
-            <div className="wb-scroll-surface wb-settings-surface">
-              <React.Suspense fallback={<div className="wb-muted-box">{tr('加载工作流...', 'Loading workflows...')}</div>}>
-              <WorkflowsPanel onClose={() => setView('chat')} />
-              </React.Suspense>
-            </div>
-            </ErrorBoundary>
-          )}
-        </main>
-
-        {rightPanel && rightPanel !== 'git' && (
-          <>
-            <button className="wb-panel-scrim" type="button" aria-label={tr('关闭侧边栏', 'Close side panel')} onClick={() => setRightPanel(null)} />
-            <WorkbenchInspector
-              width={inspectorWidth}
-              viewportWidth={viewportWidth}
-              setWidth={previewInspectorWidth}
-              commitWidth={setInspectorWidthPersisted}
-              activePanel={rightPanel}
-              setPanel={setRightPanel}
-              workspaceId={workspaceId}
-              onClose={() => setRightPanel(null)}
-            >
-              {rightPanel === 'runs' ? (
-                selectedAgentDetail ? (
-                  <SubagentDetailPanel
-                    agentId={selectedAgentDetail.agentId}
-                    turnId={selectedAgentDetail.turnId}
-                    events={activeEvents}
-                    onClose={() => setSelectedAgentDetail(null)}
-                  />
-                ) : (
-                <RunTimeline
-                  events={activeEvents}
-                  turns={activeTurns}
-                  localAgents={localAgents}
-                  setLocalAgents={setLocalAgents}
-                  schedules={schedules}
-                  mode={mode}
-                  setMode={setMode}
-                  currentSchedule={scheduleForMode(mode)}
-                  setScheduleForMode={setScheduleForMode}
-                  openSetup={openSetup}
-                  onClose={() => setRightPanel(null)}
-                  terminalRuns={terminalRuns}
-                  setTerminalRuns={setTerminalRuns}
-                  onSelectAgent={(agentId, turnId) => setSelectedAgentDetail({ agentId, turnId })}
-                />
-                )
-              ) : rightPanel === 'files' ? (
-                <FileTreePanel
-                  workspaceRoot={workspaceId ? activeWorkspace?.rootPath ?? null : null}
-                  workspaceId={workspaceId}
-                  onClose={() => setRightPanel(null)}
-                  onFileSelect={(path) => {
-                    // Open file in external editor
-                    window.electronAPI.app.openPath({ path, target: 'editor' }).catch(() => {})
-                  }}
-                />
-              ) : rightPanel === 'side-chat' ? (
-                <SideConversationPanel
-                  parentThreadId={activeThreadId}
-                  parentTurnId={activeTurns.length > 0 ? activeTurns[activeTurns.length - 1].id : null}
-                  workspaceId={workspaceId}
-                  onClose={() => setRightPanel(null)}
-                />
-              ) : rightPanel === 'terminal' ? (
-                <TerminalPanel
-                  workspaceRoot={workspaceId ? activeWorkspace?.rootPath : undefined}
-                  onClose={() => setRightPanel(null)}
-                />
-              ) : (
-                <WorkbenchToolPanel
-                  panel={rightPanel}
-                  workspaceId={workspaceId}
-                  onClose={() => setRightPanel(null)}
-                  browserUrl={pendingBrowserUrl}
-                  onBrowserUrlConsumed={() => setPendingBrowserUrl(null)}
-                  onAttachBrowserCapture={attachment => setPendingComposerAttachments([attachment])}
-                />
-              )}
-            </WorkbenchInspector>
-          </>
-        )}
-
-        {rightPanel === 'git' && (
-          <>
-            <button className="wb-panel-scrim bottom" type="button" aria-label={tr('关闭底部面板', 'Close bottom panel')} onClick={() => setRightPanel(null)} />
-            <WorkbenchBottomDock
-              workspaceId={workspaceId}
-              activePanel={rightPanel}
-              setPanel={setRightPanel}
-              onClose={() => setRightPanel(null)}
-            >
-              <GitWorkbenchPanel workspaceId={workspaceId} onClose={() => setRightPanel(null)} />
-            </WorkbenchBottomDock>
-          </>
-        )}
+        <WorkbenchPanelContainers
+          rightPanel={rightPanel}
+          setRightPanel={setRightPanel}
+          inspectorWidth={inspectorWidth}
+          viewportWidth={viewportWidth}
+          previewInspectorWidth={previewInspectorWidth}
+          setInspectorWidthPersisted={setInspectorWidthPersisted}
+          workspaceId={workspaceId}
+          workspaceRoot={workspaceId ? activeWorkspace?.rootPath ?? null : null}
+          activeThreadId={activeThreadId}
+          parentTurnId={activeTurns.length > 0 ? activeTurns[activeTurns.length - 1].id : null}
+          activeEvents={activeEvents}
+          activeTurns={activeTurns}
+          localAgents={localAgents}
+          setLocalAgents={setLocalAgents}
+          schedules={schedules}
+          mode={mode}
+          setMode={setMode}
+          scheduleForMode={scheduleForMode}
+          setScheduleForMode={setScheduleForMode}
+          openSetup={openSetup}
+          terminalRuns={terminalRuns}
+          setTerminalRuns={setTerminalRuns}
+          selectedAgentDetail={selectedAgentDetail}
+          onSelectAgentDetail={setSelectedAgentDetail}
+          browserUrl={pendingBrowserUrl}
+          onBrowserUrlConsumed={() => setPendingBrowserUrl(null)}
+          onAttachBrowserCapture={attachment => setPendingComposerAttachments([attachment])}
+        />
       </div>
 
       {projectDialogOpen && (
-        <div className="wb-modal-backdrop" onMouseDown={() => setProjectDialogOpen(false)}>
-          <div className="wb-project-modal" onMouseDown={e => e.stopPropagation()}>
-            <div className="wb-project-modal-head">
-              <div>
-                <strong>{tr('添加工作目录', 'Add working folder')}</strong>
-                <span>{tr('选择一个本地目录。绑定后文件、Git、终端和工作树会使用这个目录。', 'Choose a local folder for files, Git, terminal, and worktrees.')}</span>
-              </div>
-              <button onClick={() => setProjectDialogOpen(false)}><Icon d={IC.x} size={14} /></button>
-            </div>
-            <label>
-              {tr('目录名称', 'Folder name')}
-              <input value={projectDraft.name} onChange={e => setProjectDraft(d => ({ ...d, name: e.target.value }))} placeholder={tr('给这个目录起个名字', 'Name this folder')} />
-            </label>
-            <label>
-              {tr('本地目录', 'Local folder')}
-              <div className="wb-folder-picker">
-                <input value={projectDraft.rootPath} onChange={e => setProjectDraft(d => ({ ...d, rootPath: e.target.value }))} placeholder={tr('选择本地目录', 'Choose a local folder')} />
-                <button onClick={pickProjectFolder}>{tr('浏览', 'Browse')}</button>
-              </div>
-            </label>
-            {projectError && <div className="wb-project-error">{projectError}</div>}
-            <div className="wb-project-modal-actions">
-              <button onClick={() => setProjectDialogOpen(false)}>{tr('取消', 'Cancel')}</button>
-              <button className="primary" onClick={submitProject}>{tr('添加工作目录', 'Add folder')}</button>
-            </div>
-          </div>
-        </div>
+        <CreateWorkspaceDialog
+          activeWorkspaceRoot={activeWorkspace?.rootPath}
+          onClose={() => setProjectDialogOpen(false)}
+          onCreated={handleProjectCreated}
+        />
       )}
 
-      {announcementOpen && (
-        <div className="wb-modal-backdrop wb-announcement-backdrop" onMouseDown={closeAnnouncement}>
-          <section className="wb-announcement-modal" onMouseDown={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={tr('AgentHub 使用公告', 'AgentHub announcement')}>
-            <div className="wb-announcement-head">
-              <div>
-                <span>{tr('AgentHub 0.5.4', 'AgentHub 0.5.4')}</span>
-                <h2>{tr('开始前请先完成运行配置', 'Finish run setup before starting')}</h2>
-              </div>
-              <button onClick={closeAnnouncement} aria-label={tr('关闭公告', 'Close announcement')}>
-                <Icon d={IC.x} size={15} />
-              </button>
-            </div>
-            <p className="wb-announcement-intro">
-              {tr(
-                '本版本把 AgentHub 工作台、Agent 切换、API 厂商直连、Git、Skills 和 MCP 整合到一个桌面流程中。为了避免任务发错 Agent，请按下面顺序完成首次配置。',
-                'This release combines the workbench, agent switching, provider direct runs, Git, Skills, and MCP into one desktop workflow. Complete the setup below before sending tasks.'
-              )}
-            </p>
-            <div className="wb-announcement-steps">
-              <article>
-                <strong>{tr('1. 配置可用 Agent CLI', '1. Configure an Agent CLI')}</strong>
-                <p>{tr('进入 设置 -> Local Agents，点击检测或手动选择 Codex、Claude、Gemini、OpenCode 等 CLI 路径。只有检测通过或已配置可用路径的 Agent 才会出现在工作台选择器中。', 'Open Settings -> Local Agents, then detect or choose the CLI path for Codex, Claude, Gemini, OpenCode, and other agents. Only available agents appear in the workbench picker.')}</p>
-              </article>
-              <article>
-                <strong>{tr('2. 检查路由与 API 厂商', '2. Check routing and providers')}</strong>
-                <p>{tr('进入 设置 -> Providers / Routing，为需要的 API 厂商填写 Key，并确认 Agent 路由绑定。选择 DeepSeek、OpenAI 等厂商模型时，AgentHub 会直接走 API，不会误调用本地 CLI。', 'Open Settings -> Providers / Routing, add API keys, and confirm agent bindings. Provider models such as DeepSeek or OpenAI run through direct API calls instead of local CLIs.')}</p>
-              </article>
-              <article>
-                <strong>{tr('3. 回到工作台选择运行对象', '3. Choose who runs the task')}</strong>
-                <p>{tr('回到聊天工作台，在右侧/底部的运行选择器中点击要使用的 Agent 或 API 厂商模型。选中本地 Agent 后走 CLI/ACP；选中厂商模型后走 API 直连。', 'Return to the chat workbench and choose the agent or provider model from the run picker. Local agents use CLI/ACP; provider models use direct API calls.')}</p>
-              </article>
-              <article>
-                <strong>{tr('4. 绑定工作目录并使用工具区', '4. Bind a folder and use tools')}</strong>
-                <p>{tr('需要读取项目、查看 Git 或执行终端命令时，请先添加工作目录。Git、MCP、运行记录和外观设置都在工作台工具区或设置页中。', 'Add a working folder before reading project files, using Git, or running terminal commands. Git, MCP, run history, and appearance settings live in the tool area or Settings.')}</p>
-              </article>
-            </div>
-            <div className="wb-announcement-actions">
-              <button onClick={() => openAnnouncementSetup('local-agents')}>{tr('去选择 Agent CLI', 'Choose Agent CLI')}</button>
-              <button onClick={() => openAnnouncementSetup('providers')}>{tr('配置 API 厂商', 'Configure providers')}</button>
-              <button className="primary" onClick={closeAnnouncement}>{tr('我知道了', 'Got it')}</button>
-            </div>
-          </section>
-        </div>
-      )}
+      {announcementOpen && <WorkbenchAnnouncementModal onClose={closeAnnouncement} onOpenSetup={openAnnouncementSetup} />}
 
-      <ApprovalDialog items={props.approvals} onDecide={props.onApprovalDecide} />
+      <ApprovalDialog items={approvals} onDecide={onApprovalDecide} />
       {commandPaletteOpen && (
         <CommandPalette
           commands={paletteCommands}
@@ -1576,1049 +1370,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   )
 }
 
-function NativeTitlebar({
-  hubRunning,
-  search,
-  setSearch,
-  view,
-  setView,
-  createThread,
-  openCreateProject,
-  openSetup,
-  setRightPanel,
-  shortcuts
-}: {
-  hubRunning: boolean
-  search: string
-  setSearch: (v: string) => void
-  view: ViewMode
-  setView: (view: ViewMode) => void
-  createThread: () => Promise<void>
-  openCreateProject: () => void
-  openSetup: (tab?: SettingsTabKey) => void
-  setRightPanel: (panel: RightPanel) => void
-  shortcuts: ReturnType<typeof resolveKeyboardShortcutBindings>
-}) {
-  const win = window.electronAPI?.win
-  const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'help' | null>(null)
-  const [uiStyle, setUiStyle] = useState<'mac' | 'win'>(() => readAppearanceLocal().uiStyle)
-  const isMacStyle = uiStyle === 'mac'
-
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const next = (e as CustomEvent).detail
-      if (next?.uiStyle) setUiStyle(next.uiStyle)
-    }
-    window.addEventListener('agenthub:appearance-change', handler)
-    return () => window.removeEventListener('agenthub:appearance-change', handler)
-  }, [])
-
-  useEffect(() => {
-    if (!openMenu) return
-    const close = () => setOpenMenu(null)
-    window.addEventListener('pointerdown', close)
-    window.addEventListener('keydown', close)
-    return () => {
-      window.removeEventListener('pointerdown', close)
-      window.removeEventListener('keydown', close)
-    }
-  }, [openMenu])
-
-  const run = (action: () => void | Promise<unknown>) => (event: React.MouseEvent) => {
-    event.stopPropagation()
-    setOpenMenu(null)
-    void action()
-  }
-
-  return (
-    <div className="wb-titlebar app-drag" onDoubleClick={() => win?.maximizeToggle()}>
-      {isMacStyle && (
-        <div className="wb-traffic-lights app-no-drag">
-          <span className="tl-dot tl-close" onClick={() => win?.close()} />
-          <span className="tl-dot tl-min" onClick={() => win?.minimize()} />
-          <span className="tl-dot tl-max" onClick={() => win?.maximizeToggle()} />
-        </div>
-      )}
-      <TitlebarMenu
-        id="file"
-        label={tr('文件', 'File')}
-        openMenu={openMenu}
-        setOpenMenu={setOpenMenu}
-        items={[
-          { label: tr('新建对话', 'New chat'), shortcut: shortcutDisplay(shortcuts['new-chat']), action: run(createThread) },
-          { label: tr('添加工作目录', 'Add working folder'), shortcut: shortcutDisplay(shortcuts['choose-workspace']), action: run(openCreateProject) },
-          { label: tr('打开 Git 面板', 'Open Git panel'), shortcut: shortcutDisplay(shortcuts['panel-git']), action: run(() => setRightPanel('git')) },
-          { label: tr('打开浏览器', 'Open browser'), shortcut: shortcutDisplay(shortcuts['panel-browser']), action: run(() => setRightPanel('browser')) }
-        ]}
-      />
-      <TitlebarMenu
-        id="view"
-        label={tr('视图', 'View')}
-        openMenu={openMenu}
-        setOpenMenu={setOpenMenu}
-        items={[
-          { label: tr('对话', 'Chat'), shortcut: shortcutDisplay(shortcuts['view-chat']), checked: view === 'chat', action: run(() => setView('chat')) },
-          { label: tr('写作', 'Write'), shortcut: shortcutDisplay(shortcuts['view-write']), checked: view === 'write', action: run(() => setView('write')) },
-          { label: tr('任务历史', 'Tasks'), shortcut: shortcutDisplay(shortcuts['view-tasks']), checked: view === 'tasks', action: run(() => setView('tasks')) },
-          { label: tr('设置', 'Settings'), shortcut: shortcutDisplay(shortcuts['view-settings']), checked: view === 'settings', action: run(() => setView('settings')) },
-          { label: tr('运行面板', 'Runs panel'), shortcut: shortcutDisplay(shortcuts['panel-runs']), action: run(() => setRightPanel('runs')) },
-          { label: tr('工作树面板', 'Worktrees panel'), action: run(() => setRightPanel('worktrees')) }
-        ]}
-      />
-      <TitlebarMenu
-        id="help"
-        label={tr('帮助', 'Help')}
-        openMenu={openMenu}
-        setOpenMenu={setOpenMenu}
-        items={[
-          { label: tr('快捷键设置', 'Keyboard shortcuts'), shortcut: shortcutDisplay(shortcuts['settings-shortcuts']), action: run(() => openSetup('shortcuts')) },
-          { label: tr('MCP 配置', 'MCP settings'), shortcut: shortcutDisplay(shortcuts['settings-mcp']), action: run(() => openSetup('mcp')) },
-          { label: tr('打开项目主页', 'Open homepage'), action: run(() => window.electronAPI.app.openExternal('https://agenthub.dev')) }
-        ]}
-      />
-      <div className="wb-title-spacer"></div>
-      <div className="wb-search app-no-drag">
-        <Icon d={IC.search} size={14} />
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder={tr('搜索工作目录、会话、任务', 'Search folders, sessions, tasks')} />
-      </div>
-      <div className="wb-hub-state">
-        <span className={'ah-dot ' + (hubRunning ? 'idle' : 'error')}></span>
-        {hubRunning ? tr('Hub 运行中', 'Hub running') : tr('Hub 离线', 'Hub offline')}
-      </div>
-      <div className="wb-window-actions app-no-drag">
-        <button onClick={() => win?.minimize()}><Icon d={IC.min} size={13} /></button>
-        <button onClick={() => win?.maximizeToggle()}><Icon d={IC.max} size={13} /></button>
-        <button onClick={() => win?.close()}><Icon d={IC.x} size={13} /></button>
-      </div>
-    </div>
-  )
-}
-
-function _AgentSlotBar({
-  usableAgentIds,
-  slots,
-  persistSlots,
-  targetAgent,
-  setTargetAgent,
-  agents
-}: {
-  usableAgentIds: string[]
-  slots: string[]
-  persistSlots: (slots: string[]) => void
-  targetAgent: string | null
-  setTargetAgent: (agentId: string | null) => void
-  agents: AgentMap
-}) {
-  const normalized = normalizeAgentSlots(slots, usableAgentIds)
-  useEffect(() => {
-    if (usableAgentIds.length > 0 && normalized.join('|') !== slots.join('|')) {
-      persistSlots(normalized)
-    }
-  }, [usableAgentIds.join('|'), normalized.join('|'), slots.join('|'), persistSlots])
-
-  if (usableAgentIds.length === 0) return null
-
-  return (
-    <div className="wb-agent-slots" aria-label={tr('本地 Agent 槽位', 'Local agent slots')}>
-      {normalized.map((agentId, index) => {
-        const choices = usableAgentIds.filter(id => id === agentId || !normalized.includes(id))
-        const canReplace = choices.length > 1
-        return (
-          <div key={`${index}-${agentId}`} className={'wb-agent-slot' + (targetAgent === agentId ? ' active' : '')}>
-            <button
-              type="button"
-              className="wb-agent-slot-main"
-              onClick={() => setTargetAgent(targetAgent === agentId ? null : agentId)}
-              title={tr(`直连 ${agentShortName(agentId)}`, `Route directly to ${agentShortName(agentId)}`)}
-            >
-              <AgentMark id={agentId} size={24} radius={7} />
-              <span>{agentShortName(agentId)}</span>
-              <i className={'ah-dot ' + (agents[agentId]?.status || 'idle')}></i>
-            </button>
-            {canReplace && (
-              <select
-                value={agentId}
-                onChange={event => {
-                  const next = [...normalized]
-                  next[index] = event.target.value
-                  persistSlots(next)
-                  setTargetAgent(event.target.value)
-                }}
-                aria-label={tr('替换 Agent', 'Replace agent')}
-              >
-                {choices.map(id => <option key={id} value={id}>{agentShortName(id)}</option>)}
-              </select>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function WorkbenchChatTopBar({
-  title,
-  workspaceName,
-  workspaceTitle,
-  openWorkspace,
-  workspaceRoot,
-  activePanel,
-  setPanel,
-  workspaceId,
-  readyLocalAgents,
-  openTasks,
-  todos,
-  activeThreadId,
-  updateTodoStatus,
-  deleteTodo
-}: {
-  title: string
-  workspaceName: string
-  workspaceTitle: string
-  openWorkspace: () => void
-  workspaceRoot: string | null
-  activePanel: RightPanel
-  setPanel: (panel: RightPanel) => void
-  workspaceId: string | null
-  readyLocalAgents: number
-  openTasks: () => void
-  todos: ThreadTodo[]
-  activeThreadId: string | null
-  updateTodoStatus: (todo: ThreadTodo, status: ThreadTodoStatus) => void
-  deleteTodo: (todoId: string) => void
-}) {
-  const [todoOpen, setTodoOpen] = useState(false)
-  const todoRef = useRef<HTMLDivElement | null>(null)
-  const openTodos = todos.filter(todo => todo.status !== 'completed')
-  const completedTodos = todos.filter(todo => todo.status === 'completed')
-  const inProgressTodos = todos.filter(todo => todo.status === 'in_progress')
-  const pendingCount = Math.max(0, todos.length - completedTodos.length - inProgressTodos.length)
-
-  useEffect(() => {
-    if (!todoOpen) return
-    const onPointerDown = (event: PointerEvent) => {
-      if (!todoRef.current?.contains(event.target as Node)) setTodoOpen(false)
-    }
-    window.addEventListener('pointerdown', onPointerDown)
-    return () => window.removeEventListener('pointerdown', onPointerDown)
-  }, [todoOpen])
-
-  return (
-    <>
-      <div className="wb-minimal-head-left">
-        <button className="wb-minimal-project" type="button" onClick={openWorkspace} title={workspaceTitle}>
-          <Icon d={IC.folder} size={14} />
-          <span>{workspaceName}</span>
-          <Icon d={IC.chevDown} size={12} />
-        </button>
-        <span className="wb-minimal-title">{title}</span>
-      </div>
-      <div className="wb-minimal-head-actions">
-        <button
-          className="wb-minimal-tool-button"
-          type="button"
-          disabled={!workspaceRoot}
-          onClick={() => workspaceRoot && window.electronAPI.app.openPath({ path: workspaceRoot, target: 'editor' })}
-          title={workspaceRoot ? tr('打开编辑器', 'Open editor') : tr('选择工作目录后可用', 'Choose a working folder first')}
-        >
-          <Icon d={IC.folder} size={15} />
-          <span>{tr('打开编辑器', 'Open editor')}</span>
-        </button>
-        <ToolPanelBar activePanel={activePanel} setPanel={setPanel} workspaceId={workspaceId} iconOnly />
-        <button
-          className={'wb-minimal-tool-button' + (activePanel === 'runs' ? ' active' : '')}
-          onClick={() => setPanel(activePanel === 'runs' ? null : 'runs')}
-          title={tr('运行', 'Runs')}
-        >
-          <Icon d={IC.tasks} size={15} />
-          {readyLocalAgents > 0 && <small>{readyLocalAgents}</small>}
-        </button>
-        <div className="wb-top-todo" ref={todoRef}>
-          <button
-            className={'wb-minimal-tool-button' + (todoOpen ? ' active' : '')}
-            onClick={() => setTodoOpen(open => !open)}
-            title={tr('Todo / Agent 分步任务', 'Todo / agent plan tasks')}
-          >
-            <Icon d={IC.tasks} size={15} />
-            <span>Todo</span>
-            {openTodos.length > 0 && <small>{Math.min(99, openTodos.length)}</small>}
-          </button>
-          {todoOpen && (
-            <div className="wb-top-todo-popover">
-              <div className="wb-top-todo-head">
-                <div>
-                  <strong>Todo</strong>
-                  <span>{activeThreadId ? tr('当前会话的 Agent 分步任务', 'Agent plan tasks for this thread') : tr('还没有打开会话', 'No active thread')}</span>
-                </div>
-                <button className="ah-btn sm" type="button" onClick={openTasks}>{tr('完整任务页', 'Task page')}</button>
-              </div>
-              {todos.length > 0 && (
-                <div className="wb-top-todo-stats">
-                  <div className="wb-top-todo-stat">
-                    <strong>{pendingCount}</strong>
-                    <span>{tr('待处理', 'Pending')}</span>
-                  </div>
-                  <div className="wb-top-todo-stat">
-                    <strong>{inProgressTodos.length}</strong>
-                    <span>{tr('进行中', 'In Progress')}</span>
-                  </div>
-                  <div className="wb-top-todo-stat">
-                    <strong>{completedTodos.length}</strong>
-                    <span>{tr('已完成', 'Done')}</span>
-                  </div>
-                </div>
-              )}
-              <div className="wb-top-todo-list">
-                {todos.length === 0 && (
-                  <div className="wb-top-todo-empty">
-                    {tr('Agent 生成计划后，分步任务会显示在这里。', 'Agent-generated plan steps will appear here.')}
-                  </div>
-                )}
-                {openTodos.map(todo => (
-                  <TodoPopoverRow
-                    key={todo.id}
-                    todo={todo}
-                    onStatus={updateTodoStatus}
-                    onDelete={deleteTodo}
-                  />
-                ))}
-                {completedTodos.length > 0 && (
-                  <details className="wb-top-todo-done">
-                    <summary>{tr(`已完成 ${completedTodos.length} 项`, `${completedTodos.length} completed`)}</summary>
-                    {completedTodos.slice(0, 8).map(todo => (
-                      <TodoPopoverRow
-                        key={todo.id}
-                        todo={todo}
-                        onStatus={updateTodoStatus}
-                        onDelete={deleteTodo}
-                      />
-                    ))}
-                  </details>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  )
-}
-
-function TodoPopoverRow({
-  todo,
-  onStatus,
-  onDelete
-}: {
-  todo: ThreadTodo
-  onStatus: (todo: ThreadTodo, status: ThreadTodoStatus) => void
-  onDelete: (todoId: string) => void
-}) {
-  const nextStatus: ThreadTodoStatus = todo.status === 'completed' ? 'pending' : 'completed'
-  return (
-    <div className={'wb-top-todo-row status-' + todo.status}>
-      <button
-        className="wb-top-todo-check"
-        type="button"
-        onClick={() => onStatus(todo, nextStatus)}
-        title={todo.status === 'completed' ? tr('恢复待办', 'Mark pending') : tr('标记完成', 'Mark done')}
-      >
-        {todo.status === 'completed' && <Icon d={IC.check} size={12} />}
-      </button>
-      <div className="wb-top-todo-body">
-        <button
-          className="wb-top-todo-content"
-          type="button"
-          onClick={() => onStatus(todo, todo.status === 'in_progress' ? 'pending' : 'in_progress')}
-          title={todo.content}
-        >
-          <span>{todo.content}</span>
-        </button>
-        <div className="wb-top-todo-status-btns">
-          {(['pending', 'in_progress', 'completed'] as ThreadTodoStatus[]).map(status => (
-            <button
-              key={status}
-              className={'wb-top-todo-status-btn' + (todo.status === status ? ' active' : '')}
-              type="button"
-              onClick={() => onStatus(todo, status)}
-              title={status === 'pending' ? tr('待处理', 'Pending') : status === 'in_progress' ? tr('进行中', 'In progress') : tr('已完成', 'Done')}
-            >
-              {status === 'pending' ? tr('待办', 'Todo') : status === 'in_progress' ? tr('进行', 'WIP') : tr('完成', 'Done')}
-            </button>
-          ))}
-        </div>
-      </div>
-      <button className="wb-top-todo-delete" type="button" onClick={() => onDelete(todo.id)} title={tr('删除', 'Delete')}>
-        <Icon d={IC.x} size={12} />
-      </button>
-    </div>
-  )
-}
-
-function WorkbenchInspector({
-  width,
-  viewportWidth,
-  setWidth,
-  commitWidth,
-  activePanel,
-  setPanel,
-  workspaceId,
-  onClose,
-  children
-}: {
-  width: number
-  viewportWidth: number
-  setWidth: (width: number) => void
-  commitWidth: (width: number) => void
-  activePanel: RightPanel
-  setPanel: (panel: RightPanel) => void
-  workspaceId: string | null
-  onClose: () => void
-  children: React.ReactNode
-}) {
-  const drag = useRef<{ startX: number; startWidth: number } | null>(null)
-  // P2-11: Keep width in a ref so the drag effect doesn't re-bind listeners
-  // on every width change (which happens every mousemove during drag).
-  const widthRef = useRef(width)
-  widthRef.current = width
-
-  useEffect(() => {
-    const move = (event: MouseEvent) => {
-      if (!drag.current) return
-      setWidth(drag.current.startWidth + (drag.current.startX - event.clientX))
-    }
-    const up = () => {
-      if (drag.current) commitWidth(widthRef.current)
-      drag.current = null
-    }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
-    return () => {
-      window.removeEventListener('mousemove', move)
-      window.removeEventListener('mouseup', up)
-    }
-  }, [setWidth, commitWidth])
-
-  return (
-    <aside className="wb-right wb-inspector" style={viewportWidth > 820 ? { width: clampInspectorWidth(width, viewportWidth) } : undefined}>
-      <div
-        className="wb-inspector-resize"
-        onMouseDown={event => {
-          drag.current = { startX: event.clientX, startWidth: width }
-          event.preventDefault()
-        }}
-      />
-      <div className="wb-inspector-tabs">
-        {inspectorItems(workspaceId).map(item => (
-          <button
-            key={item.id}
-            className={activePanel === item.id ? 'active' : ''}
-            onClick={() => setPanel(item.id)}
-            disabled={item.disabled}
-            title={item.disabled ? tr('选择工作目录后可用', 'Choose a working folder first') : item.label}
-          >
-            <Icon d={item.icon} size={14} />
-            <span>{item.label}</span>
-          </button>
-        ))}
-        <button className="close" onClick={onClose} title={tr('关闭', 'Close')}><Icon d={IC.x} size={14} /></button>
-      </div>
-      <div className="wb-inspector-body">{children}</div>
-    </aside>
-  )
-}
-
-function WorkbenchBottomDock({
-  activePanel,
-  setPanel,
-  workspaceId,
-  onClose,
-  children
-}: {
-  activePanel: Exclude<RightPanel, null>
-  setPanel: (panel: RightPanel) => void
-  workspaceId: string | null
-  onClose: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <section className="wb-bottom-dock">
-      <div className="wb-bottom-dock-tabs">
-        {inspectorItems(workspaceId).map(item => (
-          <button
-            key={item.id}
-            className={activePanel === item.id ? 'active' : ''}
-            onClick={() => setPanel(item.id)}
-            disabled={item.disabled}
-            title={item.disabled ? tr('选择工作目录后可用', 'Choose a working folder first') : item.label}
-          >
-            <Icon d={item.icon} size={14} />
-            <span>{item.label}</span>
-          </button>
-        ))}
-        <button className="close" onClick={onClose} title={tr('关闭', 'Close')}><Icon d={IC.x} size={14} /></button>
-      </div>
-      <div className="wb-bottom-dock-body">{children}</div>
-    </section>
-  )
-}
-
-function inspectorItems(workspaceId: string | null): Array<{ id: Exclude<RightPanel, null>; label: string; icon: React.ReactNode; disabled: boolean }> {
-  return [
-    { id: 'runs', label: tr('运行', 'Runs'), icon: IC.tasks, disabled: false },
-    { id: 'files', label: tr('文件', 'Files'), icon: IC.file, disabled: !workspaceId },
-    { id: 'git', label: 'Git', icon: IC.git, disabled: !workspaceId },
-    { id: 'worktrees', label: tr('工作树', 'Worktrees'), icon: IC.folder, disabled: !workspaceId },
-    { id: 'browser', label: tr('浏览器', 'Browser'), icon: IC.search, disabled: false }
-  ]
-}
-
-function ToolPanelBar({ activePanel, setPanel, workspaceId, iconOnly = false }: { activePanel: RightPanel; setPanel: (panel: RightPanel) => void; workspaceId: string | null; iconOnly?: boolean }) {
-  const items: Array<{ id: Exclude<RightPanel, null | 'runs'>; label: string; icon: React.ReactNode; requiresWorkspace?: boolean }> = [
-    { id: 'files', label: tr('文件', 'Files'), icon: IC.file, requiresWorkspace: true },
-    { id: 'side-chat', label: tr('旁支对话', 'Side Chat'), icon: IC.chat },
-    { id: 'git', label: 'Git', icon: IC.git, requiresWorkspace: true },
-    { id: 'worktrees', label: tr('工作树', 'Worktrees'), icon: IC.folder, requiresWorkspace: true },
-    { id: 'browser', label: tr('浏览器', 'Browser'), icon: IC.search }
-  ]
-  return (
-    <div className={'wb-tool-panel-bar' + (iconOnly ? ' icon-only' : '')}>
-      {items.map(item => {
-        const disabled = item.requiresWorkspace && !workspaceId
-        return (
-          <button
-            key={item.id}
-            className={'wb-tool-button' + (activePanel === item.id ? ' active' : '')}
-            onClick={() => !disabled && setPanel(activePanel === item.id ? null : item.id)}
-            disabled={disabled}
-            title={disabled ? tr('选择工作目录后可用', 'Available after choosing a working folder') : item.label}
-          >
-            <Icon d={item.icon} size={14} />
-            <span>{item.label}</span>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-function TitlebarMenu({
-  id,
-  label,
-  openMenu,
-  setOpenMenu,
-  items
-}: {
-  id: 'file' | 'view' | 'help'
-  label: string
-  openMenu: 'file' | 'view' | 'help' | null
-  setOpenMenu: (menu: 'file' | 'view' | 'help' | null) => void
-  items: Array<{ label: string; shortcut?: string; checked?: boolean; action: (event: React.MouseEvent) => void }>
-}) {
-  const open = openMenu === id
-  return (
-    <div className="wb-menu-wrap app-no-drag" onPointerDown={event => event.stopPropagation()}>
-      <button
-        type="button"
-        className={'wb-menu' + (open ? ' active' : '')}
-        onClick={event => {
-          event.stopPropagation()
-          setOpenMenu(open ? null : id)
-        }}
-      >
-        {label}
-      </button>
-      {open && (
-        <div className="wb-menu-dropdown">
-          {items.map(item => (
-            <button key={item.label} type="button" onClick={item.action}>
-              <span className="wb-menu-check">{item.checked ? '✓' : ''}</span>
-              <span>{item.label}</span>
-              {item.shortcut && <small>{item.shortcut}</small>}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // GitBranchControl moved to GitBranchControl.tsx (registered via import)
-
-function WorkbenchToolPanel({
-  panel,
-  workspaceId,
-  onClose,
-  browserUrl,
-  onBrowserUrlConsumed,
-  onAttachBrowserCapture
-}: {
-  panel: Exclude<RightPanel, null | 'runs' | 'files' | 'terminal' | 'side-chat'>
-  workspaceId: string | null
-  onClose: () => void
-  browserUrl?: string | null
-  onBrowserUrlConsumed?: () => void
-  onAttachBrowserCapture: (attachment: WorkbenchAttachment) => void
-}) {
-  if (panel === 'git') return <GitWorkbenchPanel workspaceId={workspaceId} onClose={onClose} />
-  if (panel === 'worktrees') return <WorktreePanel workspaceId={workspaceId} onClose={onClose} />
-  if (panel === 'browser') return <BrowserPanelV2 workspaceId={workspaceId} onClose={onClose} initialUrl={browserUrl} onInitialUrlConsumed={onBrowserUrlConsumed} onAttach={onAttachBrowserCapture} />
-  return null
-}
-function WorktreePanel({ workspaceId, onClose }: { workspaceId: string | null; onClose: () => void }) {
-  const [items, setItems] = useState<WorktreeItem[]>([])
-  const [branch, setBranch] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const refresh = useCallback(async () => {
-    if (!workspaceId) {
-      setItems([])
-      return
-    }
-    setItems(await window.electronAPI.worktrees.list(workspaceId).catch(() => []))
-  }, [workspaceId])
-
-  useEffect(() => {
-    refresh().catch(() => {})
-  }, [refresh])
-
-  const create = async () => {
-    if (!workspaceId || !branch.trim()) return
-    setLoading(true)
-    try {
-      setError(null)
-      await window.electronAPI.worktrees.create({ parentWorkspaceId: workspaceId, branch: branch.trim() })
-      setBranch('')
-      await refresh()
-    } catch (e: any) {
-      setError(e?.message || tr('创建工作树失败。', 'Failed to create worktree.'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const sync = async (id: string) => {
-    setLoading(true)
-    try {
-      setError(null)
-      await window.electronAPI.worktrees.sync(id)
-      await refresh()
-    } catch (e: any) {
-      setError(e?.message || tr('同步工作树失败。', 'Failed to sync worktree.'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const open = async (id: string) => {
-    try {
-      setError(null)
-      await window.electronAPI.worktrees.open(id)
-      await refresh()
-    } catch (e: any) {
-      setError(e?.message || tr('打开工作树失败。', 'Failed to open worktree.'))
-    }
-  }
-
-  const remove = async (item: WorktreeItem) => {
-    const force = item.status === 'dirty'
-    const message = force
-      ? tr('这个工作树有未提交变更。确认强制删除并移除记录？', 'This worktree has uncommitted changes. Force remove it?')
-      : tr('删除这个工作树并移除记录？', 'Remove this worktree and its record?')
-    const ok = await styledConfirm({ message, danger: force })
-    if (!ok) return
-    try {
-      setError(null)
-      await window.electronAPI.worktrees.remove(item.id, force)
-      await refresh()
-    } catch (e: any) {
-      setError(e?.message || tr('删除工作树失败。', 'Failed to remove worktree.'))
-    }
-  }
-
-  return (
-    <div className="wb-tool-panel">
-      <PanelTitle title={tr('工作树', 'Worktrees')} subtitle={tr('隔离分支目录', 'Isolated branch folders')} onClose={onClose} onRefresh={refresh} />
-      {!workspaceId && <div className="wb-muted-box">{tr('工作树需要先选择 Git 工作目录。', 'Choose a Git working folder to use worktrees.')}</div>}
-      {workspaceId && (
-        <>
-          <div className="wb-tool-inline-form">
-            <input value={branch} onChange={e => setBranch(e.target.value)} placeholder={tr('新分支名称', 'New branch name')} />
-            <button onClick={create} disabled={loading || !branch.trim()}>{tr('创建', 'Create')}</button>
-          </div>
-          {items.length === 0 && <div className="wb-muted-box">{tr('还没有工作树。', 'No worktrees yet.')}</div>}
-          {items.map(item => (
-            <div key={item.id} className="wb-tool-row">
-              <strong>{item.branch}</strong>
-              <small>{worktreeStatusLabel(item.status)} · {item.path}</small>
-              <div className="wb-tool-actions compact">
-                <button onClick={() => open(item.id)}>{tr('打开', 'Open')}</button>
-                <button onClick={() => sync(item.id)} disabled={loading}>{tr('同步', 'Sync')}</button>
-                <button onClick={() => remove(item)} className="danger">{tr('删除', 'Delete')}</button>
-              </div>
-            </div>
-          ))}
-          {error && <div className="wb-send-error">{error}</div>}
-        </>
-      )}
-    </div>
-  )
-}
-
-function worktreeStatusLabel(status: WorktreeItem['status']): string {
-  if (status === 'dirty') return tr('有变更', 'Dirty')
-  if (status === 'missing') return tr('路径丢失', 'Missing')
-  return tr('干净', 'Clean')
-}
-
-function BrowserPanelV2({
-  workspaceId,
-  onClose,
-  initialUrl,
-  onInitialUrlConsumed,
-  onAttach
-}: {
-  workspaceId: string | null
-  onClose: () => void
-  initialUrl?: string | null
-  onInitialUrlConsumed?: () => void
-  onAttach: (attachment: WorkbenchAttachment) => void
-}) {
-  const [url, setUrl] = useState('')
-  const [session, setSession] = useState<BrowserSession | null>(null)
-  const [captured, setCaptured] = useState<BrowserContextAttachment | null>(null)
-  const [attached, setAttached] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false })
-  const webviewRef = useRef<any>(null)
-
-  const open = async (nextUrl = url) => {
-    if (!nextUrl.trim()) return
-    setLoadError(null)
-    const next = await window.electronAPI.browser.open({ workspaceId, url: normalizeUrl(nextUrl) })
-    setSession(next)
-    setUrl(next.url)
-  }
-
-  useEffect(() => {
-    if (!initialUrl) return
-    setUrl(initialUrl)
-    open(initialUrl).catch(e => setLoadError(e?.message || tr('打开网页失败。', 'Failed to open page.')))
-    onInitialUrlConsumed?.()
-  }, [initialUrl])
-
-  useEffect(() => {
-    const webview = webviewRef.current
-    if (!webview || !session) return
-    const syncNav = () => {
-      try {
-        setNavState({
-          canGoBack: !!webview.canGoBack?.(),
-          canGoForward: !!webview.canGoForward?.()
-        })
-      } catch { /* webview API 调用可能失败，忽略 */ }
-    }
-    const start = () => { setLoading(true); setLoadError(null); syncNav() }
-    const stop = () => {
-      setLoading(false)
-      syncNav()
-      try {
-        const currentUrl = webview.getURL?.()
-        if (currentUrl) setUrl(currentUrl)
-      } catch { /* webview API 调用可能失败，忽略 */ }
-    }
-    const fail = (event: any) => {
-      setLoading(false)
-      const reason = event?.errorDescription || event?.errorCode || tr('页面加载失败。', 'Page failed to load.')
-      setLoadError(String(reason))
-      syncNav()
-    }
-    const title = (event: any) => {
-      const nextTitle = event?.title || ''
-      if (nextTitle) setSession(current => current ? { ...current, title: nextTitle } : current)
-    }
-    webview.addEventListener?.('did-start-loading', start)
-    webview.addEventListener?.('did-stop-loading', stop)
-    webview.addEventListener?.('did-navigate', stop)
-    webview.addEventListener?.('did-navigate-in-page', stop)
-    webview.addEventListener?.('did-fail-load', fail)
-    webview.addEventListener?.('page-title-updated', title)
-    return () => {
-      webview.removeEventListener?.('did-start-loading', start)
-      webview.removeEventListener?.('did-stop-loading', stop)
-      webview.removeEventListener?.('did-navigate', stop)
-      webview.removeEventListener?.('did-navigate-in-page', stop)
-      webview.removeEventListener?.('did-fail-load', fail)
-      webview.removeEventListener?.('page-title-updated', title)
-    }
-  }, [session?.id])
-
-  const capture = async () => {
-    const webview = webviewRef.current
-    if (!webview) return
-    const result = await webview.executeJavaScript(`(() => {
-      const text = document.body ? document.body.innerText.slice(0, 12000) : ''
-      const headings = Array.from(document.querySelectorAll('h1,h2,h3')).slice(0, 24).map(el => el.textContent?.trim()).filter(Boolean)
-      const links = Array.from(document.querySelectorAll('a[href]')).slice(0, 40).map(a => ({ text: a.textContent?.trim().slice(0, 80) || a.href, href: a.href }))
-      const forms = Array.from(document.querySelectorAll('form')).slice(0, 10).map(form => form.getAttribute('aria-label') || form.getAttribute('name') || 'form')
-      return { url: location.href, title: document.title, text, headings, links, forms, capturedAt: Date.now() }
-    })()`)
-    const attachment = await window.electronAPI.browser.capture(result)
-    setCaptured(attachment)
-    onAttach(browserCaptureToAttachment(attachment))
-    setAttached(true)
-  }
-
-  return (
-    <div className="wb-tool-panel wb-browser-panel">
-      <PanelTitle title={tr('页面捕获', 'Page Capture')} subtitle={session?.title || session?.url || tr('输入网址载入页面', 'Enter a URL to load')} onClose={onClose} />
-      <div className="wb-browser-toolbar">
-        <button onClick={() => webviewRef.current?.goBack?.()} disabled={!session || !navState.canGoBack}><Icon d={IC.chev} size={13} style={{ transform: 'rotate(180deg)' }} /></button>
-        <button onClick={() => webviewRef.current?.goForward?.()} disabled={!session || !navState.canGoForward}><Icon d={IC.chev} size={13} /></button>
-        <button onClick={() => webviewRef.current?.reload?.()} disabled={!session}><Icon d={IC.refresh} size={13} /></button>
-        <input value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') open().catch(err => setLoadError(err?.message || tr('打开网页失败。', 'Failed to open page.'))) }} placeholder={tr('输入网址', 'Enter URL')} />
-        <button onClick={() => open().catch(err => setLoadError(err?.message || tr('打开网页失败。', 'Failed to open page.')))} disabled={!url.trim()}>{loading ? tr('载入中', 'Loading') : tr('打开', 'Open')}</button>
-        <button onClick={capture} disabled={!session || loading}>{tr('捕获', 'Capture')}</button>
-        {captured && (
-          <>
-            <button onClick={async () => {
-              if (!captured) return
-              // Get structured text snapshot, then ask the LLM to summarize it.
-              const snapshotText = await window.electronAPI.browser.summarize(captured)
-              const res = await window.electronAPI.ai.quickComplete({
-                prompt: snapshotText,
-                systemPrompt: 'Summarize the following web page snapshot concisely: key topic, main points, and notable links. Reply in the user\'s language.'
-              })
-              const summary = res.content || snapshotText
-              // Add summary to composer or show in panel
-              const attachment: WorkbenchAttachment = {
-                id: `browser-summary-${Date.now()}`,
-                kind: 'text',
-                name: `Summary: ${captured.title || captured.url}`,
-                text: res.error ? `${snapshotText}\n\n[AI summary failed: ${res.error}]` : summary,
-                createdAt: Date.now()
-              }
-              onAttach(attachment)
-              setAttached(true)
-            }} disabled={!captured}>{tr('AI 总结', 'AI Summary')}</button>
-            <button onClick={async () => {
-              if (!captured) return
-              const prompt = await window.electronAPI.browser.analyzePrompt(captured, tr('分析这个页面的主要内容和结构', 'Analyze the main content and structure of this page'))
-              // Run the analysis prompt through the LLM instead of just attaching the prompt text.
-              const res = await window.electronAPI.ai.quickComplete({
-                prompt,
-                systemPrompt: 'You analyze web pages. Provide a structured analysis: purpose, key sections, content type, and any notable patterns. Reply in the user\'s language.'
-              })
-              const analysis = res.content || prompt
-              // Add analysis to composer
-              const attachment: WorkbenchAttachment = {
-                id: `browser-analysis-${Date.now()}`,
-                kind: 'text',
-                name: `Analysis: ${captured.title || captured.url}`,
-                text: res.error ? `${prompt}\n\n[AI analysis failed: ${res.error}]` : analysis,
-                createdAt: Date.now()
-              }
-              onAttach(attachment)
-              setAttached(true)
-            }} disabled={!captured}>{tr('AI 分析', 'AI Analyze')}</button>
-          </>
-        )}
-        <button onClick={() => session?.url && window.electronAPI.app.openExternal(session.url)} disabled={!session}><Icon d={IC.link} size={13} /></button>
-      </div>
-      {loadError && <div className="wb-send-error">{loadError}</div>}
-      {captured && <div className="wb-muted-box">{attached ? tr('已加入下一轮上下文：', 'Attached to next prompt: ') : tr('已捕获页面上下文：', 'Captured page context: ')}{captured.title || captured.url}</div>}
-      {session
-        ? <webview ref={webviewRef} className="wb-browser-webview" src={session.url} allowpopups={false} />
-        : <div className="wb-browser-blank"><Icon d={IC.search} size={20} /><strong>{tr('浏览器未打开', 'Browser is blank')}</strong><span>{tr('输入网址后再载入页面。', 'Enter a URL to load a page.')}</span></div>}
-    </div>
-  )
-}
-
-function PanelTitle({ title, subtitle, onClose, onRefresh, loading }: { title: string; subtitle?: string; onClose: () => void; onRefresh?: () => void | Promise<void>; loading?: boolean }) {
-  return (
-    <div className="wb-timeline-head">
-      <div>
-        <strong>{title}</strong>
-        {subtitle && <span>{subtitle}</span>}
-      </div>
-      <div className="wb-timeline-head-actions">
-        {onRefresh && <button onClick={() => onRefresh()} disabled={loading} title={tr('刷新', 'Refresh')}><Icon d={IC.refresh} size={14} /></button>}
-        <button onClick={onClose} title={tr('关闭', 'Close')}><Icon d={IC.x} size={14} /></button>
-      </div>
-    </div>
-  )
-}
-
-function normalizeUrl(value: string): string {
-  const text = value.trim()
-  if (!text) return 'about:blank'
-  if (/^(https?|file):\/\//i.test(text)) return text
-  return `https://${text}`
-}
-
-function parseSlashInput(value: string): { label: string; args: string } | null {
-  const match = value.trim().match(/^((?:\/|@)[\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]*(?::[\w\u4e00-\u9fff][\w\u4e00-\u9fff_-]*)?)(?:\s+([\s\S]*))?$/i)
-  if (!match) return null
-  const rawLabel = match[1].toLowerCase()
-  const label = rawLabel.startsWith('@') ? `/agent:${rawLabel.slice(1) === 'minimax-code' ? 'opencode' : rawLabel.slice(1)}` : rawLabel
-  return { label, args: (match[2] || '').trim() }
-}
-
-function isBufferedRuntimeEvent(event: RuntimeEvent): boolean {
-  return event.kind === 'agent:delta' || event.kind === 'agent:activity'
-}
-
-function shouldFlushFirstStreamDelta(event: RuntimeEvent, seenKeys: Set<string>): boolean {
-  if (event.kind !== 'agent:delta' || event.payload?.channel === 'thinking') return false
-  const key = [
-    event.threadId,
-    event.turnId,
-    event.agentId || event.payload?.agentId || 'agent',
-    event.payload?.channel || 'content'
-  ].join(':')
-  if (seenKeys.has(key)) return false
-  seenKeys.add(key)
-  return true
-}
-
-function parseLoopLimit(value: string, fallback = 5): number {
-  const match = value.match(/(?:--?(?:n|times|limit|max)|循环|轮数)\s*[=:]?\s*(\d{1,2})/i)
-  const n = Math.floor(Number(match?.[1] || fallback) || fallback)
-  return Math.max(1, Math.min(20, n))
-}
-
-function stripLoopFlags(value: string): string {
-  return value.replace(/(?:--?(?:n|times|limit|max)|循环|轮数)\s*[=:]?\s*\d{1,2}/gi, '').trim()
-}
-
-function browserCaptureToAttachment(capture: BrowserContextAttachment): WorkbenchAttachment {
-  const title = capture.title || capture.url || tr('浏览器捕获', 'Browser capture')
-  const headings = (capture.headings || []).filter(Boolean).map(item => `- ${item}`).join('\n')
-  const links = (capture.links || []).slice(0, 24).map(link => `- ${link.text}: ${link.href}`).join('\n')
-  const forms = (capture.forms || []).filter(Boolean).map(item => `- ${item}`).join('\n')
-  const text = [
-    `URL: ${capture.url}`,
-    `标题: ${capture.title || '-'}`,
-    headings ? `\n页面标题:\n${headings}` : '',
-    links ? `\n链接摘要:\n${links}` : '',
-    forms ? `\n表单:\n${forms}` : '',
-    capture.text ? `\n正文:\n${capture.text.slice(0, 12000)}` : ''
-  ].filter(Boolean).join('\n')
-  return {
-    id: `browser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    kind: 'text',
-    name: `${title.slice(0, 52)}.browser.md`,
-    mime: 'text/markdown',
-    text,
-    createdAt: Date.now()
-  }
-}
-
-function normalizeAgentSlots(slots: string[], usableAgentIds: string[]): string[] {
-  const seen = new Set<string>()
-  const next: string[] = []
-  for (const id of slots) {
-    if (usableAgentIds.includes(id) && !seen.has(id)) {
-      seen.add(id)
-      next.push(id)
-    }
-  }
-  for (const id of usableAgentIds) {
-    if (next.length >= 3) break
-    if (!seen.has(id)) {
-      seen.add(id)
-      next.push(id)
-    }
-  }
-  return next.slice(0, 3)
-}
-
-function selectableModelOptions(providers: ProviderDef[]): Array<{ providerId: string; modelId: string; label: string; searchable: string }> {
-  const options: Array<{ providerId: string; modelId: string; label: string; searchable: string }> = []
-  for (const provider of providers) {
-    if (!provider.enabled || !provider.apiKey || !provider.models?.length) continue
-    for (const model of provider.models) {
-      const label = `${provider.name} / ${model.label || model.id}`
-      options.push({
-        providerId: provider.id,
-        modelId: model.id,
-        label,
-        searchable: `${provider.id}/${model.id} ${provider.name} ${model.label || ''}`.toLowerCase()
-      })
-    }
-  }
-  return options
-}
-
-function isSelectableModel(selection: ModelSelection | null, providers: ProviderDef[]): boolean {
-  if (!selection) return false
-  return providers.some(provider =>
-    provider.id === selection.providerId &&
-    provider.enabled &&
-    !!provider.apiKey &&
-    provider.models?.some(model => model.id === selection.modelId)
-  )
-}
-
-function resolveModelCommand(
-  args: string,
-  options: Array<{ providerId: string; modelId: string; label: string; searchable: string }>
-): { selection?: ModelSelection; label?: string; message?: string } {
-  if (options.length === 0) return { message: tr('没有可用模型。请先在设置里启用供应商并填写 Key。', 'No available models. Enable a provider and API key in Settings first.') }
-  const raw = args.trim().toLowerCase()
-  if (!raw) return { message: tr(`可用模型：${options.slice(0, 8).map(item => `${item.providerId}/${item.modelId}`).join('、')}`, `Available models: ${options.slice(0, 8).map(item => `${item.providerId}/${item.modelId}`).join(', ')}`) }
-  const [providerPart, modelPart] = raw.includes('/') ? raw.split('/', 2) : ['', raw]
-  const matched = options.find(item => {
-    if (providerPart) return item.providerId.toLowerCase() === providerPart && item.modelId.toLowerCase() === modelPart
-    return item.modelId.toLowerCase() === modelPart || item.searchable.includes(raw)
-  })
-  if (!matched) return { message: tr(`没有找到模型：${args}`, `Model not found: ${args}`) }
-  return { selection: { providerId: matched.providerId, modelId: matched.modelId, source: 'provider' }, label: matched.label }
-}
-
-function reasoningFromCommand(args: string, previous: WorkbenchThinking): WorkbenchThinking | null {
-  const value = normalizeReasoningChoice(args)
-  return value ? { ...previous, mode: 'enabled', level: value, collapseInUI: true } : null
-}
-
-function reasoningLabel(thinking: WorkbenchThinking): string {
-  return reasoningChoiceLabel(normalizeReasoningChoice(thinking.level) || 'medium')
-}
-
-function normalizeReasoningChoice(value: string): ThinkingLevelChoice | null {
-  const normalized = value.trim().toLowerCase()
-  if (normalized === '低' || normalized === 'low') return 'low'
-  if (normalized === '中' || normalized === 'medium' || normalized === 'mid') return 'medium'
-  if (normalized === '高' || normalized === 'high') return 'high'
-  if (normalized === '超高' || normalized === '极高' || normalized === 'xhigh' || normalized === 'extra' || normalized === 'max') return 'xhigh'
-  return null
-}
-
-function reasoningChoiceLabel(value: ThinkingLevelChoice): string {
-  if (value === 'low') return tr('低', 'low')
-  if (value === 'medium') return tr('中', 'medium')
-  if (value === 'high') return tr('高', 'high')
-  return tr('超高', 'extra high')
-}
-
-function clampInspectorWidth(width: number, viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth): number {
-  const sidebarAndMain = viewportWidth > 1160 ? 292 + 560 + 40 : 290 + 420 + 32
-  const responsiveMax = Math.max(MIN_INSPECTOR_WIDTH, viewportWidth - sidebarAndMain)
-  return Math.max(MIN_INSPECTOR_WIDTH, Math.min(MAX_INSPECTOR_WIDTH, responsiveMax, Math.round(width)))
-}
-
-async function watchTerminalRun(runId: string, setRuns: React.Dispatch<React.SetStateAction<TerminalRun[]>>, signal?: AbortSignal) {
-  for (let i = 0; i < 24; i++) {
-    if (signal?.aborted) return
-    await new Promise(resolve => setTimeout(resolve, i < 8 ? 500 : 1200))
-    if (signal?.aborted) return
-    const history = await window.electronAPI.terminal.history().catch(() => [])
-    const current = history.find(run => run.id === runId)
-    setRuns(history)
-    if (current && current.status !== 'running') break
-  }
-}
 
 function _modeLabel(mode: DispatchPreset): string {
   return ({
@@ -2631,8 +1383,4 @@ function _modeLabel(mode: DispatchPreset): string {
     'firefly-custom': tr('智能五角色', 'Smart five-role'),
     custom: tr('自定义调度', 'Custom schedule')
   } as Partial<Record<DispatchPreset, string>>)[mode] || mode
-}
-
-function agentShortName(agentId: string): string {
-  return localAgentLabel(agentId)
 }

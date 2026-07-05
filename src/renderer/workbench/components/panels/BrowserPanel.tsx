@@ -1,22 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon, IC } from '../../../glass/ui'
 import { tr } from '../../../glass/i18n'
-import { normalizeUrl, browserCaptureToAttachment, BrowserContextAttachment } from '../../utils/browserUtils'
+import { normalizeUrl, browserCaptureToAttachment, browserCaptureToSnapshot } from '../../utils/browserUtils'
 import { PanelTitle } from '../PanelTitle'
-
-interface BrowserSession {
-  id: string
-  url: string
-  title?: string
-}
-
-interface WorkbenchAttachment {
-  id: string
-  kind: string
-  name: string
-  text: string
-  createdAt: number
-}
 
 interface BrowserPanelProps {
   workspaceId: string | null
@@ -42,20 +28,20 @@ export function BrowserPanel({
   const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false })
   const webviewRef = useRef<any>(null)
 
-  const open = async (nextUrl = url) => {
+  const open = useCallback(async (nextUrl = url) => {
     if (!nextUrl.trim()) return
     setLoadError(null)
     const next = await window.electronAPI.browser.open({ workspaceId, url: normalizeUrl(nextUrl) })
     setSession(next)
     setUrl(next.url)
-  }
+  }, [url, workspaceId])
 
   useEffect(() => {
     if (!initialUrl) return
     setUrl(initialUrl)
     open(initialUrl).catch(e => setLoadError(e?.message || tr('打开网页失败。', 'Failed to open page.')))
     onInitialUrlConsumed?.()
-  }, [initialUrl])
+  }, [initialUrl, onInitialUrlConsumed, open])
 
   useEffect(() => {
     const webview = webviewRef.current
@@ -133,12 +119,14 @@ export function BrowserPanel({
           <>
             <button onClick={async () => {
               if (!captured) return
-              const snapshotText = await window.electronAPI.browser.summarize(captured)
+              // Get structured text snapshot, then ask the LLM to summarize it.
+              const snapshotText = await window.electronAPI.browser.summarize(browserCaptureToSnapshot(captured))
               const res = await window.electronAPI.ai.quickComplete({
                 prompt: snapshotText,
                 systemPrompt: 'Summarize the following web page snapshot concisely: key topic, main points, and notable links. Reply in the user\'s language.'
               })
               const summary = res.content || snapshotText
+              // Add summary to composer or show in panel
               const attachment: WorkbenchAttachment = {
                 id: `browser-summary-${Date.now()}`,
                 kind: 'text',
@@ -151,12 +139,14 @@ export function BrowserPanel({
             }} disabled={!captured}>{tr('AI 总结', 'AI Summary')}</button>
             <button onClick={async () => {
               if (!captured) return
-              const prompt = await window.electronAPI.browser.analyzePrompt(captured, tr('分析这个页面的主要内容和结构', 'Analyze the main content and structure of this page'))
+              const prompt = await window.electronAPI.browser.analyzePrompt(browserCaptureToSnapshot(captured), tr('分析这个页面的主要内容和结构', 'Analyze the main content and structure of this page'))
+              // Run the analysis prompt through the LLM instead of just attaching the prompt text.
               const res = await window.electronAPI.ai.quickComplete({
                 prompt,
                 systemPrompt: 'You analyze web pages. Provide a structured analysis: purpose, key sections, content type, and any notable patterns. Reply in the user\'s language.'
               })
               const analysis = res.content || prompt
+              // Add analysis to composer
               const attachment: WorkbenchAttachment = {
                 id: `browser-analysis-${Date.now()}`,
                 kind: 'text',

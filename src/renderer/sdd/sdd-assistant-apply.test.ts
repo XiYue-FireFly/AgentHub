@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   applyAssistantRequirementResponse,
   cleanAssistantMarkdown,
-  looksLikeFullRequirementDocument
+  looksLikeFullRequirementDocument,
+  previewAssistantRequirementResponse
 } from './sdd-assistant-apply'
 
 const baseDraft = `# 未命名需求
@@ -101,5 +102,17 @@ describe('sdd assistant requirement response application', () => {
   it('cleans markdown code fences without changing plain markdown', () => {
     expect(cleanAssistantMarkdown('```md\n# 标题\n\n内容\n```')).toBe('# 标题\n\n内容')
     expect(cleanAssistantMarkdown('# 标题\n\n内容')).toBe('# 标题\n\n内容')
+  })
+  it('previews requirement writeback changes without mutating the current draft', () => {
+    const preview = previewAssistantRequirementResponse(
+      baseDraft,
+      'Add shipping address collection to checkout.',
+      { now: fixedNow }
+    )
+
+    expect(preview.changed).toBe(true)
+    expect(preview.content).toContain('Add shipping address collection to checkout.')
+    expect(preview.added).toContain('Add shipping address collection to checkout.')
+    expect(baseDraft).not.toContain('Add shipping address collection to checkout.')
   })
 })

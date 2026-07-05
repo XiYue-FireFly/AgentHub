@@ -8,7 +8,8 @@ vi.mock("../../store", () => ({
     set: (key: string, value: any) => { memory[key] = value }
   },
   encryptSecret: (value: string) => value,
-  decryptSecret: (value: string) => value
+  decryptSecret: (value: string) => value,
+  decryptSecretDetailed: (value: string) => ({ ok: true, value, encrypted: value.startsWith("enc:v1:") })
 }))
 
 describe("models center route catalog", () => {
@@ -21,6 +22,7 @@ describe("models center route catalog", () => {
     const { getProviderManager } = await import("../../providers/manager")
     const { listGlobalModels } = await import("../models-center")
     const manager = getProviderManager()
+    manager.setProviderApiKey("openai", "key")
     manager.updateModelRoute("openai", "gpt-4o", {
       enabled: false,
       upstreamModel: "gpt-upstream",
@@ -39,10 +41,42 @@ describe("models center route catalog", () => {
     })
   })
 
+  it("omits locked providers from runtime model lists", async () => {
+    const { buildModelList, buildCodexCatalog } = await import("../models-center")
+
+    const lockedProvider = {
+      id: "locked-provider",
+      name: "Locked Provider",
+      enabled: true,
+      apiKey: "********",
+      apiKeyLocked: true,
+      kind: "openai-compatible",
+      models: [{
+        id: "locked-model",
+        label: "Locked Model",
+        enabled: true,
+        contextWindow: 128000,
+        supportsTools: true,
+        supportsVision: false,
+        supportsThinking: false
+      }]
+    }
+
+    expect(buildModelList([lockedProvider as any])).toEqual([])
+    memory["providers.config.v1"] = {
+      providers: [lockedProvider],
+      routing: { bindings: [], fallbackChain: [], strategy: "single" },
+      activeBindingId: null
+    }
+    expect(buildCodexCatalog().models).toEqual([])
+  })
+
   it("exports Codex catalog with unique slug and upstream target model", async () => {
     const { getProviderManager } = await import("../../providers/manager")
     const { buildCodexCatalog } = await import("../models-center")
     const manager = getProviderManager()
+    manager.setProviderApiKey("openai", "openai-key")
+    manager.setProviderApiKey("anthropic", "anthropic-key")
     manager.updateModelRoute("openai", "gpt-4o", {
       upstreamModel: "real-gpt-4o",
       codexAlias: "main",

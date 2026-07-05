@@ -7,13 +7,68 @@
 // ipc-types.ts is the canonical source of truth; this file provides ambient
 // globals for the renderer process.
 
+interface HubStatus {
+  running: boolean
+  url: string
+  proxyUrl: string
+  clientCount: number
+  agents: Array<{
+    id: string
+    name: string
+    status: string
+    capabilities: string[]
+    providerId?: string
+    modelId?: string
+    errorCount?: number
+  }>
+  tasks: Array<{
+    id: string
+    text: string
+    mode: DispatchPreset
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+    createdAt: Date
+  }>
+}
+
+type AgentCapabilityLike = 'fs-read' | 'fs-write' | 'exec' | 'agentic-loop' | 'skills' | 'system-control'
+type AgenticProtocolLike = 'http' | 'stdio-plain' | 'acp'
+type AgenticModeLike = 'all' | 'selected'
+type AgenticApprovalPolicyLike = 'allow' | 'ask' | 'deny'
+type AgenticGuardedToolLike = 'write' | 'exec'
+type AgenticApprovalPresetLike = 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'
+type TakeoverAppLike = 'codex' | 'claude' | 'hermes' | 'openclaw'
+
+interface AgentCapabilityStateLike {
+  agentId: string
+  name: string
+  protocol: AgenticProtocolLike
+  nativeCli: boolean
+  httpAgentic: boolean
+  capabilities: AgentCapabilityLike[]
+}
+
+interface AgenticApprovalConfigLike {
+  version: 1
+  preset?: AgenticApprovalPresetLike
+  default: Record<AgenticGuardedToolLike, AgenticApprovalPolicyLike>
+  overrides: Record<string, Partial<Record<AgenticGuardedToolLike, AgenticApprovalPolicyLike>>>
+}
+
+interface TakeoverStateLike {
+  supported: boolean
+  configPath: string
+  configExists: boolean
+  takenOver: boolean
+  model: string | null
+  current: string | null
+}
+
+type TakeoverStatusResultLike = Record<TakeoverAppLike, TakeoverStateLike> | { error: string }
+type TakeoverMutationResultLike = TakeoverStateLike | { ok: false; error: string }
+
 interface ElectronAPI {
   hub: {
-    getStatus: () => Promise<any>
-    dispatch: (text: string, mode?: string, targetAgent?: string, opts?: { thinking?: any; modelSelection?: ModelSelection; workspaceId?: string | null }) => Promise<any>
-    cancel: (taskId: string) => Promise<boolean>
-    onStatus: (callback: (data: { running: boolean }) => void) => () => void
-    onStream: (callback: (data: any) => void) => () => void
+    getStatus: () => Promise<HubStatus>
   }
   providers: {
     get: () => Promise<any> // ProvidersConfig — typed in shared/ipc-types.ts
@@ -26,14 +81,12 @@ interface ElectronAPI {
     fetchModels: (id: string, override?: { baseUrl?: string; apiKey?: string; kind?: string }) => Promise<{ ok: boolean; count?: number; error?: string; config?: any }>
     reorderForClaude: (orderedIds: string[]) => Promise<any>
     onWarning?: (callback: (warning: { providerId: string; message: string }) => void) => () => void
+    onConfigChanged?: (callback: (config: ProvidersConfig) => void) => () => void
   }
   takeover: {
-    status: () => Promise<Record<string, {
-      supported: boolean; configPath: string; configExists: boolean
-      takenOver: boolean; model: string | null; current: string | null
-    }>>
-    apply: (app: string, modelRef: string) => Promise<any>
-    restore: (app: string) => Promise<any>
+    status: () => Promise<TakeoverStatusResultLike>
+    apply: (app: string, modelRef: string) => Promise<TakeoverMutationResultLike>
+    restore: (app: string) => Promise<TakeoverMutationResultLike>
   }
   routing: {
     setBinding: (b: any) => Promise<any>
@@ -45,10 +98,10 @@ interface ElectronAPI {
     activeBinding: (agentId: string) => Promise<any>
   }
   proxy: {
-    info: () => Promise<{ url: string; openaiUrl?: string; anthropicUrl?: string; running: boolean }>
+    info: () => Promise<{ url: string; running: boolean }>
   }
   agents: {
-    locate: () => Promise<Record<string, Array<{ source: 'desktop' | 'terminal'; label: string; path: string }>>>
+    locate: () => Promise<LocalAgentStatus[]>
   }
   win: {
     minimize: () => Promise<void>
@@ -57,45 +110,43 @@ interface ElectronAPI {
     close: () => Promise<void>
     onMaximized: (callback: (maximized: boolean) => void) => () => void
   }
-  // LOW-24: Moved onChatResponse into chat namespace
-  chat: {
-    onResponse: (callback: (data: any) => void) => () => void
-  }
   store: {
-    get: (key: string) => Promise<any>
-    set: (key: string, value: any) => Promise<boolean>
+    get: (key: string, defaultValue?: unknown) => Promise<unknown>
+    set: (key: string, value: unknown) => Promise<boolean>
   }
   memory: {
-    catalog: () => Promise<any>
-    getSettings: () => Promise<{ enabled: boolean }>
-    updateSettings: (patch: { enabled?: boolean }) => Promise<{ enabled: boolean }>
-    list: (category?: MemoryCategory) => Promise<any[]>
-    search: (query: string, category?: MemoryCategory) => Promise<any[]>
-    addEntry: (entry: any) => Promise<any>
+    catalog: () => Promise<MemoryCatalog>
+    getSettings: () => Promise<MemorySettingsState>
+    updateSettings: (patch: Partial<MemorySettingsState>) => Promise<MemorySettingsState>
+    list: (category?: MemoryCategory) => Promise<MemoryEntry[]>
+    search: (query: string, category?: MemoryCategory) => Promise<MemoryEntry[]>
+    addEntry: (entry: MemoryEntryInput) => Promise<MemoryEntry>
     importConversation: (source: string, content: string) => Promise<MemoryEntry[]>
     listCandidates: () => Promise<MemoryEntry[]>
     approveCandidate: (id: string) => Promise<MemoryEntry | null>
-    updateEntry: (id: string, patch: Partial<MemoryEntry>) => Promise<MemoryEntry | null>
+    updateEntry: (id: string, patch: MemoryEntryPatch) => Promise<MemoryEntry | null>
     disableEntry: (id: string) => Promise<MemoryEntry | null>
     delete: (id: string) => Promise<boolean>
     restore: (id: string) => Promise<MemoryEntry | null>
-    loadState: () => Promise<{ messages?: any[]; tasks?: any[] }>
-    saveState: (state: { messages: any[]; tasks: any[] }) => Promise<any>
+  }
+  memoryStudio: {
+    scoreQuality: (entry: MemoryQualityInput) => Promise<MemoryQualityScore>
+    detectConflicts: (entries: MemoryConflictEntry[]) => Promise<MemoryConflict[]>
   }
   app: {
-    openExternal: (url: string) => Promise<void>
+    openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
     openPath: (input: { path: string; target?: 'editor' | 'antigravity' | 'explorer' | 'system' | 'vscode' | 'cursor' | 'windsurf' | 'zed' | 'file-manager'; line?: number; column?: number; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; target: string; error?: string }>
     resolvePath: (input: { path: string; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; error?: string }>
     readTextFile: (input: { path: string; workspaceRoot?: string | null }) => Promise<{ ok: boolean; path: string; content?: string; error?: string }>
     pickFolder: (options?: { defaultPath?: string }) => Promise<string | null>
-    pickFiles: (options?: { defaultPath?: string }) => Promise<WorkbenchAttachment[]>
+    pickFiles: (options?: { defaultPath?: string }) => Promise<string[] | null>
     onDeepLink: (callback: (link: { action: string; params: Record<string, string> }) => void) => () => void
     onMenuCommand: (callback: (link: { action: string; params: Record<string, string> }) => void) => () => void
   }
   workspaces: {
-    list: () => Promise<Array<{ id: string; name: string; rootPath: string; createdAt: number; updatedAt: number }>>
-    create: (input: { name: string; rootPath: string }) => Promise<{ id: string; name: string; rootPath: string }>
-    update: (id: string, patch: { name?: string; rootPath?: string; bootstrapFiles?: string[] }) => Promise<any>
+    list: () => Promise<WorkbenchWorkspace[]>
+    create: (input: WorkbenchWorkspaceCreateInput) => Promise<WorkbenchWorkspace>
+    update: (id: string, patch: WorkbenchWorkspaceUpdatePatch) => Promise<WorkbenchWorkspace>
     remove: (id: string) => Promise<boolean>
     getActive: () => Promise<string | null>
     setActive: (id: string | null) => Promise<string | null>
@@ -105,18 +156,18 @@ interface ElectronAPI {
   }
   threads: {
     list: (workspaceId?: string | null) => Promise<WorkbenchThread[]>
-    create: (input: { workspaceId?: string | null; title?: string }) => Promise<WorkbenchThread>
+    create: (input: ThreadCreateInput) => Promise<WorkbenchThread>
     rename: (threadId: string, title: string) => Promise<WorkbenchThread>
     delete: (threadId: string) => Promise<boolean>
     select: (threadId: string | null) => Promise<string | null>
-    fork: (input: { sourceThreadId: string; sourceTurnId: string; message: string }) => Promise<WorkbenchThread>
+    fork: (input: ThreadForkInput) => Promise<WorkbenchThread>
   }
   turns: {
-    create: (input: { threadId?: string | null; workspaceId?: string | null; prompt: string; mode?: DispatchPreset; targetAgent?: string | null; thinking?: any; modelSelection?: ModelSelection; attachments?: WorkbenchAttachment[]; customSchedule?: SchedulePreview }) => Promise<any>
+    create: (input: TurnCreateInput) => Promise<TurnCreateResult>
     cancel: (turnId: string) => Promise<boolean>
     cancelAgent: (turnId: string, agentId: string) => Promise<boolean>
     resolveGuard: (requestId: string, approved: boolean) => Promise<boolean>
-    retry: (turnId: string) => Promise<any>
+    retry: (turnId: string) => Promise<TurnCreateResult>
   }
   runtime: {
     snapshot: (workspaceId?: string | null) => Promise<WorkbenchSnapshot>
@@ -129,7 +180,7 @@ interface ElectronAPI {
   localAgents: {
     detect: () => Promise<LocalAgentStatus[]>
     status: () => Promise<LocalAgentStatus[]>
-    options: () => Promise<Array<{ id: string; label: string; status: string; source: string }>>
+    options: () => Promise<Array<{ agentId: string; label: string; status: 'idle' | 'busy' | 'error' | 'off'; installed: boolean; configured: boolean }>>
     configure: (agentId: string, patch: { binary?: string; args?: string; protocol?: 'stdio-plain' | 'acp' }) => Promise<LocalAgentStatus[]>
   }
   localModels: {
@@ -159,6 +210,14 @@ interface ElectronAPI {
     run: (input: { workspaceId?: string | null; command: string }) => Promise<TerminalRun>
     cancel: (runId: string) => Promise<boolean>
     history: () => Promise<TerminalRun[]>
+  }
+  terminalPty: {
+    create: (payload: { sessionId: string; cwd?: string; cols?: number; rows?: number }) => Promise<{ ok: boolean; message?: string; reattached?: boolean }>
+    write: (payload: { sessionId: string; data: string }) => Promise<void>
+    resize: (payload: { sessionId: string; cols: number; rows: number }) => Promise<void>
+    dispose: (sessionId: string) => Promise<void>
+    onData: (handler: (payload: { sessionId: string; data: string }) => void) => () => void
+    onExit: (handler: (payload: { sessionId: string; exitCode: number }) => void) => () => void
   }
   tasks: {
     delete: (taskId: string) => Promise<boolean>
@@ -196,7 +255,7 @@ interface ElectronAPI {
     remove: (id: string) => Promise<boolean>
     setEnabled: (id: string, enabled: boolean, workspaceId?: string | null) => Promise<McpServerConfig | null>
     test: (id: string, workspaceId?: string | null) => Promise<McpServerConfig>
-    listTools: (id: string, workspaceId?: string | null) => Promise<{ ok: boolean; tools: { name: string; description?: string }[]; error?: string }>
+    listTools: (id: string, workspaceId?: string | null) => Promise<McpServerToolsResult>
     // MCP 系统级控制配置
     getSystemConfig: () => Promise<McpSystemConfig>
     setSystemConfig: (config: Partial<McpSystemConfig>) => Promise<void>
@@ -207,28 +266,28 @@ interface ElectronAPI {
     create: (input: { parentWorkspaceId: string; branch?: string; path?: string }) => Promise<WorktreeItem>
     remove: (id: string, force?: boolean) => Promise<boolean>
     sync: (id: string) => Promise<WorktreeItem>
-    open: (id: string) => Promise<any>
+    open: (id: string) => Promise<WorkbenchWorkspace>
   }
   todos: {
     list: (threadId: string) => Promise<ThreadTodo[]>
-    set: (threadId: string, todos: ThreadTodo[]) => Promise<ThreadTodo[]>
-    upsert: (input: { threadId: string; id?: string; content: string; status?: ThreadTodoStatus; source?: any }) => Promise<ThreadTodo>
+    set: (threadId: string, todos: ThreadTodoSetInput) => Promise<ThreadTodo[]>
+    upsert: (input: { threadId: string; id?: string; content: string; status?: ThreadTodoStatus; source?: ThreadTodoSource }) => Promise<ThreadTodo>
     delete: (threadId: string, todoId: string) => Promise<boolean>
     clear: (threadId: string) => Promise<boolean>
-    syncFromMarkdown: (threadId: string, markdown: string) => Promise<ThreadTodo[]>
+    syncFromMarkdown: (threadId: string, markdown: string, sourceContext?: ThreadTodoSyncSourceContext) => Promise<ThreadTodo[]>
   }
   updates: {
     status: () => Promise<UpdateStatus>
     check: (channel?: 'stable' | 'preview') => Promise<UpdateStatus>
     setChannel: (channel: 'stable' | 'preview') => Promise<UpdateStatus>
-    openDownload: () => Promise<boolean>
+    openDownload: () => Promise<void>
   }
   browser: {
     open: (input: { workspaceId?: string | null; url?: string }) => Promise<BrowserSession>
-    capture: (attachment: BrowserContextAttachment) => Promise<BrowserContextAttachment>
-    summarize: (snapshot: any) => Promise<string>
+    capture: (attachment: Partial<BrowserContextAttachment>) => Promise<BrowserContextAttachment>
+    summarize: (snapshot: BrowserPageSnapshot) => Promise<string>
     extractText: (html: string) => Promise<string>
-    analyzePrompt: (snapshot: any, request?: string) => Promise<string>
+    analyzePrompt: (snapshot: BrowserPageSnapshot, request?: string) => Promise<string>
   }
   usage: {
     stats: (range?: UsageRange, view?: UsageView) => Promise<UsageStats>
@@ -238,6 +297,11 @@ interface ElectronAPI {
     pricingUpsert: (rule: Partial<UsagePricingRule> & { modelId: string }) => Promise<UsagePricingRule>
     pricingDelete: (idOrModelId: string, providerId?: string) => Promise<boolean>
   }
+  budget: {
+    get: () => Promise<BudgetConfig>
+    update: (patch: Partial<BudgetConfig>) => Promise<BudgetConfig>
+    check: (dailySpent: number, monthlySpent: number, requestTokens: number) => Promise<BudgetCheckResult>
+  }
   goals: {
     get: (threadId?: string | null) => Promise<WorkbenchGoal | null>
     set: (threadId: string, goal: string, loopLimit?: number) => Promise<WorkbenchGoal>
@@ -245,79 +309,89 @@ interface ElectronAPI {
   }
   // --- AgentHub skills + native agentic (Claude-B 新增) ---
   skills: {
-    list: () => Promise<Array<{ id: string; name: string; description: string; instructions: string; tags: string[]; category?: { id: string; label: string }; source: string; createdAt: number; updatedAt: number }>>
-    builtins: () => Promise<Array<{ name: string; description?: string; instructions: string; tags?: string[]; category?: { id: string; label: string } | string; source?: string }>>
+    list: () => Promise<SkillDef[]>
+    builtins: () => Promise<SkillInput[]>
     scanLocal: () => Promise<LocalSkillCandidate[]>
-    importLocal: (sourcePath: string) => Promise<any>
+    importLocal: (sourcePath: string) => Promise<SkillDef>
     refreshLocal: () => Promise<LocalSkillCandidate[]>
-    add: (input: { name: string; description?: string; instructions: string; tags?: string[]; category?: { id: string; label: string } | string; source?: string }) => Promise<any>
-    update: (id: string, patch: { name?: string; description?: string; instructions?: string; tags?: string[]; category?: { id: string; label: string } | string; source?: string }) => Promise<any>
+    add: (input: SkillInput) => Promise<SkillDef>
+    update: (id: string, patch: Partial<SkillInput>) => Promise<SkillDef | undefined>
     remove: (id: string) => Promise<boolean>
-    getInstalls: () => Promise<Record<string, string[]>>
-    install: (agentId: string, skillId: string) => Promise<Record<string, string[]>>
-    uninstall: (agentId: string, skillId: string) => Promise<Record<string, string[]>>
+    getInstalls: () => Promise<SkillInstalls>
+    install: (agentId: string, skillId: string) => Promise<SkillInstalls>
+    uninstall: (agentId: string, skillId: string) => Promise<SkillInstalls>
   }
   agentic: {
-    capabilities: () => Promise<Array<{ agentId: string; name: string; protocol: 'http' | 'stdio-plain' | 'acp'; nativeCli: boolean; httpAgentic: boolean; capabilities: string[] }>>
+    capabilities: () => Promise<AgentCapabilityStateLike[]>
     getEnabled: () => Promise<string[]>
     setEnabled: (agentId: string, on: boolean) => Promise<string[]>
-    getMode: () => Promise<'all' | 'selected'>
-    setMode: (mode: 'all' | 'selected') => Promise<'all' | 'selected'>
-    getApprovalConfig: () => Promise<{ version: 1; preset?: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'; default: { write: 'allow' | 'ask' | 'deny'; exec: 'allow' | 'ask' | 'deny' }; overrides: Record<string, { write?: 'allow' | 'ask' | 'deny'; exec?: 'allow' | 'ask' | 'deny' }> }>
-    setApprovalPreset: (preset: 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom') => Promise<any>
-    setApprovalDefault: (tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny') => Promise<any>
-    setApprovalOverride: (agentId: string, tool: 'write' | 'exec', policy: 'allow' | 'ask' | 'deny' | null) => Promise<any>
+    getMode: () => Promise<AgenticModeLike>
+    setMode: (mode: AgenticModeLike) => Promise<AgenticModeLike>
+    getApprovalConfig: () => Promise<AgenticApprovalConfigLike>
+    setApprovalPreset: (preset: AgenticApprovalPresetLike) => Promise<AgenticApprovalConfigLike>
+    setApprovalDefault: (tool: AgenticGuardedToolLike, policy: AgenticApprovalPolicyLike) => Promise<AgenticApprovalConfigLike>
+    setApprovalOverride: (agentId: string, tool: AgenticGuardedToolLike, policy: AgenticApprovalPolicyLike | null) => Promise<AgenticApprovalConfigLike>
     resolveApproval: (requestId: string, approved: boolean) => Promise<boolean>
   }
   prompts: {
-    list: (category?: string) => Promise<any[]>
-    get: (id: string) => Promise<any | null>
-    upsert: (input: any) => Promise<any>
+    list: (category?: PromptCategory) => Promise<PromptEntry[]>
+    get: (id: string) => Promise<PromptEntry | null>
+    upsert: (input: PromptUpsertInput) => Promise<PromptEntry>
     delete: (id: string) => Promise<boolean>
-    search: (query: string) => Promise<any[]>
-    slashCommands: () => Promise<any[]>
+    search: (query: string) => Promise<PromptEntry[]>
+    slashCommands: () => Promise<PromptEntry[]>
     incrementUse: (id: string) => Promise<void>
     seedDefaults: () => Promise<void>
   }
   shortcuts: {
-    list: (category?: string) => Promise<any[]>
-    get: (id: string) => Promise<any | null>
-    update: (id: string, key: string) => Promise<any | null>
-    reset: (id: string) => Promise<any | null>
+    list: (category?: ShortcutCategory) => Promise<ShortcutBinding[]>
+    get: (id: string) => Promise<ShortcutBinding | null>
+    update: (id: string, key: string) => Promise<ShortcutBinding | null>
+    reset: (id: string) => Promise<ShortcutBinding | null>
     resetAll: () => Promise<void>
-    conflicts: () => Promise<Array<{ key: string; ids: string[] }>>
+    conflicts: () => Promise<ShortcutConflict[]>
   }
   diagnostics: {
-    run: () => Promise<{ timestamp: string; results: Array<{ id: string; name: string; status: string; message: string }>; summary: { pass: number; warn: number; fail: number; skip: number; total: number } }>
+    run: () => Promise<LegacyDiagnosticSuite>
     logPath: () => Promise<{ path: string }>
+    recentLogs: (limit?: number) => Promise<RecentAppEventLogs>
+  }
+  diagnosticsSuite: {
+    run: () => Promise<DiagnosticReport>
   }
   backup: {
-    create: () => Promise<{ id: string; filename: string; createdAt: string; sizeBytes: number; keys: string[] }>
-    list: () => Promise<Array<{ id: string; filename: string; createdAt: string; sizeBytes: number; keys: string[] }>>
-    restore: (filename: string) => Promise<{ restored: string[]; error?: string }>
+    create: () => Promise<BackupCreateResult>
+    list: () => Promise<BackupMeta[]>
+    restore: (filename: string) => Promise<BackupRestoreResult>
     delete: (filename: string) => Promise<boolean>
   }
   conversation: {
-    exportMarkdown: (data: any) => Promise<string>
-    exportHtml: (data: any) => Promise<string>
-    exportFile: (data: any, format: string, path: string) => Promise<{ ok: boolean; path: string; error?: string }>
+    exportMarkdown: (data: ConversationExportData) => Promise<string>
+    exportHtml: (data: ConversationExportData) => Promise<string>
+    exportFile: (data: ConversationExportData, format: ConversationExportFormat, path: string) => Promise<ConversationExportFileResult>
+  }
+  conversationImport: {
+    importFile: (filePath: string) => Promise<ConversationImportResult>
+    importJson: (json: string) => Promise<ConversationImportResult>
+    branch: (conversation: ImportedConversation, index: number) => Promise<ConversationBranchResult>
+    summarize: (conversation: ImportedConversation) => Promise<ConversationSummary>
   }
   notifications: {
-    list: (unreadOnly?: boolean) => Promise<Array<{ id: string; title: string; body: string; category: string; read: boolean; createdAt: string; action?: any }>>
+    list: (unreadOnly?: boolean) => Promise<AppNotification[]>
     unreadCount: () => Promise<number>
-    push: (input: any) => Promise<any>
+    push: (input: AppNotificationInput) => Promise<AppNotification>
     markRead: (id: string) => Promise<boolean>
     markAllRead: () => Promise<number>
     delete: (id: string) => Promise<boolean>
     clearAll: () => Promise<void>
   }
   onboarding: {
-    getState: () => Promise<{ version: number; completed: boolean; completedAt?: string; completedSteps: string[]; skippedSteps: string[] }>
+    getState: () => Promise<OnboardingState>
     shouldShow: () => Promise<boolean>
-    completeStep: (step: string, skipped?: boolean) => Promise<any>
+    completeStep: (step: OnboardingStep, skipped?: boolean) => Promise<OnboardingState>
     skipAll: () => Promise<void>
     reset: () => Promise<void>
-    nextStep: () => Promise<string | null>
+    nextStep: () => Promise<OnboardingStep | null>
   }
   workspaceFiles: {
     list: (rootPath: string, max?: number) => Promise<Array<{ path: string; relativePath: string; name: string; extension: string; isDirectory: boolean; sizeBytes: number }>>
@@ -329,10 +403,10 @@ interface ElectronAPI {
     listDirectory: (workspaceRoot: string, relPath: string) => Promise<{ ok: boolean; entries: Array<{ name: string; type: 'file' | 'directory'; path: string }>; error?: string }>
   }
   github: {
-    checkCli: () => Promise<{ available: boolean; authenticated: boolean; version?: string; error?: string }>
-    listPrs: (state?: string, limit?: number) => Promise<Array<{ number: number; title: string; state: string; author: string; url: string; branch: string; createdAt: string; labels: string[] }>>
-    listIssues: (state?: string, limit?: number) => Promise<Array<{ number: number; title: string; state: string; author: string; url: string; labels: string[]; createdAt: string }>>
-    currentBranchPr: () => Promise<{ branch: string; pr?: any }>
+    checkCli: () => Promise<GitHubCliStatus>
+    listPrs: (state?: GitHubListState, limit?: number) => Promise<GitHubPr[]>
+    listIssues: (state?: GitHubListState, limit?: number) => Promise<GitHubIssue[]>
+    currentBranchPr: () => Promise<GitHubCurrentBranchPr>
   }
   workflows: {
     list: (category?: string) => Promise<WorkflowDefinition[]>
@@ -342,35 +416,60 @@ interface ElectronAPI {
     search: (query: string) => Promise<WorkflowDefinition[]>
     seed: () => Promise<WorkflowDefinition[]>
   }
+  slashCommands: {
+    list: () => Promise<SlashCommand[]>
+    get: (shortcut: string) => Promise<SlashCommand | null>
+    save: (input: SlashCommandSaveInput) => Promise<SlashCommandSaveResult>
+    delete: (shortcut: string) => Promise<boolean>
+    resolve: (shortcut: string, params: Record<string, string>) => Promise<SlashCommandResolveResult>
+    validate: (shortcut: string) => Promise<SlashCommandValidationResult>
+    conflict: (shortcut: string) => Promise<SlashCommandConflictResult>
+  }
+  workflowCenter: {
+    substituteVars: (template: string, vars: WorkflowVariable[]) => Promise<string>
+    evaluateCondition: (condition: string, vars: WorkflowVariable[]) => Promise<boolean>
+    saveRun: (record: WorkflowRunRecord) => Promise<boolean>
+    runHistory: () => Promise<WorkflowRunRecord[]>
+    runHistoryFor: (workflowId: string) => Promise<WorkflowRunRecord[]>
+  }
+  teams: {
+    list: () => Promise<TeamPreset[]>
+    save: (input: TeamPresetSaveInput) => Promise<TeamPreset>
+    delete: (id: string) => Promise<boolean>
+    defaultFirefly: (agentIds: string[]) => Promise<TeamMember[]>
+  }
+  projectKnowledge: {
+    detectTechStack: (rootPath: string) => Promise<DetectedTechStack>
+    generateSummary: (rootPath: string, entries: ProjectKnowledgeEntry[]) => Promise<string>
+  }
   inlineEdit: {
-    buildPrompt: (request: any) => Promise<string>
-    validate: (original: string, replacement: string) => Promise<{ valid: boolean; warnings?: string[] }>
-    apply: (content: string, startLine: number, endLine: number, replacement: string) => Promise<{ ok: boolean; content?: string; error?: string }>
+    buildPrompt: (request: InlineEditRequest) => Promise<string>
+    validate: (original: string, replacement: string) => Promise<InlineEditValidationResult>
+    apply: (content: string, startLine: number, endLine: number, replacement: string) => Promise<InlineEditApplyResult>
   }
   terminalAi: {
-    buildPrompt: (userPrompt: string, context: any) => Promise<string>
-    suggestCommand: (intent: string, context: any) => Promise<string>
-    explainOutput: (context: any) => Promise<string>
+    buildPrompt: (userPrompt: string, context: TerminalContext) => Promise<string>
+    suggestCommand: (intent: string, context: TerminalContext) => Promise<string>
+    explainOutput: (context: TerminalContext) => Promise<string>
   }
   ai: {
-    quickComplete: (input: { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; timeoutMs?: number }) =>
-      Promise<{ ok: boolean; content?: string; error?: string }>
+    quickComplete: (input: QuickCompleteInputLike) => Promise<QuickCompleteResultLike>
   }
   models: {
-    list: (providers?: any[]) => Promise<ModelRouteInfo[]>
+    list: (providers?: ProviderForModelList[]) => Promise<ModelRouteInfo[]>
     routeSettingsGet: () => Promise<ModelRouteSettings>
     routeSettingsSet: (patch: Partial<ModelRouteSettings>) => Promise<ModelRouteSettings>
-    updateRoute: (providerId: string, modelId: string, patch: Partial<ModelRouteInfo>) => Promise<any>
-    test: (input: { providerId: string; modelId: string; upstreamModel?: string }) => Promise<{ ok: boolean; latencyMs: number; error?: string; contentPreview?: string; usage?: any; upstreamModel?: string; routeReason?: string }>
-    exportCodexCatalog: () => Promise<{ ok: boolean; path?: string; content: string; count: number; error?: string }>
+    updateRoute: (providerId: string, modelId: string, patch: ModelRoutePatch) => Promise<ProviderModel | null>
+    test: (input: ModelRouteTestInput) => Promise<ModelRouteTestResult>
+    exportCodexCatalog: () => Promise<CodexCatalogExportResult>
     toggleFavorite: (providerId: string, modelId: string) => Promise<boolean>
     toggleHidden: (providerId: string, modelId: string) => Promise<boolean>
     favorites: () => Promise<string[]>
     hidden: () => Promise<string[]>
   }
   memoryGraph: {
-    build: (entries: any[]) => Promise<any>
-    cleanupSuggestions: (graph: any) => Promise<any[]>
+    build: (entries: MemoryEntry[]) => Promise<MemoryGraph>
+    cleanupSuggestions: (graph: MemoryGraph) => Promise<MemoryGraphNode[]>
   }
   plugins: {
     scan: (workspaceRoot?: string) => Promise<any[]>
@@ -384,18 +483,18 @@ interface ElectronAPI {
     importRepository: (input: { url: string; id?: string; name?: string; branch?: string }) => Promise<{ ok: boolean; plugin?: any; plugins?: any[]; path?: string; error?: string; diagnostics?: string[] }>
   }
   projectMap: {
-    build: (rootPath: string, maxDepth?: number) => Promise<any>
-    search: (map: any, query: string) => Promise<any[]>
+    build: (rootPath: string, maxDepth?: number) => Promise<ProjectMap | null>
+    search: (map: ProjectMap, query: string) => Promise<ProjectNode[]>
   }
   release: {
-    checks: () => Promise<any>
+    checks: () => Promise<ReleaseReport>
   }
   agentLoop: {
-    getConfig: () => Promise<{ maxSteps: number; timeoutMs: number; enableDelegation: boolean; mode: 'auto' | 'single' }>
-    getStatus: () => Promise<{ available: boolean; activeTasks: number }>
-    getAgents: () => Promise<Array<{ id: string; name: string; role: string; capabilities: string[]; version?: string; path?: string }>>
-    refreshAgents: () => Promise<Array<{ id: string; name: string; role: string; capabilities: string[]; version?: string; path?: string }>>
-    getRouteInfo: (prompt: string) => Promise<{ taskType: string; selectedAgent: string; confidence: number; reasoning: string; suggestedRole: string }>
+    getConfig: () => Promise<AgentLoopConfig>
+    getStatus: () => Promise<AgentLoopStatus>
+    getAgents: () => Promise<AgentLoopAgent[]>
+    refreshAgents: () => Promise<AgentLoopAgent[]>
+    getRouteInfo: (prompt: string) => Promise<AgentLoopRouteInfo>
   }
   sdd: {
     createDraft: (workspaceRoot: string, title: string, template?: string) => Promise<SddDraft>
@@ -409,7 +508,17 @@ interface ElectronAPI {
     computeTrace: (workspaceRoot: string, draftId: string, planMarkdown?: string) => Promise<SddTrace | null>
     saveTrace: (workspaceRoot: string, draftId: string, trace: SddTrace) => Promise<void>
     getTrace: (workspaceRoot: string, draftId: string) => Promise<SddTrace | null>
+    getHistory: (workspaceRoot: string, draftId: string) => Promise<SddDraftHistoryEntry[]>
+    saveHistory: (workspaceRoot: string, draftId: string, entries: SddDraftHistoryEntry[]) => Promise<void>
+    clearHistory: (workspaceRoot: string, draftId: string) => Promise<void>
     exists: (workspaceRoot: string, draftId: string) => Promise<boolean>
+  }
+  firefly: {
+    createState: () => Promise<FireflyState>
+    completeRole: (state: FireflyState, role: FireflyRole, output: string) => Promise<FireflyState>
+    getRoleContext: (state: FireflyState, role: FireflyRole, prompt: string, memory?: string, project?: string) => Promise<FireflyRoleContext>
+    isComplete: (state: FireflyState) => Promise<boolean>
+    getOutput: (state: FireflyState) => Promise<string | null>
   }
   platform: string
 }
@@ -418,6 +527,21 @@ type WorkbenchTurnStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canc
 type DispatchPreset = 'auto' | 'broadcast' | 'chain' | 'orchestrate' | 'lead-workers' | 'parallel-review' | 'firefly-custom' | 'custom'
 type MemoryCategory = 'conversation' | 'task' | 'skill' | 'file' | 'system' | 'preference' | 'project' | 'style' | 'decision' | 'correction' | 'imported_conversation'
 type MemoryEntryStatus = 'candidate' | 'approved' | 'disabled'
+
+interface MemoryEntryInput {
+  id?: string
+  category: MemoryCategory
+  title: string
+  summary?: string
+  content?: string
+  source?: string
+  tags?: string[]
+  status?: MemoryEntryStatus
+  confidence?: number
+  metadata?: Record<string, unknown>
+}
+
+type MemoryEntryPatch = Partial<MemoryEntryInput>
 
 interface MemoryEntry {
   id: string
@@ -429,11 +553,54 @@ interface MemoryEntry {
   tags: string[]
   status?: MemoryEntryStatus
   confidence?: number
-  metadata?: Record<string, any>
+  metadata?: Record<string, unknown>
   createdAt: string
   updatedAt: string
   deletedAt?: string
   disabledAt?: string
+}
+
+interface MemorySettingsState {
+  enabled: boolean
+}
+
+interface MemoryCatalog {
+  version: 1
+  root: string
+  entries: MemoryEntry[]
+  counts: Record<MemoryCategory, number>
+  settings: MemorySettingsState
+  runtimeUpdatedAt?: string
+}
+
+interface MemoryGraphNode {
+  id: string
+  label: string
+  category: string
+  status: string
+  pinned: boolean
+  useCount: number
+  importance: number
+  tags: string[]
+}
+
+interface MemoryGraphEdge {
+  source: string
+  target: string
+  type: 'tag' | 'category' | 'similarity'
+  weight: number
+  label?: string
+}
+
+interface MemoryGraph {
+  nodes: MemoryGraphNode[]
+  edges: MemoryGraphEdge[]
+  stats: {
+    totalNodes: number
+    totalEdges: number
+    isolatedNodes: number
+    categories: Record<string, number>
+  }
 }
 
 interface WorkbenchAttachment {
@@ -480,11 +647,44 @@ interface ModelSelection {
   source?: 'provider' | 'local-cli'
 }
 
+type ModelReasoningLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
+interface ProviderModel {
+  id: string
+  label: string
+  contextWindow?: number
+  enabled?: boolean
+  upstreamModel?: string
+  timeoutMs?: number
+  retryCount?: number
+  reasoningEnabled?: boolean
+  defaultReasoningLevel?: string
+  supportedReasoningLevels?: string[]
+  codexAlias?: string
+  description?: string
+  supportsTools?: boolean
+  supportsVision?: boolean
+  supportsThinking?: boolean
+}
+
+interface ProviderForModelList {
+  id: string
+  name: string
+  kind?: string
+  enabled: boolean
+  apiKey?: string
+  apiKeyLocked?: boolean
+  protocolOverride?: string
+  capabilities?: { protocol?: string }
+  models: ProviderModel[]
+}
+
 interface ModelRouteInfo {
   providerId: string
   providerName: string
   providerEnabled: boolean
   providerHasKey: boolean
+  providerKeyLocked?: boolean
   providerProtocol: string
   modelId: string
   label: string
@@ -505,12 +705,50 @@ interface ModelRouteInfo {
   isHidden: boolean
 }
 
+interface ModelRoutePatch {
+  enabled?: boolean
+  upstreamModel?: string
+  timeoutMs?: number
+  retryCount?: number
+  reasoningEnabled?: boolean
+  defaultReasoningLevel?: ModelReasoningLevel
+  supportedReasoningLevels?: ModelReasoningLevel[]
+  codexAlias?: string
+  description?: string
+}
+
 interface ModelRouteSettings {
   fallbackModelId?: string
   codexDefaultModel?: string
   codexInjectionMode: 'official_account' | 'third_party_api' | 'lan_share'
   codexInternalModelLock: boolean
   codexSlots: Array<{ slot: string; targetModelId: string; mode: 'official_account' | 'third_party_api' | 'lan_share'; source: string }>
+}
+
+interface ModelRouteTestInput {
+  providerId: string
+  modelId: string
+  upstreamModel?: string
+}
+
+interface ModelRouteTestResult {
+  ok: boolean
+  providerId: string
+  modelId: string
+  upstreamModel?: string
+  routeReason?: string
+  latencyMs: number
+  usage?: unknown
+  contentPreview?: string
+  error?: string
+}
+
+interface CodexCatalogExportResult {
+  ok: boolean
+  path?: string
+  content: string
+  count: number
+  error?: string
 }
 
 interface LocalModelConfig {
@@ -528,8 +766,19 @@ interface LocalModelConfig {
 interface GitQueryResult {
   threadId: string
   turnId: string
-  command: string
-  content: string
+  result: string | null
+  error?: string
+}
+
+interface ThreadCreateInput {
+  workspaceId?: string | null
+  title?: string
+}
+
+interface ThreadForkInput {
+  sourceThreadId: string
+  sourceTurnId: string
+  message: string
 }
 
 interface WorkbenchThread {
@@ -556,6 +805,23 @@ interface WorkbenchTurn {
   taskIds: string[]
   createdAt: number
   completedAt?: number
+}
+
+interface TurnCreateInput {
+  threadId?: string | null
+  workspaceId?: string | null
+  prompt: string
+  mode?: DispatchPreset
+  targetAgent?: string | null
+  thinking?: unknown
+  modelSelection?: ModelSelection
+  attachments?: WorkbenchAttachment[]
+  customSchedule?: SchedulePreview
+}
+
+interface TurnCreateResult {
+  thread: WorkbenchThread
+  turn: WorkbenchTurn
 }
 
 interface AgentRunNode {
@@ -640,6 +906,56 @@ interface LocalSkillCandidate {
   agentSource: string
 }
 
+interface SkillCategory {
+  id: string
+  label: string
+}
+
+type SkillCategoryInput = string | Partial<SkillCategory> | null | undefined
+
+interface SkillDef {
+  id: string
+  name: string
+  category: SkillCategory
+  description: string
+  instructions: string
+  tags: string[]
+  source: string
+  createdAt: number
+  updatedAt: number
+}
+
+interface SkillInput {
+  name: string
+  category?: SkillCategoryInput
+  description?: string
+  instructions: string
+  tags?: string[]
+  source?: string
+}
+
+type SkillInstalls = Record<string, string[]>
+
+interface WorkbenchWorkspace {
+  id: string
+  name: string
+  rootPath: string
+  bootstrapFiles?: string[]
+  createdAt: number
+  updatedAt: number
+}
+
+interface WorkbenchWorkspaceCreateInput {
+  name: string
+  rootPath: string
+}
+
+interface WorkbenchWorkspaceUpdatePatch {
+  name?: string
+  rootPath?: string
+  bootstrapFiles?: string[]
+}
+
 interface McpServerConfig {
   id: string
   name: string
@@ -658,6 +974,20 @@ interface McpServerConfig {
   sourcePath?: string
   status?: 'unknown' | 'ok' | 'error'
   error?: string
+}
+
+interface McpToolInfo {
+  name: string
+  description?: string
+  inputSchema?: unknown
+}
+
+interface McpServerToolsResult {
+  ok: boolean
+  tools: McpToolInfo[]
+  error?: string
+  resources?: number
+  prompts?: number
 }
 
 interface McpSystemConfig {
@@ -684,6 +1014,7 @@ interface UsageHeatmapDay {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   costUsd: number | null
   hasUnpriced: boolean
   level: 0 | 1 | 2 | 3 | 4
@@ -705,6 +1036,7 @@ interface UsageModelRow {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   costUsd: number | null
   hasUnpriced: boolean
 }
@@ -722,6 +1054,7 @@ interface UsageProviderRow {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   costUsd: number | null
   hasUnpriced: boolean
 }
@@ -745,13 +1078,16 @@ interface UsageRequestRecord {
   cacheReadTokens: number
   cacheCreationTokens: number
   billableInputTokens: number
+  inputSurfaceTokens?: number
   totalTokens: number
   actualTokens: number
   estimatedTokens: number
   hasEstimated: boolean
   reasoningTokens?: number
+  cacheHitRate?: number | null
   costUsd: number | null
   hasUnpriced: boolean
+  cacheSavingsUsd: number | null
   promptPreview?: string
   responsePreview?: string
   errorMessage?: string
@@ -806,6 +1142,7 @@ interface UsageStats {
   cacheReadTokens: number
   cacheCreationTokens: number
   cacheSavingsTokens: number
+  cacheSavingsUsd: number | null
   billableInputTokens: number
   activeDays: number
   currentStreak: number
@@ -833,6 +1170,184 @@ interface TerminalRun {
   exitCode: number | null
   createdAt: number
   completedAt?: number
+}
+
+type ShortcutCategory = 'navigation' | 'action' | 'editor' | 'agent'
+
+interface ShortcutBinding {
+  id: string
+  label: string
+  labelZh: string
+  defaultKey: string
+  key: string
+  category: ShortcutCategory
+  system: boolean
+}
+
+interface ShortcutConflict {
+  key: string
+  ids: string[]
+}
+
+type AppNotificationCategory = 'task' | 'approval' | 'mcp' | 'system' | 'workflow' | 'memory' | 'error'
+
+type AppNotificationAction =
+  | { type: 'navigate'; target: string }
+  | { type: 'open-url'; url: string }
+
+interface AppNotification {
+  id: string
+  title: string
+  body: string
+  category: AppNotificationCategory
+  read: boolean
+  action?: AppNotificationAction
+  createdAt: string
+}
+
+type AppNotificationInput = Omit<AppNotification, 'id' | 'read' | 'createdAt'>
+
+type OnboardingStep =
+  | 'select-language'
+  | 'bind-provider'
+  | 'detect-agents'
+  | 'choose-default-agent'
+  | 'test-mcp'
+  | 'enable-skills'
+  | 'create-workspace'
+  | 'send-first-message'
+
+interface OnboardingState {
+  version: 1
+  completed: boolean
+  completedAt?: string
+  completedSteps: OnboardingStep[]
+  skippedSteps: OnboardingStep[]
+}
+
+interface BackupMeta {
+  id: string
+  filename: string
+  createdAt: string
+  sizeBytes: number
+  keys: string[]
+  version: string
+}
+
+type BackupCreateResult = BackupMeta & { error?: string }
+
+interface BackupRestoreResult {
+  restored: string[]
+  error?: string
+}
+
+type ConversationMessageRole = 'user' | 'assistant' | 'system' | 'tool'
+type ConversationExportFormat = 'markdown' | 'json' | 'html'
+
+interface ConversationToolCall {
+  name: string
+  args?: string
+  result?: string
+}
+
+interface ConversationExportMessage {
+  role: ConversationMessageRole
+  content: string
+  agentId?: string
+  timestamp?: string
+  toolCalls?: ConversationToolCall[]
+  thinking?: string
+  attachments?: Array<{ name: string; kind: string }>
+}
+
+interface ConversationExportData {
+  version: 1
+  title: string
+  exportedAt: string
+  messages: ConversationExportMessage[]
+  metadata?: {
+    workspaceId?: string
+    agentIds?: string[]
+    turnCount?: number
+  }
+}
+
+interface ConversationExportFileResult {
+  ok: boolean
+  path: string
+  error?: string
+}
+
+interface ImportedConversationMessage {
+  role: ConversationMessageRole
+  content: string
+  agentId?: string
+  timestamp?: string
+  toolCalls?: ConversationToolCall[]
+  thinking?: string
+}
+
+interface ImportedConversation {
+  version: number
+  title: string
+  exportedAt?: string
+  messages: ImportedConversationMessage[]
+  metadata?: Record<string, unknown>
+}
+
+interface ConversationImportResult {
+  ok: boolean
+  conversation?: ImportedConversation
+  messageCount?: number
+  error?: string
+  warnings?: string[]
+}
+
+interface ConversationBranchResult {
+  ok: boolean
+  messages?: ImportedConversationMessage[]
+  error?: string
+}
+
+interface ConversationSummary {
+  title: string
+  messageCount: number
+  userMessages: number
+  assistantMessages: number
+  agentIds: string[]
+  firstMessage: string
+  lastMessage: string
+}
+
+type AgentLoopMode = 'auto' | 'single'
+
+interface AgentLoopConfig {
+  maxSteps: number
+  timeoutMs: number
+  enableDelegation: boolean
+  mode: AgentLoopMode
+}
+
+interface AgentLoopStatus {
+  available: boolean
+  activeTasks: number
+}
+
+interface AgentLoopAgent {
+  id: string
+  name: string
+  role: string
+  capabilities: string[]
+  version?: string
+  path?: string
+}
+
+interface AgentLoopRouteInfo {
+  taskType: string
+  selectedAgent: string
+  confidence: number
+  reasoning: string
+  suggestedRole: string
 }
 
 interface GitStatus {
@@ -977,14 +1492,45 @@ interface BrowserContextAttachment {
   capturedAt: number
 }
 
+interface BrowserPageSnapshot {
+  url: string
+  title: string
+  textContent: string
+  meta: {
+    description?: string
+    keywords?: string[]
+    ogTitle?: string
+    ogDescription?: string
+  }
+  links: Array<{ text: string; href: string }>
+  hasForms: boolean
+  capturedAt: string
+}
+
 type ThreadTodoStatus = 'pending' | 'in_progress' | 'completed'
+
+interface ThreadTodoSource {
+  kind: 'manual' | 'plan' | 'agent'
+  threadId?: string
+  turnId?: string
+  gitHeadAtDispatch?: string | null
+  gitRootAtDispatch?: string
+  relativePath?: string
+  contentHash?: string
+  workspaceRoot?: string
+  draftId?: string
+  planItemId?: string
+}
+
+type ThreadTodoSyncSourceContext = Pick<ThreadTodoSource, 'workspaceRoot' | 'draftId' | 'relativePath'>
+type ThreadTodoSetInput = Array<Pick<ThreadTodo, 'id' | 'content' | 'status' | 'source'>>
 
 interface ThreadTodo {
   id: string
   threadId: string
   content: string
   status: ThreadTodoStatus
-  source?: any
+  source?: ThreadTodoSource
   updatedAt: number
 }
 
@@ -996,6 +1542,194 @@ interface UpdateStatus {
   downloadUrl?: string
   error?: string
   checkedAt?: number
+}
+
+type ReleaseCheckStatus = 'pass' | 'fail' | 'warn' | 'skip'
+
+interface ReleaseCheck {
+  id: string
+  name: string
+  nameZh: string
+  status: ReleaseCheckStatus
+  message: string
+  autoFixable?: boolean
+}
+
+interface ReleaseReport {
+  version: string
+  timestamp: string
+  checks: ReleaseCheck[]
+  summary: {
+    pass: number
+    fail: number
+    warn: number
+    skip: number
+  }
+  ready: boolean
+}
+
+type PromptCategory = 'general' | 'coding' | 'review' | 'research' | 'writing' | 'custom'
+
+interface PromptEntry {
+  id: string
+  name: string
+  body: string
+  category: PromptCategory
+  tags: string[]
+  isSlashCommand: boolean
+  shortcut?: string
+  createdAt: string
+  updatedAt: string
+  useCount: number
+}
+
+type PromptUpsertInput = Partial<PromptEntry> & {
+  name: string
+  body: string
+}
+
+interface MemoryQualityInput {
+  title: string
+  summary?: string
+  content?: string
+  tags?: string[]
+  confidence?: number
+  category: string
+}
+
+interface MemoryQualityScore {
+  entryId: string
+  score: number
+  reasons: string[]
+}
+
+interface MemoryConflictEntry {
+  id: string
+  title: string
+  summary?: string
+  category: string
+}
+
+interface MemoryConflict {
+  entryA: string
+  entryB: string
+  reason: string
+}
+
+interface BudgetConfig {
+  version: 1
+  dailyLimitUsd: number | null
+  monthlyLimitUsd: number | null
+  perRequestMaxTokens: number | null
+  perRequestMaxCostUsd: number | null
+  notifyAtPercent: number
+  blockWhenExceeded: boolean
+  suggestCheaperModel: boolean
+}
+
+interface BudgetCheckResult {
+  allowed: boolean
+  reason?: string
+  warning?: string
+}
+
+interface InlineEditRange {
+  filePath: string
+  startLine: number
+  endLine: number
+  selectedText: string
+  fullContent?: string
+}
+
+interface InlineEditRequest {
+  range: InlineEditRange
+  instruction: string
+  providerId?: string
+  modelId?: string
+}
+
+interface InlineEditValidationResult {
+  valid: boolean
+  warnings: string[]
+}
+
+interface InlineEditApplyResult {
+  ok: boolean
+  content?: string
+  newStartLine?: number
+  newEndLine?: number
+  error?: string
+}
+
+interface AppEventLogEntry {
+  ts?: string
+  kind?: string
+  raw?: string
+  parseError?: string
+  [key: string]: unknown
+}
+
+interface RecentAppEventLogs {
+  path: string
+  entries: AppEventLogEntry[]
+  scannedLines: number
+  truncated: boolean
+  parseWarnings: string[]
+  error?: string
+}
+
+type DiagnosticSuiteStatus = 'pass' | 'warn' | 'fail' | 'skip'
+type DiagnosticSuiteCategory = 'system' | 'providers' | 'agents' | 'mcp' | 'memory' | 'workspace'
+
+interface LegacyDiagnosticResult {
+  id: string
+  name: string
+  nameZh: string
+  category: DiagnosticSuiteCategory
+  status: DiagnosticSuiteStatus
+  message: string
+  details?: string
+  durationMs?: number
+}
+
+interface LegacyDiagnosticSuite {
+  timestamp: string
+  results: LegacyDiagnosticResult[]
+  summary: {
+    pass: number
+    warn: number
+    fail: number
+    skip: number
+    total: number
+  }
+}
+
+type DiagnosticLevel = 'pass' | 'warn' | 'fail' | 'skip' | 'auto-fix'
+type DiagnosticCategory = 'system' | 'providers' | 'agents' | 'mcp' | 'memory' | 'workspace' | 'storage' | 'security'
+
+interface DiagnosticCheck {
+  id: string
+  name: string
+  category: DiagnosticCategory
+  level: DiagnosticLevel
+  message: string
+  detail?: string
+  autoFixable: boolean
+  durationMs?: number
+}
+
+interface DiagnosticReport {
+  timestamp: string
+  checks: DiagnosticCheck[]
+  summary: {
+    pass: number
+    warn: number
+    fail: number
+    skip: number
+    autoFix: number
+    total: number
+  }
+  overall: 'healthy' | 'degraded' | 'critical'
 }
 
 interface LocalAgentStatus {
@@ -1012,7 +1746,14 @@ interface LocalAgentStatus {
   requiresPromptArg?: boolean
   note?: string
   loginState: 'unknown' | 'ready' | 'needs-login' | 'not-installed'
-  candidates: Array<{ source: 'desktop' | 'terminal'; label: string; path: string }>
+  candidates: Array<{
+    source: 'desktop' | 'terminal'
+    label: string
+    path: string
+    verification?: 'version' | 'manual'
+    note?: string
+    kind?: 'path-detected' | 'desktop-candidate' | 'stdio-headless' | 'acp' | 'needs-login' | 'needs-args'
+  }>
   workspaceSession: 'per-dispatch' | 'persistent'
   diagnostic?: { code: string; message: string; action?: string }
   error?: string
@@ -1042,6 +1783,211 @@ interface WorkflowDefinition {
   updatedAt: string
   useCount: number
   pinned?: boolean
+}
+
+interface SlashCommand {
+  shortcut: string
+  name: string
+  body: string
+  category: string
+  params: string[]
+  system: boolean
+}
+
+interface SlashCommandSaveInput {
+  id?: string
+  shortcut: string
+  name: string
+  body: string
+  category?: string
+}
+
+interface SlashCommandSaveResult {
+  ok: boolean
+  command?: SlashCommand
+  error?: string
+}
+
+interface SlashCommandResolveResult {
+  ok: boolean
+  body?: string
+  error?: string
+}
+
+interface SlashCommandValidationResult {
+  valid: boolean
+  error?: string
+}
+
+interface SlashCommandConflictResult {
+  conflict: boolean
+  conflictingName?: string
+}
+
+type GitHubListState = 'open' | 'closed' | 'all'
+type GitHubPrState = 'open' | 'closed' | 'merged'
+type GitHubIssueState = 'open' | 'closed'
+
+interface GitHubCliStatus {
+  available: boolean
+  authenticated: boolean
+  version?: string
+  error?: string
+}
+
+interface GitHubPr {
+  number: number
+  title: string
+  state: GitHubPrState
+  author: string
+  url: string
+  branch: string
+  createdAt: string
+  labels: string[]
+}
+
+interface GitHubIssue {
+  number: number
+  title: string
+  state: GitHubIssueState
+  author: string
+  url: string
+  labels: string[]
+  createdAt: string
+}
+
+interface GitHubCurrentBranchPr {
+  branch: string
+  pr?: GitHubPr
+}
+
+interface WorkflowVariable {
+  name: string
+  value: string
+  type: 'string' | 'number' | 'boolean'
+}
+
+interface WorkflowRunRecord {
+  workflowId: string
+  runId: string
+  workflowName: string
+  startedAt: string
+  completedAt?: string
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled'
+  stepResults: Array<{ stepId: string; status: string; output?: string; error?: string }>
+}
+
+type TeamRole = 'main' | 'router' | 'reviewer' | 'executor' | 'gatekeeper' | 'summarizer' | 'expert'
+
+interface TeamMember {
+  role: TeamRole
+  agentId: string
+  systemPrompt?: string
+}
+
+interface TeamPreset {
+  id: string
+  name: string
+  description: string
+  members: TeamMember[]
+  createdAt: string
+  updatedAt: string
+  useCount: number
+}
+
+type TeamPresetSaveInput = Partial<TeamPreset> & {
+  name: string
+  members: TeamMember[]
+}
+
+interface DetectedTechStack {
+  language: string
+  framework?: string
+  packageManager?: string
+  testFramework?: string
+  buildTool?: string
+}
+
+interface ProjectKnowledgeEntry {
+  title: string
+  content: string
+  category: string
+}
+
+type FireflyRole = 'router' | 'main' | 'reviewer' | 'executor' | 'gatekeeper'
+
+type FireflyPhase =
+  | 'idle'
+  | 'router_decision'
+  | 'main_candidate'
+  | 'review_verdict'
+  | 'executor_actions'
+  | 'gatekeeper_verdict'
+  | 'final_release'
+  | 'blocked'
+  | 'error'
+
+interface FireflyState {
+  phase: FireflyPhase
+  currentRole: FireflyRole | null
+  routerOutput?: string
+  mainOutput?: string
+  reviewerOutput?: string
+  executorOutput?: string
+  gatekeeperOutput?: string
+  approvedActions: string[]
+  rejectedActions: string[]
+  guardReasons: string[]
+  blockedByGuard: boolean
+  startedAt: number
+  roleTimings: Map<FireflyRole, { startedAt: number; completedAt?: number }>
+}
+
+interface FireflyRoleContext {
+  messages: string[]
+  constraints: string[]
+}
+
+interface TerminalContext {
+  recentCommands: string[]
+  recentOutput: string[]
+  cwd?: string
+  lastExitCode?: number
+}
+
+interface QuickCompleteInputLike {
+  prompt: string
+  systemPrompt?: string
+  providerId?: string
+  modelId?: string
+  timeoutMs?: number
+}
+
+interface QuickCompleteResultLike {
+  ok: boolean
+  content?: string
+  error?: string
+}
+
+interface ProjectNode {
+  name: string
+  path: string
+  type: 'file' | 'directory'
+  extension?: string
+  sizeBytes?: number
+  children?: ProjectNode[]
+  language?: string
+}
+
+interface ProjectMap {
+  root: string
+  nodes: ProjectNode[]
+  stats: {
+    totalFiles: number
+    totalDirectories: number
+    totalSize: number
+    languages: Record<string, number>
+  }
 }
 
 // ============================================================
@@ -1090,12 +2036,40 @@ interface SddDraftMeta {
   updatedAt: string
 }
 
+interface SddDraftHistoryEntry {
+  version: number
+  timestamp: string
+  content: string
+  title: string
+  message: string
+  author: 'user' | 'system' | 'ai'
+  truncated?: boolean
+}
+
+interface SddCommitEvidence {
+  sha: string
+  shortSha: string
+  summary?: string
+  files?: Array<{
+    path: string
+    oldPath?: string | null
+    status: string
+    additions?: number
+    deletions?: number
+  }>
+  linkedAt: string
+  turnId?: string
+  threadId?: string
+}
+
 interface SddPlanItem {
   id: string
   text: string
   covers: string[]
   status: 'pending' | 'in_progress' | 'completed'
   lineNumber: number
+  turnId?: string
+  commits?: SddCommitEvidence[]
 }
 
 interface SddTrace {

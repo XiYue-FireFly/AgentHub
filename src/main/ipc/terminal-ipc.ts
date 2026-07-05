@@ -1,13 +1,13 @@
-import { ipcMain } from 'electron'
 import { getTerminalRuntime } from '../runtime/terminal'
 import { buildTerminalPrompt, suggestCommandPrompt, explainOutputPrompt } from '../runtime/terminal-ai'
+import { typedHandle } from './typed-ipc'
 
 export function registerTerminalIpc(): void {
-  ipcMain.handle("terminal:run", (_event, input: { workspaceId?: string | null; command: string }) => getTerminalRuntime().run(input))
-  ipcMain.handle("terminal:cancel", (_event, runId: string) => getTerminalRuntime().cancel(runId))
-  ipcMain.handle("terminal:history", () => getTerminalRuntime().history())
+  typedHandle("terminal:run", (_event, input) => getTerminalRuntime().run(input))
+  typedHandle("terminal:cancel", (_event, runId) => getTerminalRuntime().cancel(runId))
+  typedHandle("terminal:history", () => getTerminalRuntime().history())
 
-  ipcMain.handle("terminalAi:buildPrompt", (_e, userPrompt: string, context: any) => buildTerminalPrompt(userPrompt, context))
-  ipcMain.handle("terminalAi:suggestCommand", (_e, intent: string, context: any) => suggestCommandPrompt(intent, context))
-  ipcMain.handle("terminalAi:explainOutput", (_e, context: any) => explainOutputPrompt(context))
+  typedHandle("terminalAi:buildPrompt", (_e, userPrompt, context) => buildTerminalPrompt(userPrompt, context))
+  typedHandle("terminalAi:suggestCommand", (_e, intent, context) => suggestCommandPrompt(intent, context))
+  typedHandle("terminalAi:explainOutput", (_e, context) => explainOutputPrompt(context))
 }

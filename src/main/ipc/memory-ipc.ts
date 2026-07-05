@@ -5,30 +5,28 @@
  * Depends on a memory() accessor function injected at registration time.
  */
 
-import { ipcMain } from 'electron'
-import type { MemoryCategory, MemoryLibrary } from '../memory-library'
+import type { MemoryLibrary } from '../memory-library'
 import { buildMemoryGraph, suggestCleanup } from '../runtime/memory-graph'
+import { typedHandle } from './typed-ipc'
 
 type MemoryAccessor = () => MemoryLibrary
 
 export function registerMemoryIpc(memory: MemoryAccessor): void {
-  ipcMain.handle("memory:catalog", async () => memory().getCatalog())
-  ipcMain.handle("memory:getSettings", async () => memory().getSettings())
-  ipcMain.handle("memory:updateSettings", async (_event, patch: any) => memory().updateSettings(patch || {}))
-  ipcMain.handle("memory:list", async (_event, category?: MemoryCategory) => memory().listEntries(category))
-  ipcMain.handle("memory:search", (_event, query: string, category?: MemoryCategory) => memory().searchEntries(query, category))
-  ipcMain.handle("memory:addEntry", async (_event, entry) => memory().upsertEntry(entry))
-  ipcMain.handle("memory:importConversation", async (_event, source: string, content: string) => {
+  typedHandle("memory:catalog", async () => memory().getCatalog())
+  typedHandle("memory:getSettings", async () => memory().getSettings())
+  typedHandle("memory:updateSettings", async (_event, patch) => memory().updateSettings(patch || {}))
+  typedHandle("memory:list", async (_event, category) => memory().listEntries(category))
+  typedHandle("memory:search", (_event, query, category) => memory().searchEntries(query, category))
+  typedHandle("memory:addEntry", async (_event, entry) => memory().upsertEntry(entry))
+  typedHandle("memory:importConversation", async (_event, source, content) => {
     return memory().importConversation(source, content)
   })
-  ipcMain.handle("memory:listCandidates", async () => memory().listCandidates())
-  ipcMain.handle("memory:approveCandidate", async (_event, id: string) => memory().approveCandidate(id))
-  ipcMain.handle("memory:updateEntry", async (_event, id: string, patch: any) => memory().updateEntry(id, patch))
-  ipcMain.handle("memory:disableEntry", async (_event, id: string) => memory().disableEntry(id))
-  ipcMain.handle("memory:delete", (_event, id: string) => memory().deleteEntry(id))
-  ipcMain.handle("memory:restore", (_event, id: string) => memory().restoreEntry(id))
-  ipcMain.handle("memory:loadState", async () => memory().loadRuntimeState())
-  ipcMain.handle("memory:saveState", async (_event, state) => memory().saveRuntimeState(state))
-  ipcMain.handle("memory:graph", (_e, entries: any[]) => buildMemoryGraph(entries))
-  ipcMain.handle("memory:cleanupSuggestions", (_e, graph: any) => suggestCleanup(graph))
+  typedHandle("memory:listCandidates", async () => memory().listCandidates())
+  typedHandle("memory:approveCandidate", async (_event, id) => memory().approveCandidate(id))
+  typedHandle("memory:updateEntry", async (_event, id, patch) => memory().updateEntry(id, patch))
+  typedHandle("memory:disableEntry", async (_event, id) => memory().disableEntry(id))
+  typedHandle("memory:delete", (_event, id) => memory().deleteEntry(id))
+  typedHandle("memory:restore", (_event, id) => memory().restoreEntry(id))
+  typedHandle("memory:graph", (_e, entries) => buildMemoryGraph(entries))
+  typedHandle("memory:cleanupSuggestions", (_e, graph) => suggestCleanup(graph))
 }

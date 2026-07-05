@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import {
   hasHooksForPhase,
   runPreToolUseHooks,
   runPostToolUseHooks,
   runPreDispatchHooks,
+  runObserverHooks,
   hookMatchesTool,
   type ResolvedHook
 } from '../hook-engine'
@@ -103,6 +104,31 @@ describe('HookEngine', () => {
       const result = await runPreToolUseHooks(hooks, { call, context })
       expect(result.call.arguments).toEqual({ path: '/safe/path' })
     })
+
+    it('should warn and continue when a hook throws', async () => {
+      const hooks: ResolvedHook[] = [
+        { phase: 'PreToolUse', run: () => { throw new Error('broken pre hook') } },
+        { phase: 'PreToolUse', run: () => ({ decision: 'allow' }) }
+      ]
+      const call = { toolName: 'read', arguments: { path: '/test' } }
+      const context = { threadId: 'thread-1' }
+      const result = await runPreToolUseHooks(hooks, { call, context })
+      expect(result.autoApproved).toBe(true)
+      expect(result.denied).toBeUndefined()
+      expect(result.warnings).toEqual(['PreToolUse hook failed: broken pre hook'])
+    })
+
+    it('should warn and continue when a hook times out', async () => {
+      const hooks: ResolvedHook[] = [
+        { phase: 'PreToolUse', timeoutMs: 1, run: () => new Promise(() => {}) },
+        { phase: 'PreToolUse', run: () => ({ arguments: { path: '/after-timeout' } }) }
+      ]
+      const call = { toolName: 'read', arguments: { path: '/test' } }
+      const context = { threadId: 'thread-1' }
+      const result = await runPreToolUseHooks(hooks, { call, context })
+      expect(result.call.arguments).toEqual({ path: '/after-timeout' })
+      expect(result.warnings).toEqual(['PreToolUse hook failed: PreToolUse hook timed out'])
+    })
   })
 
   describe('runPostToolUseHooks', () => {
@@ -136,6 +162,19 @@ describe('HookEngine', () => {
       const outcome = await runPostToolUseHooks(hooks, { call, context, result })
       expect(outcome.isError).toBe(true)
     })
+
+    it('should warn and continue when a hook throws', async () => {
+      const hooks: ResolvedHook[] = [
+        { phase: 'PostToolUse', run: () => { throw new Error('broken post hook') } },
+        { phase: 'PostToolUse', run: () => ({ output: 'modified after warning' }) }
+      ]
+      const call = { toolName: 'read', arguments: { path: '/test' } }
+      const context = { threadId: 'thread-1' }
+      const result = { output: 'original', isError: false }
+      const outcome = await runPostToolUseHooks(hooks, { call, context, result })
+      expect(outcome.output).toBe('modified after warning')
+      expect(outcome.warnings).toEqual(['PostToolUse hook failed: broken post hook'])
+    })
   })
 
   describe('runPreDispatchHooks', () => {
@@ -159,6 +198,36 @@ describe('HookEngine', () => {
       ]
       const result = await runPreDispatchHooks(hooks, { threadId: 'thread-1', prompt: 'test' })
       expect(result.additionalContext).toEqual(['extra info'])
+    })
+
+    it('should warn and continue when a hook throws', async () => {
+      const hooks: ResolvedHook[] = [
+        { phase: 'PreDispatch', run: () => { throw new Error('broken dispatch hook') } },
+        { phase: 'PreDispatch', run: () => ({ additionalContext: 'still added' }) }
+      ]
+      const result = await runPreDispatchHooks(hooks, { threadId: 'thread-1', prompt: 'test' })
+      expect(result.denied).toBeUndefined()
+      expect(result.additionalContext).toEqual(['still added'])
+      expect(result.warnings).toEqual(['PreDispatch hook failed: broken dispatch hook'])
+    })
+  })
+
+  describe('runObserverHooks', () => {
+    it('should warn and continue when a hook throws', async () => {
+      const hooks: ResolvedHook[] = [
+        { phase: 'PostDispatch', run: () => { throw new Error('broken observer hook') } },
+        { phase: 'PostDispatch', run: () => ({ message: 'observer warning' }) }
+      ]
+      const result = await runObserverHooks(hooks, {
+        phase: 'PostDispatch',
+        threadId: 'thread-1',
+        prompt: 'test',
+        result: { ok: true }
+      })
+      expect(result.warnings).toEqual([
+        'PostDispatch hook failed: broken observer hook',
+        'observer warning'
+      ])
     })
   })
 })

@@ -20,7 +20,7 @@ describe("ECC command registry", () => {
     const combined = listEccCommands().map(command => command.description).join("\n")
 
     expect(combined).toContain("制定执行计划")
-    expect(combined).not.toMatch(/鍒|璁|鏂|鈥|銆|�/)
+    expect(combined).not.toMatch(/\u9352|\u7481|\u93c2|\u9225|\u9286|\ufffd/)
   })
 
   it("parses slash command boundaries without broad prefix matching", () => {

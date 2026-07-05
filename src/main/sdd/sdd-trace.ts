@@ -12,6 +12,8 @@ import {
   SddAcceptanceCriterion
 } from './sdd-types'
 
+const PLAN_COVERS_RE = /[（(]\s*covers?\s*[:：]\s*([^)）]+)\s*[)）]/i
+
 // ============================================================
 // R-Block 解析
 // ============================================================
@@ -146,23 +148,24 @@ export function parsePlanCovers(planMarkdown: string): SddPlanItem[] {
       itemIndex++
       const checked = itemMatch[1] !== ' '
       const text = itemMatch[2].trim()
+      const explicitId = text.match(/^(T-\d+|P-\d+)\s*[:：]\s+/i)?.[1]?.toUpperCase()
 
       // 提取 covers 标注
-      const coversMatch = text.match(/\(covers?:\s*([^)]+)\)/i)
+      const coversMatch = PLAN_COVERS_RE.exec(text)
       const covers: string[] = []
 
       if (coversMatch) {
         const coversStr = coversMatch[1]
-        const coverIds = coversStr.split(',').map(s => s.trim())
+        const coverIds = coversStr.split(/[,，]/).map(s => s.trim())
         for (const coverId of coverIds) {
-          if (coverId.match(/^R-\d+$/)) {
-            covers.push(coverId)
+          if (coverId.match(/^R-\d+$/i)) {
+            covers.push(coverId.toUpperCase())
           }
         }
       }
 
       items.push({
-        id: `P-${itemIndex}`,
+        id: explicitId || `P-${itemIndex}`,
         text,
         covers,
         status: checked ? 'completed' : 'pending',

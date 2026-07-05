@@ -11,12 +11,14 @@ const h = vi.hoisted(() => {
     clientCalls: [] as any[],
     resolveBindingCalls: [] as string[],
     getBindingsCalls: 0,
+    bindingProtocol: "stdio-plain" as "stdio-plain" | "http",
     localModels: {} as Record<string, any>
   }
   return { state }
 })
 
 vi.mock("../../providers/manager", () => ({
+  isProviderRuntimeUsable: (provider: any) => !!provider && provider.enabled && !!provider.apiKey && !provider.apiKeyLocked,
   getProviderManager: () => ({
     getProvider: (id: string) => id === "deepseek"
       ? {
@@ -48,12 +50,44 @@ vi.mock("../../providers/manager", () => ({
       : undefined,
     getBindings: () => {
       h.state.getBindingsCalls += 1
-      return [{ agentId: "codex", providerId: "openai", modelId: "gpt-4o" }]
+      return [{ agentId: "codex", providerId: "deepseek", modelId: "deepseek-v4-flash", protocol: h.state.bindingProtocol }]
     },
-    getBinding: (agentId: string) => ({ agentId, providerId: "openai", modelId: "gpt-4o" }),
+    getBinding: (agentId: string) => ({ agentId, providerId: "deepseek", modelId: "deepseek-v4-flash", protocol: h.state.bindingProtocol }),
     resolveBinding: (id: string) => {
       h.state.resolveBindingCalls.push(id)
-      return null
+      if (h.state.bindingProtocol !== "http") return null
+      const provider = {
+        id: "deepseek",
+        name: "DeepSeek",
+        kind: "openai-compatible",
+        baseUrl: "https://api.deepseek.example/v1",
+        apiKey: h.state.providerApiKey,
+        enabled: h.state.providerEnabled,
+        builtIn: true,
+        models: [{
+          id: "deepseek-v4-flash",
+          label: "DeepSeek V4 Flash",
+          contextWindow: 258000,
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: false
+        }],
+        capabilities: {
+          protocol: "chat_completions",
+          stream: true,
+          nativeThinking: false,
+          budgetTokens: false,
+          toolCalls: true,
+          systemPrompt: true
+        },
+        defaultThinking: { mode: "off", level: "low" }
+      }
+      return {
+        provider,
+        model: provider.models[0],
+        binding: { agentId: id, providerId: "deepseek", modelId: "deepseek-v4-flash", protocol: "http" },
+        thinking: { mode: "off", level: "low" }
+      }
     }
   })
 }))
@@ -111,6 +145,7 @@ describe("provider direct dispatch", () => {
     h.state.clientCalls = []
     h.state.resolveBindingCalls = []
     h.state.getBindingsCalls = 0
+    h.state.bindingProtocol = "stdio-plain"
     h.state.localModels = {}
   })
 
@@ -212,6 +247,31 @@ describe("provider direct dispatch", () => {
     ]))
     expect(events).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ providerId: "openai", modelId: "gpt-4o" })
+    ]))
+  })
+
+  it("does not treat a stale local adapter as usable for an HTTP binding", async () => {
+    h.state.bindingProtocol = "http"
+    const { dispatcher, events, localCodex } = makeDispatcher()
+
+    const task = await dispatcher.dispatch("hello over http", "auto", "codex")
+
+    expect(task.status).toBe("completed")
+    expect(localCodex.send).not.toHaveBeenCalled()
+    expect(h.state.clientCalls).toHaveLength(1)
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "start",
+        agentId: "codex",
+        providerId: "deepseek",
+        modelId: "deepseek-v4-flash"
+      }),
+      expect.objectContaining({
+        kind: "done",
+        agentId: "codex",
+        providerId: "deepseek",
+        modelId: "deepseek-v4-flash"
+      })
     ]))
   })
 })

@@ -9,6 +9,28 @@ import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { formatContextWindow } from './contextCapacity'
 import { PromptEnhancer } from './PromptEnhancer'
 import { defaultDialogPath, rememberDialogPath } from '../appearance'
+import {
+  addPaletteQuery,
+  commandTextForSelection,
+  currentTextHasCommandArgs,
+  filterCommands,
+  normalizeCommandToken,
+  rankCommandsForPalette,
+  replaceAddToken,
+  shouldRunComposerCommand,
+  slashCommandQuery
+} from './utils/composerCommandUtils'
+import { fileToAttachment, formatBytes, pickedFilePathsToAttachments } from './utils/composerAttachments'
+import {
+  buildBaseAddItems,
+  buildPluginAddItems,
+  composerAddSectionLabel,
+  filterComposerAddItems,
+  groupComposerAddItems,
+  pluginAddItemToAttachment,
+  safeMentionToken,
+  type ComposerAddItem
+} from './utils/composerAddItems'
 
 type ComposerThinkingConfig = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 type PickerAgentRow =
@@ -18,20 +40,6 @@ type PickerModelRow = { source: 'provider-model'; id: string; label: string; sub
 type ComposerSendOverrides = { mode?: DispatchPreset; targetAgent?: string | null; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }
 type ApprovalMode = 'ask' | 'auto' | 'full'
 
-type ComposerAddItem = {
-  id: string
-  section: 'add' | 'plugins'
-  kind: 'attachments' | 'goal' | 'schedule' | 'workspace' | 'plugin-skill' | 'plugin-prompt' | 'plugin-command'
-  title: string
-  detail: string
-  icon: React.ReactNode
-  token?: string
-  pluginId?: string
-  pluginName?: string
-  path?: string
-  body?: string
-}
-type AddPaletteMatch = { query: string; start: number; end: number }
 type PickerAnchor = { left: number; top: number } | null
 
 export function ComposerBar({
@@ -352,9 +360,10 @@ export function ComposerBar({
   const pickAttachments = async () => {
     if (sending) return
     try {
-      const picked = await window.electronAPI.app.pickFiles({ defaultPath: defaultDialogPath('file', workspace?.rootPath) })
-      if (picked[0]?.path) rememberDialogPath('file', picked[0].path)
-      addAttachments(picked)
+      const picked = await window.electronAPI.app.pickFiles({ defaultPath: defaultDialogPath('file', workspace?.rootPath) }) as unknown
+      const nextAttachments = pickedFilePathsToAttachments(picked)
+      if (nextAttachments[0]?.path) rememberDialogPath('file', nextAttachments[0].path)
+      addAttachments(nextAttachments)
     } catch (e: any) {
       setAttachError(e?.message || tr('添加附件失败。', 'Failed to add attachments.'))
     }
@@ -973,243 +982,6 @@ export function ComposerBar({
   )
 }
 
-async function fileToAttachment(file: File): Promise<WorkbenchAttachment> {
-  const path = (file as any).path as string | undefined
-  const kind: WorkbenchAttachment['kind'] = file.type.startsWith('image/') ? 'image' : isTextLike(file) ? 'text' : 'file'
-  const att: WorkbenchAttachment = {
-    id: `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    kind,
-    name: file.name || (kind === 'image' ? 'pasted-image.png' : 'attachment'),
-    path,
-    mime: file.type || undefined,
-    size: file.size,
-    createdAt: Date.now()
-  }
-  if (kind === 'image' && file.size <= 2 * 1024 * 1024) {
-    att.dataUrl = await readAsDataUrl(file)
-  } else if (kind === 'text' && file.size <= 96 * 1024) {
-    att.text = await file.text()
-  }
-  return att
-}
-
-function isTextLike(file: File): boolean {
-  if (file.type.startsWith('text/') || /json|xml|yaml|javascript|typescript/.test(file.type)) return true
-  return /\.(txt|md|markdown|json|jsonc|yaml|yml|toml|ini|env|js|jsx|ts|tsx|css|html|py|go|rs|java|cs|cpp|c|h|sql|sh|ps1)$/i.test(file.name)
-}
-
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(reader.error || new Error('Failed to read file'))
-    reader.readAsDataURL(file)
-  })
-}
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / 1024 / 1024).toFixed(1)} MB`
-}
-
-function buildBaseAddItems(input: { hasWorkspace: boolean; hasAgents: boolean }): ComposerAddItem[] {
-  const items: ComposerAddItem[] = [
-    {
-      id: 'add:attachments',
-      section: 'add',
-      kind: 'attachments',
-      title: tr('Files and folders', 'Files and folders'),
-      detail: tr('Attach local files or images to this turn', 'Attach local files or images to this turn'),
-      icon: IC.file
-    },
-    {
-      id: 'add:goal',
-      section: 'add',
-      kind: 'goal',
-      title: tr('Goal', 'Goal'),
-      detail: tr('Start a structured /goal request', 'Start a structured /goal request'),
-      icon: IC.tasks
-    }
-  ]
-  if (input.hasAgents) {
-    items.push({
-      id: 'add:smart-five-role',
-      section: 'add',
-      kind: 'schedule',
-      title: tr('Smart five-role', 'Smart five-role'),
-      detail: tr('Use router, reviewer, executor, and gatekeeper agents', 'Use router, reviewer, executor, and gatekeeper agents'),
-      icon: IC.brain
-    })
-  }
-  if (!input.hasWorkspace) {
-    items.push({
-      id: 'add:workspace',
-      section: 'add',
-      kind: 'workspace',
-      title: tr('Working folder', 'Working folder'),
-      detail: tr('Bind a project folder before sending', 'Bind a project folder before sending'),
-      icon: IC.folder
-    })
-  }
-  return items
-}
-
-function buildPluginAddItems(plugins: any[], contributions: { commands?: any[]; skills?: any[]; prompts?: any[] }): ComposerAddItem[] {
-  const pluginById = new Map<string, any>()
-  for (const plugin of plugins || []) pluginById.set(plugin.id, plugin)
-  const items: ComposerAddItem[] = []
-  for (const skill of contributions.skills || []) {
-    const plugin = pluginById.get(skill.pluginId)
-    const pluginName = plugin?.manifest?.name || skill.pluginId || 'Plugin'
-    const title = skill.id || 'skill'
-    items.push({
-      id: `plugin-skill:${skill.pluginId}:${skill.id}`,
-      section: 'plugins',
-      kind: 'plugin-skill',
-      title,
-      detail: `${pluginName} - Skill`,
-      icon: IC.brain,
-      token: pluginMentionToken(pluginName, title),
-      pluginId: skill.pluginId,
-      pluginName,
-      path: skill.path,
-      body: skill.content
-    })
-  }
-  for (const prompt of contributions.prompts || []) {
-    const plugin = pluginById.get(prompt.pluginId)
-    const pluginName = plugin?.manifest?.name || prompt.pluginId || 'Plugin'
-    const title = prompt.name || prompt.id || 'prompt'
-    items.push({
-      id: `plugin-prompt:${prompt.pluginId}:${prompt.id}`,
-      section: 'plugins',
-      kind: 'plugin-prompt',
-      title,
-      detail: `${pluginName} - Prompt`,
-      icon: IC.pencil,
-      token: pluginMentionToken(pluginName, prompt.id || title),
-      pluginId: prompt.pluginId,
-      pluginName,
-      body: prompt.body
-    })
-  }
-  for (const command of contributions.commands || []) {
-    const plugin = pluginById.get(command.pluginId)
-    const pluginName = plugin?.manifest?.name || command.pluginId || 'Plugin'
-    const title = command.label || command.id || 'command'
-    items.push({
-      id: `plugin-command:${command.pluginId}:${command.id}`,
-      section: 'plugins',
-      kind: 'plugin-command',
-      title,
-      detail: `${pluginName} - Command`,
-      icon: IC.terminal,
-      token: pluginMentionToken(pluginName, command.id || title),
-      pluginId: command.pluginId,
-      pluginName
-    })
-  }
-  return items.sort((a, b) => a.title.localeCompare(b.title))
-}
-
-function filterComposerAddItems(items: ComposerAddItem[], query: string): ComposerAddItem[] {
-  const q = query.trim().replace(/^@+/, '').toLowerCase()
-  if (!q) return items
-  return items.filter(item => [
-    item.title,
-    item.detail,
-    item.token,
-    item.pluginId,
-    item.pluginName,
-    item.path
-  ].filter(Boolean).join(' ').toLowerCase().includes(q))
-}
-
-function pluginAddItemToAttachment(item: ComposerAddItem): WorkbenchAttachment {
-  return {
-    id: `plugin-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    kind: 'text',
-    name: `Plugin: ${item.title}`,
-    text: pluginAddItemContext(item),
-    createdAt: Date.now()
-  }
-}
-
-function pluginAddItemContext(item: ComposerAddItem): string {
-  const lines = [
-    `[AgentHub Plugin] ${item.title}`,
-    `Type: ${item.kind.replace(/^plugin-/, '')}`,
-    item.pluginName ? `Plugin: ${item.pluginName}` : '',
-    item.pluginId ? `Plugin ID: ${item.pluginId}` : '',
-    item.path ? `Source: ${item.path}` : '',
-    '',
-    'Use this plugin capability for the current user request. Follow its instructions when provided; if the instructions are insufficient, ask a focused clarification instead of inventing missing behavior.',
-    ''
-  ].filter(Boolean)
-  if (item.body?.trim()) {
-    lines.push('Instructions:')
-    lines.push(item.body.trim().slice(0, 24000))
-  } else {
-    lines.push('Instructions: No inline body was available. Use the plugin name, source path, and requested task as routing context.')
-  }
-  return lines.join('\n')
-}
-
-function replaceLeadingAddToken(current: string, replacement: string): string {
-  const match = current.match(/^(\s*)@\S*/)
-  if (!match) {
-    const prefix = current.trim() ? `${current.trimEnd()} ` : ''
-    return `${prefix}${replacement}`.trimStart()
-  }
-  const leading = match[1] || ''
-  const token = replacement.trim()
-  const rest = current.slice(match[0].length).replace(/^\s+/, '')
-  if (!token) return `${leading}${rest}`.trimStart()
-  return `${leading}${token}${rest ? ` ${rest}` : ' '}`.trimStart()
-}
-
-export function replaceAddToken(current: string, match: AddPaletteMatch | null, replacement: string): string {
-  if (!match) return replaceLeadingAddToken(current, replacement)
-  const start = Math.max(0, Math.min(match.start, current.length))
-  const end = Math.max(start, Math.min(match.end, current.length))
-  const before = current.slice(0, start)
-  const after = current.slice(end).replace(/^\s+/, '')
-  const token = replacement.trim()
-  if (!token) return `${before}${after}`.trimStart()
-  const next = `${before}${token}${after ? ` ${after}` : ' '}`
-  return before.trim() ? next : next.trimStart()
-}
-
-function pluginMentionToken(pluginName: string, id: string): string {
-  return `@plugin-${safeMentionToken(pluginName)}-${safeMentionToken(id)}`
-}
-
-function safeMentionToken(value: string): string {
-  return String(value || 'plugin')
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || 'plugin'
-}
-
-function groupComposerAddItems(items: ComposerAddItem[]): Array<{ section: ComposerAddItem['section']; items: ComposerAddItem[] }> {
-  const groups: Array<{ section: ComposerAddItem['section']; items: ComposerAddItem[] }> = []
-  for (const item of items) {
-    let group = groups.find(entry => entry.section === item.section)
-    if (!group) {
-      group = { section: item.section, items: [] }
-      groups.push(group)
-    }
-    group.items.push(item)
-  }
-  return groups
-}
-
-function composerAddSectionLabel(section: ComposerAddItem['section']): string {
-  return section === 'plugins' ? tr('Plugins', 'Plugins') : tr('Add', 'Add')
-}
-
 function localAgentRows(agentIds: string[]): PickerAgentRow[] {
   return agentIds.map(agentId => ({
     source: 'local-agent',
@@ -1222,7 +994,7 @@ function localAgentRows(agentIds: string[]): PickerAgentRow[] {
 
 function providerAgentRows(providers: ProviderDef[]): PickerAgentRow[] {
   return providers
-    .filter(provider => provider.enabled && !!provider.apiKey && !!provider.models?.length)
+    .filter(provider => provider.enabled && !!provider.apiKey && !provider.apiKeyLocked && provider.models?.some(model => model.enabled !== false))
     .map(provider => ({
       source: 'provider-agent',
       id: `provider-agent:${provider.id}`,
@@ -1236,9 +1008,10 @@ function providerAgentRows(providers: ProviderDef[]): PickerAgentRow[] {
 function providerModelRows(providers: ProviderDef[], onlyProviderId?: string | null): PickerModelRow[] {
   const rows: PickerModelRow[] = []
   for (const provider of providers) {
-    if (!provider.enabled || !provider.apiKey || !provider.models?.length) continue
+    if (!provider.enabled || !provider.apiKey || provider.apiKeyLocked || !provider.models?.length) continue
     if (onlyProviderId && provider.id !== onlyProviderId) continue
     for (const model of provider.models) {
+      if (model.enabled === false) continue
       rows.push({
         source: 'provider-model',
         id: `provider:${provider.id}:${model.id}`,
@@ -1441,133 +1214,6 @@ function modelSelectionKey(selection: ModelSelection | null): string {
   if (selection?.source === 'provider' && selection.providerId) return `provider:${selection.providerId}:${selection.modelId}`
   return ''
 }
-
-function slashCommandQuery(value: string, commands: WorkbenchCommand[] = []): string | null {
-  const trimmed = value.trimStart()
-  if (!trimmed.startsWith('/') && !trimmed.startsWith('@')) return null
-  if (trimmed.startsWith('@') && !isKnownAgentMentionCommand(trimmed, commands)) return null
-  return normalizeCommandToken(trimmed.split(/\s+/, 1)[0] || '').replace(/^\/+/, '').toLowerCase()
-}
-
-export function addPaletteQuery(value: string, commands: WorkbenchCommand[] = [], caret = value.length): AddPaletteMatch | null {
-  const safeCaret = Math.max(0, Math.min(caret, value.length))
-  const beforeCaret = value.slice(0, safeCaret)
-  const match = beforeCaret.match(/(^|\s)@([^\s]*)$/)
-  if (!match) return null
-  const query = (match[2] || '').toLowerCase()
-  const start = safeCaret - query.length - 1
-  const end = safeCaret
-  const token = value.slice(start, end)
-  const beforeToken = value.slice(0, start)
-  const atCommandPosition = beforeToken.trim().length === 0
-  if (/^@plugin-[a-z0-9_-]+$/i.test(token)) return null
-  if (atCommandPosition && isKnownAgentMentionCommand(token, commands)) return null
-  return { query, start, end }
-}
-
-export function shouldRunComposerCommand(value: string, commands: WorkbenchCommand[]): boolean {
-  const trimmed = value.trimStart()
-  if (trimmed.startsWith('/')) return true
-  return isKnownAgentMentionCommand(trimmed, commands)
-}
-
-function isKnownAgentMentionCommand(value: string, commands: WorkbenchCommand[]): boolean {
-  if (!value.trimStart().startsWith('@') || !looksLikeAgentMentionCommand(value)) return false
-  const token = normalizeCommandToken(value.trimStart().split(/\s+/, 1)[0] || '')
-  return commands.some(command => command.label.toLowerCase() === token)
-}
-
-function looksLikeAgentMentionCommand(value: string): boolean {
-  const token = value.trimStart().split(/\s+/, 1)[0] || ''
-  if (!token.startsWith('@')) return false
-  return /^@[a-z0-9][a-z0-9_-]*(?::[a-z0-9][a-z0-9_-]*)?$/i.test(token)
-}
-
-function normalizeCommandToken(value: string): string {
-  const lower = value.toLowerCase()
-  if (lower.startsWith('@')) {
-    const alias = lower.slice(1)
-    return `/agent:${alias === 'minimax-code' ? 'opencode' : alias}`
-  }
-  if (lower.startsWith('/agent:minimax-code')) return '/agent:opencode'
-  if (lower === '/schedule:firefly-custom') return '/schedule:smart-five-role'
-  return lower
-}
-
-function commandTextForSelection(currentText: string, command: WorkbenchCommand): string {
-  const rawFirstToken = currentText.split(/\s+/, 1)[0] || ''
-  const firstToken = normalizeCommandToken(rawFirstToken)
-  if (firstToken === command.label.toLowerCase() && currentText.length > rawFirstToken.length) return currentText
-  return command.insertText || command.label
-}
-
-function currentTextHasCommandArgs(currentText: string, command: WorkbenchCommand): boolean {
-  const rawFirstToken = currentText.split(/\s+/, 1)[0] || ''
-  const firstToken = normalizeCommandToken(rawFirstToken)
-  return firstToken === command.label.toLowerCase() && currentText.trim().length > rawFirstToken.length
-}
-
-function filterCommands(commands: WorkbenchCommand[], query: string): WorkbenchCommand[] {
-  const raw = query.trim().toLowerCase()
-  const q = raw.startsWith('agent:') ? raw : raw ? `agent:${raw}` : raw
-  if (!q) return commands
-  return commands.filter(command => {
-    const haystack = [
-      command.label,
-      command.label.replace(/^\/agent:/, ''),
-      command.description,
-      command.descriptionZh,
-      command.descriptionEn,
-      command.category,
-      command.source,
-      command.payload?.name,
-      command.payload?.category,
-      Array.isArray(command.payload?.tags) ? command.payload.tags.join(' ') : ''
-    ].join(' ').toLowerCase()
-    return haystack.includes(raw) || (command.source === 'local-agent' && haystack.includes(q))
-  })
-}
-
-export function rankCommandsForPalette(commands: WorkbenchCommand[], query: string): WorkbenchCommand[] {
-  const q = query.trim().toLowerCase()
-  return [...commands].sort((a, b) => commandRank(a, q) - commandRank(b, q))
-}
-
-function commandRank(command: WorkbenchCommand, query: string): number {
-  const label = command.label.toLowerCase().replace(/^\//, '')
-  const exact = query && label === query ? -100 : 0
-  const prefix = query && label.startsWith(query) ? -50 : 0
-  const source = command.source === 'ecc' ? 0
-    : command.category === 'session' ? 100
-    : command.category === 'tool' ? 200
-    : command.category === 'agent' ? 300
-    : command.category === 'skill' ? 400
-    : command.category === 'schedule' ? 500
-    : 600
-  const common = COMMON_COMMAND_ORDER.get(command.label.toLowerCase()) ?? 80
-  return exact + prefix + source + common
-}
-
-const COMMON_COMMAND_ORDER = new Map<string, number>([
-  ['/plan', 0],
-  ['/goal', 1],
-  ['/loop', 2],
-  ['/tdd', 3],
-  ['/code-review', 4],
-  ['/review', 5],
-  ['/verify', 6],
-  ['/bug-hunt', 7],
-  ['/ui-polish', 8],
-  ['/docs', 9],
-  ['/research', 10],
-  ['/new', 12],
-  ['/clear', 13],
-  ['/context', 14],
-  ['/terminal', 20],
-  ['/git', 21],
-  ['/browser', 22],
-  ['/todo', 23]
-])
 
 function commandCategoryLabel(category: WorkbenchCommand['category']): string {
   if (category === 'session') return tr('会话', 'Session')

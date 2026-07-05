@@ -1,7 +1,7 @@
 /**
  * IPC Channel Uniqueness Test
  *
- * Scans all source files for ipcMain.handle() registrations and asserts
+ * Scans all source files for IPC handler registrations and asserts
  * that no channel name is registered more than once. This prevents the
  * "Attempted to register a second handler" runtime error in Electron.
  */
@@ -34,7 +34,7 @@ function extractIpcRegistrations(filePath: string): Registration[] {
   const content = readFileSync(filePath, "utf-8")
   const lines = content.split("\n")
   const results: Registration[] = []
-  const regex = /ipcMain\.handle\(\s*["']([^"']+)["']/g
+  const regex = /(?:ipcMain\.handle|typedHandle)\(\s*["']([^"']+)["']/g
 
   for (let i = 0; i < lines.length; i++) {
     let match: RegExpExecArray | null
@@ -50,7 +50,7 @@ function extractIpcRegistrations(filePath: string): Registration[] {
 }
 
 describe("IPC channel uniqueness", () => {
-  it("should have no duplicate ipcMain.handle() channel registrations", () => {
+  it("should have no duplicate IPC channel registrations", () => {
     const srcDir = join(__dirname, "..")
     const files = collectTsFiles(srcDir)
     const allRegistrations: Registration[] = []

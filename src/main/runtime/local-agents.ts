@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { isAbsolute } from "node:path"
 import { existsSync } from "node:fs"
 import { getProviderManager } from "../providers/manager"
@@ -53,6 +53,10 @@ const CONSERVATIVE_LOCAL_CANDIDATES: DetectableLocalAgent[] = [
 
 const DETECTABLE_LOCAL_AGENTS: DetectableLocalAgent[] = [...LOCAL_AGENTS, ...CONSERVATIVE_LOCAL_CANDIDATES]
 let statusCache: { value: LocalAgentStatus[]; updatedAt: number } | null = null
+let refreshInFlight: Promise<LocalAgentStatus[]> | null = null
+let configuredRevalidationInFlight: Promise<void> | null = null
+let lastConfiguredRevalidationAt = 0
+const CONFIGURED_REVALIDATION_INTERVAL_MS = 5_000
 
 function manualAgentDispatchReady(agent: { manualOnly?: boolean; requiresPromptArg?: boolean }, binding?: { protocol?: string; args?: string }): boolean {
   if (!agent.manualOnly) return true
@@ -61,12 +65,12 @@ function manualAgentDispatchReady(agent: { manualOnly?: boolean; requiresPromptA
   return /\{prompt\}/i.test(binding?.args || "")
 }
 
-function readVersion(binary?: string, args: string[] = ["--version"]): string | undefined {
-  const result = probeBinary(binary, args)
+async function readVersion(binary?: string, args: string[] = ["--version"]): Promise<string | undefined> {
+  const result = await probeBinary(binary, args)
   return result.output
 }
 
-function probeBinary(binary?: string, args: string[] = ["--version"]): { available: boolean; output?: string; reason?: "empty" | "unsafe-command" | "missing" | "failed" } {
+async function probeBinary(binary?: string, args: string[] = ["--version"]): Promise<{ available: boolean; output?: string; reason?: "empty" | "unsafe-command" | "missing" | "failed" }> {
   if (!binary) return { available: false, reason: "empty" }
 
   const cmd = binary.trim()
@@ -80,24 +84,70 @@ function probeBinary(binary?: string, args: string[] = ["--version"]): { availab
     return { available: false, reason: "missing" }
   }
 
-  try {
-    const output = execFileSync(cmd, args, { encoding: "utf-8", timeout: 2500, windowsHide: true }).trim().split(/\r?\n/)[0]
-    return { available: true, output }
-  } catch {
-    return { available: false, reason: "failed" }
-  }
+  return new Promise(resolve => {
+    execFile(cmd, args, { encoding: "utf-8", timeout: 2500, windowsHide: true }, (error, stdout) => {
+      if (error) {
+        resolve({ available: false, reason: "failed" })
+        return
+      }
+      const output = String(stdout || "").trim().split(/\r?\n/)[0]
+      resolve({ available: true, output })
+    })
+  })
 }
 
-export function detectLocalAgentStatuses(): LocalAgentStatus[] {
-  const located = locateAgentCandidates()
+function unprobedConfiguredBinaryAvailable(binary?: string): boolean {
+  if (!binary?.trim()) return false
+  const cmd = binary.trim()
+  return isAbsolute(cmd) && existsSync(cmd)
+}
+
+function buildCachedFallbackStatuses(): LocalAgentStatus[] {
   const bindings = getProviderManager().getBindings()
   return DETECTABLE_LOCAL_AGENTS.map(agent => {
+    const binding = bindings.find(b => b.agentId === agent.agentId)
+    const isLocalProtocol = binding?.protocol === "stdio-plain" || binding?.protocol === "acp"
+    const manualDispatchReady = manualAgentDispatchReady(agent, binding)
+    const configuredBinaryAvailable = unprobedConfiguredBinaryAvailable(binding?.binary)
+    const userConfigured = !!binding && isLocalProtocol && !!binding.binary && manualDispatchReady && configuredBinaryAvailable
+    const staleConfiguredBinary = !!binding && isLocalProtocol && !!binding.binary && isAbsolute(binding.binary.trim()) && !configuredBinaryAvailable
+    const diagnostic = staleConfiguredBinary
+      ? {
+          code: "configured-binary-missing",
+          message: "Configured executable was not found or no longer responds. Reconfigure this local agent.",
+          action: "reconfigure"
+        }
+      : undefined
+    return {
+      agentId: agent.agentId,
+      label: agent.label,
+      installed: userConfigured,
+      configured: userConfigured,
+      protocol: binding?.protocol || (binding ? "http" : undefined),
+      binary: binding?.binary?.trim() || undefined,
+      args: binding?.args,
+      manualOnly: agent.manualOnly,
+      candidateKind: "candidateKind" in agent ? agent.candidateKind : undefined,
+      requiresPromptArg: "requiresPromptArg" in agent ? agent.requiresPromptArg : false,
+      note: diagnostic?.message || ("note" in agent && typeof agent.note === "string" ? agent.note : undefined),
+      loginState: userConfigured ? "unknown" : "not-installed",
+      candidates: [],
+      workspaceSession: "per-dispatch",
+      diagnostic
+    }
+  })
+}
+
+export async function detectLocalAgentStatuses(): Promise<LocalAgentStatus[]> {
+  const located = locateAgentCandidates()
+  const bindings = getProviderManager().getBindings()
+  return Promise.all(DETECTABLE_LOCAL_AGENTS.map(async agent => {
     const binding = bindings.find(b => b.agentId === agent.agentId)
     const candidates = located[agent.agentId] ?? []
     const binary = (binding?.binary || candidates[0]?.path || "").trim() || undefined
     const isLocalProtocol = binding?.protocol === "stdio-plain" || binding?.protocol === "acp"
     const manualDispatchReady = manualAgentDispatchReady(agent, binding)
-    const configuredProbe = binding?.binary ? probeBinary(binding.binary, agent.versionArgs) : undefined
+    const configuredProbe = binding?.binary ? await probeBinary(binding.binary, agent.versionArgs) : undefined
     const configuredBinaryAvailable = configuredProbe?.available === true
     const userConfigured = !!binding && isLocalProtocol && !!binding.binary && manualDispatchReady && configuredBinaryAvailable
     const candidateInstalled = !agent.manualOnly && candidates.some(candidate => candidate.verification !== "manual")
@@ -121,7 +171,7 @@ export function detectLocalAgentStatuses(): LocalAgentStatus[] {
       protocol: binding?.protocol || (binding ? "http" : undefined),
       binary,
       args: binding?.args,
-      version: installed ? configuredProbe?.output || readVersion(binary, agent.versionArgs) : undefined,
+      version: installed ? configuredProbe?.output || await readVersion(binary, agent.versionArgs) : undefined,
       manualOnly: agent.manualOnly,
       candidateKind: "candidateKind" in agent ? agent.candidateKind : undefined,
       requiresPromptArg: "requiresPromptArg" in agent ? agent.requiresPromptArg : false,
@@ -133,12 +183,16 @@ export function detectLocalAgentStatuses(): LocalAgentStatus[] {
       workspaceSession: "per-dispatch",
       diagnostic
     }
-  })
+  }))
 }
 
 export function getCachedLocalAgentStatuses(): LocalAgentStatus[] {
-  if (statusCache) return statusCache.value
-  return refreshLocalAgentStatusCache()
+  if (statusCache) {
+    scheduleConfiguredStatusRevalidation()
+    return statusCache.value
+  }
+  scheduleFullStatusRefresh()
+  return buildCachedFallbackStatuses()
 }
 
 export function isUsableLocalAgentStatus(agent: LocalAgentStatus): boolean {
@@ -149,12 +203,91 @@ export function isUsableLocalAgentStatus(agent: LocalAgentStatus): boolean {
   return true
 }
 
-export function refreshLocalAgentStatusCache(): LocalAgentStatus[] {
-  statusCache = { value: detectLocalAgentStatuses(), updatedAt: Date.now() }
-  return statusCache.value
+export async function refreshLocalAgentStatusCache(): Promise<LocalAgentStatus[]> {
+  if (!refreshInFlight) {
+    refreshInFlight = detectLocalAgentStatuses()
+      .then(value => {
+        statusCache = { value, updatedAt: Date.now() }
+        return value
+      })
+      .finally(() => {
+        refreshInFlight = null
+      })
+  }
+  return refreshInFlight
 }
 
-export function configureLocalAgent(agentId: string, patch: { binary?: string; args?: string; protocol?: "stdio-plain" | "acp" }): LocalAgentStatus[] {
+function scheduleFullStatusRefresh(): void {
+  if (refreshInFlight) return
+  const timer = setTimeout(() => {
+    void refreshLocalAgentStatusCache().catch(() => {})
+  }, 0)
+  timer.unref?.()
+}
+
+function scheduleConfiguredStatusRevalidation(): void {
+  if (!statusCache || configuredRevalidationInFlight) return
+  const now = Date.now()
+  if (now - lastConfiguredRevalidationAt < CONFIGURED_REVALIDATION_INTERVAL_MS) return
+  lastConfiguredRevalidationAt = now
+  const cached = statusCache.value
+  configuredRevalidationInFlight = revalidateConfiguredStatuses(cached)
+    .finally(() => {
+      configuredRevalidationInFlight = null
+    })
+}
+
+async function revalidateConfiguredStatuses(cached: LocalAgentStatus[]): Promise<void> {
+  const bindings = getProviderManager().getBindings()
+  const next = await Promise.all(cached.map(async status => {
+    const agent = DETECTABLE_LOCAL_AGENTS.find(item => item.agentId === status.agentId)
+    const binding = bindings.find(b => b.agentId === status.agentId)
+    const isLocalProtocol = binding?.protocol === "stdio-plain" || binding?.protocol === "acp"
+    if (!agent || !binding?.binary || !isLocalProtocol) return status
+
+    const manualDispatchReady = manualAgentDispatchReady(agent, binding)
+    const probe = await probeBinary(binding.binary, agent.versionArgs)
+    const configured = manualDispatchReady && probe.available
+    if (configured) {
+      return {
+        ...status,
+        installed: true,
+        configured: true,
+        binary: binding.binary.trim(),
+        args: binding.args,
+        protocol: binding.protocol,
+        version: probe.output || status.version,
+        loginState: status.loginState === "not-installed" ? "unknown" : status.loginState,
+        diagnostic: undefined,
+        note: status.manualOnly && !manualDispatchReady
+          ? "This desktop/manual candidate needs non-interactive args with {prompt}, or ACP protocol, before it can be dispatched."
+          : status.note
+      } satisfies LocalAgentStatus
+    }
+
+    const reason = probe.reason === "missing" ? "configured-binary-missing" : "configured-binary-unavailable"
+    return {
+      ...status,
+      installed: false,
+      configured: false,
+      binary: binding.binary.trim(),
+      args: binding.args,
+      protocol: binding.protocol,
+      version: undefined,
+      loginState: "not-installed" as const,
+      diagnostic: {
+        code: reason,
+        message: "Configured executable was not found or no longer responds. Reconfigure this local agent.",
+        action: "reconfigure"
+      },
+      note: "Configured executable was not found or no longer responds. Reconfigure this local agent."
+    } satisfies LocalAgentStatus
+  }))
+
+  statusCache = { value: next, updatedAt: Date.now() }
+}
+
+export async function configureLocalAgent(agentId: string, patch: { binary?: string; args?: string; protocol?: "stdio-plain" | "acp" }): Promise<LocalAgentStatus[]> {
   const agent = DETECTABLE_LOCAL_AGENTS.find(item => item.agentId === agentId)
   if (!agent) throw new Error(`Unsupported local agent: ${agentId}`)
   if (agent.manualOnly && !patch.binary?.trim()) throw new Error(`${agent.label} needs an explicit executable path before it can be used`)

@@ -10,6 +10,6 @@ describe("git runtime copy", () => {
     expect(source).toContain("未暂存")
     expect(source).toContain("未跟踪")
     expect(source).toContain("使用 Git 前请先选择工作目录。")
-    expect(source).not.toMatch(/[锟�]|宸叉殏|鏈殏|鏈窡/)
+    expect(source).not.toMatch(/[\u951f\ufffd]|\u5bb8\u53c9\u6b8f|\u93c8\ue045\u6b8f|\u93c8\ue047\u7aa1/)
   })
 })

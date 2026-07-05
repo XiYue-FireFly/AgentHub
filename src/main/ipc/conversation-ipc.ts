@@ -1,23 +1,20 @@
-import { ipcMain, app } from 'electron'
-import { normalize, resolve } from 'path'
+import { app } from 'electron'
 import { formatAsMarkdown, formatAsHtml, exportConversation } from '../runtime/conversation-export'
 import { importConversationFromFile, importConversationFromJson, branchFromCheckpoint, summarizeConversation } from '../runtime/conversation-import'
+import { resolvePathWithinAllowedBases } from './path-guards'
+import { typedHandle } from './typed-ipc'
 
 export function registerConversationIpc(): void {
-  ipcMain.handle("conversation:exportMarkdown", (_e, data: any) => formatAsMarkdown(data))
-  ipcMain.handle("conversation:exportHtml", (_e, data: any) => formatAsHtml(data))
-  ipcMain.handle("conversation:exportFile", (_e, data: any, format: string, path: string) => {
-    // Check for traversal BEFORE normalization (normalize strips '..' making post-check useless)
-    if (path.includes('..')) throw new Error('Invalid path: traversal not allowed')
-    const normalized = resolve(normalize(path))
-    // Ensure the resolved path is within user-accessible directories
+  typedHandle("conversation:exportMarkdown", (_e, data) => formatAsMarkdown(data))
+  typedHandle("conversation:exportHtml", (_e, data) => formatAsHtml(data))
+  typedHandle("conversation:exportFile", (_e, data, format, path) => {
     const home = app.getPath('home')
-    if (!normalized.startsWith(home)) throw new Error('Invalid path: must be within user directory')
-    return exportConversation(data, format as any, normalized)
+    const normalized = resolvePathWithinAllowedBases(path, home, [home])
+    return exportConversation(data, format, normalized)
   })
 
-  ipcMain.handle("conversation:importFile", (_e, filePath: string) => importConversationFromFile(filePath))
-  ipcMain.handle("conversation:importJson", (_e, json: string) => importConversationFromJson(json))
-  ipcMain.handle("conversation:branch", (_e, conversation: any, index: number) => branchFromCheckpoint(conversation, index))
-  ipcMain.handle("conversation:summarize", (_e, conversation: any) => summarizeConversation(conversation))
+  typedHandle("conversation:importFile", (_e, filePath) => importConversationFromFile(filePath))
+  typedHandle("conversation:importJson", (_e, json) => importConversationFromJson(json))
+  typedHandle("conversation:branch", (_e, conversation, index) => branchFromCheckpoint(conversation, index))
+  typedHandle("conversation:summarize", (_e, conversation) => summarizeConversation(conversation))
 }

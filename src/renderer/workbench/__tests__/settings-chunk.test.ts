@@ -3,10 +3,11 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 describe('settings bundle entry', () => {
-  it('keeps Settings statically imported to avoid stale local chunk hashes after rebuilds', () => {
-    const source = readFileSync(join(process.cwd(), 'src/renderer/workbench/WorkbenchLayout.tsx'), 'utf8')
+  it('lazy-loads SettingsScreen instead of statically importing it into WorkbenchMainContent', () => {
+    const source = readFileSync(join(process.cwd(), 'src/renderer/workbench/WorkbenchMainContent.tsx'), 'utf8')
 
-    expect(source).toContain("import { SettingsScreen } from '../screens/Settings'")
-    expect(source).not.toContain("React.lazy(() => import('../screens/Settings')")
+    expect(source).not.toContain("import { SettingsScreen } from '../screens/Settings'")
+    expect(source).toContain("const SettingsScreen = React.lazy(() => import('../screens/Settings').then(m => ({ default: m.SettingsScreen })))")
+    expect(source).toContain('<React.Suspense fallback=')
   })
 })

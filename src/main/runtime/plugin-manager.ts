@@ -8,7 +8,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, lstatSync } from 'node:fs'
 import { execFile } from 'node:child_process'
-import { join, basename, dirname, isAbsolute } from 'node:path'
+import { join, basename, dirname, isAbsolute, relative, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 
@@ -270,7 +270,7 @@ function readCodexStyleEntry(pluginDir: string, source: 'local' | 'global', entr
       description,
       author: normalizeAuthor(pluginMeta?.author),
       contributes: {
-        skills: skillFiles.map(file => ({ id: skillIdFromPath(file), path: file }))
+        skills: skillFiles.map(file => ({ id: skillIdFromPath(file), path: relativePluginPath(pluginDir, file) }))
       }
     },
     path: pluginDir,
@@ -303,7 +303,7 @@ function readCodexPackageEntry(packageRoot: string, source: 'local' | 'global', 
       description,
       author: normalizeAuthor(pluginMeta?.author),
       contributes: {
-        skills: skillFiles.map(file => ({ id: skillIdFromPath(file), path: file }))
+        skills: skillFiles.map(file => ({ id: skillIdFromPath(file), path: relativePluginPath(packageRoot, file) }))
       }
     },
     path: packageRoot,
@@ -420,6 +420,10 @@ function safePluginId(value: string): string {
     .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'plugin'
+}
+
+function relativePluginPath(root: string, file: string): string {
+  return relative(root, file).split(sep).join('/')
 }
 
 function titleFromId(id: string): string {
