@@ -22,6 +22,8 @@ interface WorkbenchChatTopBarProps {
   activeThreadId: string | null
   updateTodoStatus: (todo: ThreadTodo, status: ThreadTodoStatus) => void
   deleteTodo: (todoId: string) => void
+  dispatchTodo?: (todo: ThreadTodo) => void
+  dispatchingTodoId?: string | null
 }
 
 export function WorkbenchChatTopBar({
@@ -38,7 +40,9 @@ export function WorkbenchChatTopBar({
   todos,
   activeThreadId,
   updateTodoStatus,
-  deleteTodo
+  deleteTodo,
+  dispatchTodo,
+  dispatchingTodoId
 }: WorkbenchChatTopBarProps) {
   const [todoOpen, setTodoOpen] = useState(false)
   const todoRef = useRef<HTMLDivElement | null>(null)
@@ -133,6 +137,8 @@ export function WorkbenchChatTopBar({
                     todo={todo}
                     onStatus={updateTodoStatus}
                     onDelete={deleteTodo}
+                    onDispatch={dispatchTodo}
+                    dispatching={dispatchingTodoId === todo.id}
                   />
                 ))}
                 {completedTodos.length > 0 && (
@@ -144,6 +150,8 @@ export function WorkbenchChatTopBar({
                         todo={todo}
                         onStatus={updateTodoStatus}
                         onDelete={deleteTodo}
+                        onDispatch={dispatchTodo}
+                        dispatching={dispatchingTodoId === todo.id}
                       />
                     ))}
                   </details>

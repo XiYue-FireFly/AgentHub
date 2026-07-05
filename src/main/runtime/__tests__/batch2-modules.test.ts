@@ -60,6 +60,25 @@ describe("workflows", () => {
   })
 })
 
+describe("team builder", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(memory)) delete memory[key]
+    vi.resetModules()
+  })
+
+  it("returns true when deleting an existing team preset", async () => {
+    const { saveTeamPreset, deleteTeamPreset, listTeamPresets } = await import("../team-builder")
+
+    const preset = saveTeamPreset({
+      name: "Review Team",
+      members: [{ role: "reviewer", agentId: "codex" }]
+    })
+
+    expect(deleteTeamPreset(preset.id)).toBe(true)
+    expect(listTeamPresets()).toHaveLength(0)
+  })
+})
+
 describe("diagnostics", () => {
   it("runs all checks and returns structured results", async () => {
     const { runDiagnostics } = await import("../diagnostics")

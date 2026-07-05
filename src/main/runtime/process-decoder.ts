@@ -28,5 +28,5 @@ export function appendDecodedProcessChunk(current: string, chunk: Buffer | Uint8
 function looksMisdecoded(text: string): boolean {
   if (!text) return false
   if (text.includes("\uFFFD")) return true
-  return /锟斤拷{2,}|鈥�{2,}|ÃÂ{2,}/.test(text)
+  return /(?:\u951f\u65a4\u62f7){2,}|(?:\u9225\ufffd){2,}|(?:\u00c3\u00c2){2,}/.test(text)
 }

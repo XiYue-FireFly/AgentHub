@@ -27,10 +27,15 @@ export function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, o
   onSetFallback: (chain: string[]) => void
   onTab: (tab: string) => void
 }) {
-  const [located, setLocated] = useState<Record<string, BinaryCandidate[]>>({})
+  const [located, setLocated] = useState<LocalAgentStatus[]>([])
   useEffect(() => { window.electronAPI.agents.locate().then(setLocated).catch(() => {}) }, [])
 
-  const configuredProviders = providers.filter(provider => provider.enabled && provider.apiKey && provider.models.length > 0)
+  const configuredProviders = providers.filter(provider =>
+    provider.enabled &&
+    provider.apiKey &&
+    !provider.apiKeyLocked &&
+    provider.models.some(model => model.enabled !== false)
+  )
   const toggleFallback = (providerId: string) => {
     onSetFallback(fallbackChain.includes(providerId) ? fallbackChain.filter(id => id !== providerId) : [...fallbackChain, providerId])
   }
@@ -40,23 +45,25 @@ export function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, o
       <div className="glass wb-inline-panel">
         <div>
           <strong>{tr('Agent 路由', 'Agent routing')}</strong>
-          <span>{tr('指定单个 Agent 时只走该 Agent 绑定；调度模式只在未指定 Agent 时展开。', 'A chosen Agent uses only its binding; schedule modes expand only when no Agent is pinned.')}</span>
+          <span>{tr('Pinned agents use only their binding; schedule modes expand only when no agent is pinned.', 'Pinned agents use only their binding; schedule modes expand only when no agent is pinned.')}</span>
         </div>
-        <button className="ah-btn sm" onClick={() => onTab('local-agents')}>{tr('管理本地 Agent', 'Manage local agents')}</button>
+        <button className="ah-btn sm" onClick={() => onTab('local-agents')}>{tr('Manage local agents', 'Manage local agents')}</button>
       </div>
       {settingsBindingRows(bindings).map(binding => (
         <BindingRow key={binding.agentId} binding={binding} providers={providers} configuredProviders={configuredProviders}
-          candidates={located[binding.agentId] || []} onChange={onSetBinding} />
+          candidates={located.find(agent => agent.agentId === binding.agentId)?.candidates || []}
+          onChange={onSetBinding}
+        />
       ))}
       <div className="glass wb-provider-card">
         <div className="wb-card-head">
           <div>
-            <strong>{tr('故障转移', 'Failover')}</strong>
-            <span>{tr('主供应商失败且还没有输出内容时，按顺序尝试备用供应商。', 'When the primary provider fails before output starts, fallback providers are tried in order.')}</span>
+            <strong>{tr('Failover', 'Failover')}</strong>
+            <span>{tr('Fallback providers are tried in order when the primary provider fails before producing output.', 'Fallback providers are tried in order when the primary provider fails before producing output.')}</span>
           </div>
         </div>
         <div className="wb-chip-row">
-          {providers.filter(provider => provider.enabled && provider.apiKey).map(provider => {
+          {providers.filter(provider => provider.enabled && provider.apiKey && !provider.apiKeyLocked).map(provider => {
             const index = fallbackChain.indexOf(provider.id)
             return (
               <button key={provider.id} className={index >= 0 ? 'ah-chip mint' : 'ah-chip'} onClick={() => toggleFallback(provider.id)}>
@@ -64,7 +71,7 @@ export function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, o
               </button>
             )
           })}
-          {providers.filter(provider => provider.enabled && provider.apiKey).length === 0 && <span className="ah-hint">{tr('先配置可用供应商。', 'Configure an available provider first.')}</span>}
+          {providers.filter(provider => provider.enabled && provider.apiKey && !provider.apiKeyLocked).length === 0 && <span className="ah-hint">{tr('Configure an available provider first.', 'Configure an available provider first.')}</span>}
         </div>
       </div>
     </div>
@@ -108,19 +115,19 @@ function BindingRow({ binding, providers: _providers, configuredProviders, candi
       </div>
       {binding.protocol === 'stdio-plain' && (
         <label className="wb-field">
-          <span>{tr('CLI 路径', 'CLI path')}</span>
+          <span>{tr('CLI path', 'CLI path')}</span>
           <input className="ah-input mono" value={binding.binary || ''} onChange={e => onChange({ ...binding, binary: e.target.value })} />
         </label>
       )}
       {binding.protocol !== 'stdio-plain' && (
         <div className="wb-binding-models">
           <select className="ah-select" value={binding.providerId || ''} onChange={e => onChange({ ...binding, providerId: e.target.value })}>
-            <option value="">{tr('选择供应商', 'Select provider')}</option>
+            <option value="">{tr('Select provider', 'Select provider')}</option>
             {configuredProviders.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <select className="ah-select" value={binding.modelId || ''} onChange={e => onChange({ ...binding, modelId: e.target.value })}>
-            <option value="">{tr('选择模型', 'Select model')}</option>
-            {configuredProviders.find(p => p.id === binding.providerId)?.models.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+            <option value="">{tr('Select model', 'Select model')}</option>
+            {configuredProviders.find(p => p.id === binding.providerId)?.models.filter(m => m.enabled !== false).map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
         </div>
       )}

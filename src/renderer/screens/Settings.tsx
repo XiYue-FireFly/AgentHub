@@ -36,7 +36,7 @@ const UsageStatsTabFull = React.lazy(() => import('./UsageStatsDashboard').then(
 
 export type MotionLevel = 'off' | 'subtle' | 'rich'
 
-type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage' | 'agentLoop' | 'requirements'
+type TabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage' | 'agentLoop' | 'requirements' | 'diagnostics'
 const MEMORY_CATEGORIES: MemoryCategory[] = ['preference', 'project', 'style', 'decision', 'correction', 'imported_conversation', 'conversation', 'task', 'skill', 'file', 'system']
 const MEMORY_SCOPES = ['all', 'user', 'workspace', 'project', 'deleted'] as const
 type MemoryScopeFilter = typeof MEMORY_SCOPES[number]
@@ -128,6 +128,16 @@ NAV_ITEMS.splice(modelsNavInsertIndex >= 0 ? modelsNavInsertIndex + 1 : NAV_ITEM
   icon: IC.pulse
 })
 
+const diagnosticsNavInsertIndex = NAV_ITEMS.findIndex(item => item.value === 'updates')
+NAV_ITEMS.splice(diagnosticsNavInsertIndex >= 0 ? diagnosticsNavInsertIndex : NAV_ITEMS.length, 0, {
+  value: 'diagnostics',
+  label: '\u8bca\u65ad',
+  labelEn: 'Diagnostics',
+  description: '\u67e5\u770b\u8fd0\u884c\u68c0\u67e5\u548c\u6700\u8fd1\u5e94\u7528\u4e8b\u4ef6\u65e5\u5fd7\u3002',
+  descriptionEn: 'View runtime checks and recent app event logs.',
+  icon: IC.pulse
+})
+
 const VISIBLE_NAV_ITEMS = NAV_ITEMS
 
 function settingsNavLabel(item: typeof NAV_ITEMS[number]): string {
@@ -214,6 +224,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
         {visibleTab === 'mcp' && <McpSettingsTab workspaceId={props.workspaceId ?? null} />}
         {visibleTab === 'plugins' && <PluginSettingsTab workspaceId={props.workspaceId ?? null} />}
         {visibleTab === 'usage' && <React.Suspense fallback={<div className="wb-muted-box">{tr('加载用量统计...', 'Loading usage stats...')}</div>}><UsageStatsTabFull /></React.Suspense>}
+        {visibleTab === 'diagnostics' && <DiagnosticsSettingsTab />}
         {visibleTab === 'shortcuts' && <ShortcutsSettingsTab />}
         {visibleTab === 'memory' && <MemorySettingsTab />}
         {visibleTab === 'agentLoop' && <AgentLoopSettingsTab />}
@@ -484,7 +495,7 @@ function _stdioArgsHint(agentId: string): string {
   return englishHints[agentId] || DEFAULT_STDIO_ARGS[agentId] || 'Leave blank to use defaults'
 }
 
-function ModelsTab({ providers }: { providers: ProviderDef[] }) {
+export function ModelsTab({ providers }: { providers: ProviderDef[] }) {
   const [filter, setFilter] = useState('')
   const [models, setModels] = useState<ModelRouteInfo[]>([])
   const [settings, setSettings] = useState<ModelRouteSettings | null>(null)
@@ -514,8 +525,16 @@ function ModelsTab({ providers }: { providers: ProviderDef[] }) {
   useEffect(() => { refresh().catch(error => setMessage(error?.message || String(error))) }, [refresh])
 
   const activeProviders = useMemo(() => {
-    return providers.filter(p => !!p.apiKey)
+    return providers.filter(p => p.enabled && !!p.apiKey && !p.apiKeyLocked)
   }, [providers])
+  const routeSelectableModels = useMemo(() => {
+    return models.filter(m =>
+      m.providerEnabled &&
+      m.providerHasKey &&
+      !m.providerKeyLocked &&
+      m.enabled !== false
+    )
+  }, [models])
 
   // Filter providers based on search text (matching provider name or model details)
   const filteredProviders = useMemo(() => {
@@ -542,7 +561,7 @@ function ModelsTab({ providers }: { providers: ProviderDef[] }) {
 
   const formatContext = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n)
   const modelRef = (m: ModelRouteInfo) => `${m.providerId}/${m.modelId}`
-  const updateModel = async (m: ModelRouteInfo, patch: Partial<ModelRouteInfo>) => {
+  const updateModel = async (m: ModelRouteInfo, patch: ModelRoutePatch) => {
     const next = await window.electronAPI.models.updateRoute(m.providerId, m.modelId, patch)
     setModels(current => current.map(item => modelRef(item) === modelRef(m) ? { ...item, ...next } : item))
   }
@@ -643,7 +662,7 @@ function ModelsTab({ providers }: { providers: ProviderDef[] }) {
                 onChange={e => updateSettings({ codexDefaultModel: e.target.value || undefined })}
               >
                 <option value="">{tr('请选择...', 'Select...')}</option>
-                {models.map(m => (
+                {routeSelectableModels.map(m => (
                   <option key={modelRef(m)} value={modelRef(m)}>{m.providerName} - {m.label} ({modelRef(m)})</option>
                 ))}
               </select>
@@ -656,7 +675,7 @@ function ModelsTab({ providers }: { providers: ProviderDef[] }) {
                 onChange={e => updateSettings({ fallbackModelId: e.target.value || undefined })}
               >
                 <option value="">{tr('请选择...', 'Select...')}</option>
-                {models.map(m => (
+                {routeSelectableModels.map(m => (
                   <option key={modelRef(m)} value={modelRef(m)}>{m.providerName} - {m.label} ({modelRef(m)})</option>
                 ))}
               </select>
@@ -1593,6 +1612,136 @@ function UpdatesSettingsTab() {
           <button className="ah-btn sm" onClick={refresh} disabled={loading}>{tr('刷新状态', 'Refresh status')}</button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function DiagnosticsSettingsTab() {
+  const [diagnostics, setDiagnostics] = useState<Awaited<ReturnType<ElectronAPI['diagnostics']['run']>> | null>(null)
+  const [logs, setLogs] = useState<RecentAppEventLogs | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const [nextDiagnostics, nextLogs] = await Promise.all([
+        window.electronAPI.diagnostics.run(),
+        window.electronAPI.diagnostics.recentLogs(100)
+      ])
+      setDiagnostics(nextDiagnostics)
+      setLogs(nextLogs)
+    } catch (err: any) {
+      setError(err?.message || String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { refresh().catch(() => {}) }, [refresh])
+
+  const recentErrors = useMemo(() => {
+    return (logs?.entries || []).filter(entry => {
+      const kind = String(entry.kind || '')
+      return kind.includes('error') || kind.includes('Exception') || kind.includes('Rejection') || !!entry.parseError
+    }).slice(-20).reverse()
+  }, [logs])
+  const recentEvents = useMemo(() => [...(logs?.entries || [])].slice(-80).reverse(), [logs])
+
+  return (
+    <div className="wb-settings-stack wb-diagnostics-tab">
+      <div className="glass wb-inline-panel">
+        <div>
+          <strong>{tr('\u8bca\u65ad\u4e0e\u65e5\u5fd7', 'Diagnostics and logs')}</strong>
+          <span>{tr('\u8fd0\u884c\u5feb\u901f\u68c0\u67e5\uff0c\u5e76\u67e5\u770b\u6700\u8fd1\u7684\u7ed3\u6784\u5316\u5e94\u7528\u4e8b\u4ef6\u3002', 'Run quick checks and inspect recent structured app events.')}</span>
+        </div>
+        <button className="ah-btn sm primary" onClick={refresh} disabled={loading}>
+          <Icon d={IC.refresh} size={13} /> {loading ? tr('\u8bca\u65ad\u4e2d', 'Running') : tr('\u5237\u65b0\u8bca\u65ad', 'Refresh diagnostics')}
+        </button>
+      </div>
+
+      {error && <div className="glass wb-error-text">{error}</div>}
+
+      <div className="glass wb-provider-card">
+        <div className="wb-card-head">
+          <div>
+            <strong>{tr('\u7cfb\u7edf\u68c0\u67e5', 'System checks')}</strong>
+            <span>{diagnostics?.timestamp ? new Date(diagnostics.timestamp).toLocaleString() : tr('\u5c1a\u672a\u8fd0\u884c', 'Not run yet')}</span>
+          </div>
+        </div>
+        <div className="wb-tool-summary-grid">
+          <div><strong>{diagnostics?.summary.pass ?? 0}</strong><span>Pass</span></div>
+          <div><strong>{diagnostics?.summary.warn ?? 0}</strong><span>Warn</span></div>
+          <div><strong>{diagnostics?.summary.fail ?? 0}</strong><span>Fail</span></div>
+          <div><strong>{diagnostics?.summary.skip ?? 0}</strong><span>Skip</span></div>
+        </div>
+        <div className="wb-diagnostics-checks">
+          {(diagnostics?.results || []).map(result => (
+            <div key={result.id} className={`wb-diagnostics-check ${result.status}`}>
+              <span>{result.status}</span>
+              <div>
+                <strong>{getLang() === 'en' ? result.name : (result as any).nameZh || result.name}</strong>
+                <small>{result.message}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="glass wb-provider-card">
+        <div className="wb-card-head">
+          <div>
+            <strong>{tr('\u6700\u8fd1\u9519\u8bef', 'Recent errors')}</strong>
+            <span>{tr('\u6765\u81ea\u4e3b\u8fdb\u7a0b app-event-log\uff0c\u7528\u4e8e\u5feb\u901f\u5b9a\u4f4d IPC \u6216\u672a\u5904\u7406\u5f02\u5e38\u3002', 'From the main-process app-event-log for quick IPC and unhandled error triage.')}</span>
+          </div>
+        </div>
+        {recentErrors.length === 0 ? (
+          <div className="wb-empty-row">{tr('\u6700\u8fd1\u65e5\u5fd7\u91cc\u6ca1\u6709\u9519\u8bef\u4e8b\u4ef6\u3002', 'No error events in the recent log window.')}</div>
+        ) : (
+          <div className="wb-diagnostics-log-list">
+            {recentErrors.map((entry, index) => <DiagnosticsLogRow key={`${entry.ts || 'error'}-${index}`} entry={entry} />)}
+          </div>
+        )}
+      </div>
+
+      <div className="glass wb-provider-card">
+        <div className="wb-card-head">
+          <div>
+            <strong>{tr('\u6700\u8fd1\u4e8b\u4ef6', 'Recent events')}</strong>
+            <span className="mono">{logs?.path || '-'}</span>
+          </div>
+        </div>
+        {logs?.error && <div className="wb-error-text">{logs.error}</div>}
+        <div className="wb-tool-summary-grid">
+          <div><strong>{logs?.entries.length ?? 0}</strong><span>{tr('\u5df2\u8bfb\u53d6', 'Loaded')}</span></div>
+          <div><strong>{logs?.scannedLines ?? 0}</strong><span>{tr('\u626b\u63cf\u884c', 'Scanned')}</span></div>
+          <div><strong>{logs?.truncated ? tr('\u662f', 'Yes') : tr('\u5426', 'No')}</strong><span>{tr('\u5df2\u622a\u65ad', 'Truncated')}</span></div>
+          <div><strong>{logs?.parseWarnings.length ?? 0}</strong><span>{tr('\u89e3\u6790\u8b66\u544a', 'Parse warnings')}</span></div>
+        </div>
+        <div className="wb-diagnostics-log-list">
+          {recentEvents.map((entry, index) => <DiagnosticsLogRow key={`${entry.ts || 'event'}-${index}`} entry={entry} />)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DiagnosticsLogRow({ entry }: { entry: AppEventLogEntry }) {
+  const kind = String(entry.kind || (entry.parseError ? 'parse:error' : 'event'))
+  const details = Object.entries(entry)
+    .filter(([key]) => key !== 'ts' && key !== 'kind')
+    .reduce<Record<string, unknown>>((acc, [key, value]) => {
+      acc[key] = value
+      return acc
+    }, {})
+  return (
+    <div className={`wb-diagnostics-log-row ${kind.includes('error') || entry.parseError ? 'error' : ''}`}>
+      <div>
+        <strong>{kind}</strong>
+        <span>{entry.ts ? new Date(String(entry.ts)).toLocaleString() : '-'}</span>
+      </div>
+      <pre>{JSON.stringify(details, null, 2)}</pre>
     </div>
   )
 }

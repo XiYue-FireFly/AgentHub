@@ -4,6 +4,9 @@ import type { ThreadTodo, ThreadTodoStatus } from "./types"
 
 const STORAGE_KEY = "runtime.todos.v1"
 const MAX_TODOS = 120
+const PLAN_COVERS_RE = /[（(]\s*covers?\s*[:：]\s*([^)）]+)\s*[)）]/i
+
+const PLAN_ITEM_ID_RE = /^(T-\d+|P-\d+)\s*[:：]\s+/i
 
 interface TodoState {
   version: 1
@@ -40,7 +43,7 @@ export function upsertThreadTodo(input: { threadId: string; id?: string; content
     threadId: input.threadId,
     content: clean(input.content),
     status: normalizeStatus(input.status || existing?.status || "pending"),
-    source: input.source ?? existing?.source,
+    source: input.source ? { ...existing?.source, ...input.source } : existing?.source,
     updatedAt: now
   }
   state.todos = [todo, ...state.todos.filter(item => !(item.threadId === input.threadId && item.id === id))].slice(0, 2000)
@@ -64,20 +67,98 @@ export function clearThreadTodos(threadId: string): boolean {
   return before !== state.todos.length
 }
 
-export function syncTodosFromMarkdown(threadId: string, markdown: string): ThreadTodo[] {
-  const items = markdown.split(/\r?\n/)
-    .map(line => line.match(/^\s*[-*]\s+\[( |x|-)\]\s+(.+)$/i))
-    .filter((match): match is RegExpMatchArray => !!match)
-    .map(match => ({
-      id: makeTodoId(threadId, match[2]),
-      content: clean(match[2]),
-      status: markerStatus(match[1]),
+export function syncTodosFromMarkdown(
+  threadId: string,
+  markdown: string,
+  sourceContext: Pick<NonNullable<ThreadTodo["source"]>, "workspaceRoot" | "draftId" | "relativePath"> = {}
+): ThreadTodo[] {
+  let checklistIndex = 0
+  const parsedItems = markdown.split(/\r?\n/)
+    .map(line => {
+      const match = line.match(/^\s*[-*]\s+\[( |x|-)\]\s+(.+)$/i)
+      if (!match) return null
+      checklistIndex += 1
+      return { marker: match[1], content: match[2], fallbackPlanItemId: `P-${checklistIndex}` }
+    })
+    .filter((item): item is { marker: string; content: string; fallbackPlanItemId: string } => !!item)
+    .filter(item => hasPlanCovers(item.content))
+    .map(item => ({
+      id: makeTodoId(threadId, item.content),
+      content: clean(item.content),
+      status: markerStatus(item.marker),
       source: {
         kind: "plan" as const,
-        contentHash: hash(clean(match[2]))
+        threadId,
+        ...sourceContext,
+        planItemId: planItemIdFromContent(item.content) || item.fallbackPlanItemId,
+        contentHash: hash(clean(item.content))
       }
     }))
-  return setThreadTodos(threadId, items)
+  return syncPlanTodos(threadId, parsedItems, { kind: "plan", threadId, ...sourceContext })
+}
+
+function planItemIdFromContent(value: string): string | undefined {
+  const match = PLAN_ITEM_ID_RE.exec(clean(value))
+  return match?.[1]?.toUpperCase()
+}
+
+function syncPlanTodos(
+  threadId: string,
+  items: Array<Pick<ThreadTodo, "id" | "content" | "status" | "source">>,
+  scopeSource?: ThreadTodo["source"]
+): ThreadTodo[] {
+  const state = read()
+  const now = Date.now()
+  const existingThreadTodos = state.todos.filter(todo => todo.threadId === threadId)
+  const effectiveScopeSource = items[0]?.source ?? scopeSource
+  const incoming = items.slice(0, MAX_TODOS).map(item => {
+    const source = item.source
+    const existing = existingThreadTodos.find(todo =>
+      todo.id === item.id ||
+      (
+        samePlanScope(todo.source, source) &&
+        !!todo.source?.planItemId &&
+        todo.source.planItemId === source?.planItemId
+      )
+    )
+    return {
+      id: existing?.id || item.id,
+      threadId,
+      content: clean(item.content),
+      status: mergePlanStatus(existing?.status, normalizeStatus(item.status)),
+      source: source ? { ...existing?.source, ...source } : existing?.source,
+      updatedAt: now
+    }
+  })
+
+  state.todos = [
+    ...state.todos.filter(todo => !(todo.threadId === threadId && samePlanScope(todo.source, effectiveScopeSource))),
+    ...incoming
+  ].slice(0, 2000)
+  write(state)
+  return listThreadTodos(threadId)
+}
+
+function samePlanScope(left: ThreadTodo["source"] | undefined, right: ThreadTodo["source"] | undefined): boolean {
+  if (left?.kind !== "plan" || right?.kind !== "plan") return false
+  const scopedKeys = (["workspaceRoot", "draftId", "relativePath"] as const).filter(key => right[key])
+  if (scopedKeys.length === 0) return !left.workspaceRoot && !left.draftId && !left.relativePath
+  return scopedKeys.every(key => left[key] === right[key])
+}
+
+function mergePlanStatus(existing: ThreadTodoStatus | undefined, incoming: ThreadTodoStatus): ThreadTodoStatus {
+  if (existing === "completed" || incoming === "completed") return "completed"
+  if (existing === "in_progress" || incoming === "in_progress") return "in_progress"
+  return "pending"
+}
+
+function hasPlanCovers(value: string): boolean {
+  const covers = PLAN_COVERS_RE.exec(value)
+  if (!covers) return false
+  return covers[1]
+    .split(/[,，、]/)
+    .map(item => item.trim())
+    .some(item => /^R-\d+$/i.test(item))
 }
 
 function read(): TodoState {

@@ -48,6 +48,7 @@ describe('palette command utilities', () => {
 
     expect(resolvePaletteExtraAction('open-models', localAgents)).toEqual({ type: 'setup', tab: 'models' })
     expect(resolvePaletteExtraAction('open-prompts', localAgents)).toEqual({ type: 'setup', tab: 'shortcuts' })
+    expect(resolvePaletteExtraAction('open-diagnostics', localAgents)).toEqual({ type: 'setup', tab: 'diagnostics' })
     expect(resolvePaletteExtraAction('open-backup', localAgents)).toEqual({ type: 'setup', tab: 'appearance' })
     expect(resolvePaletteExtraAction('seed-workflows', localAgents)).toEqual({ type: 'seed-workflows' })
     expect(resolvePaletteExtraAction('switch-agent:opencode', localAgents)).toEqual({ type: 'switch-agent', agentId: 'opencode' })

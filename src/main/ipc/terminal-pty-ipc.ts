@@ -7,9 +7,10 @@
  * replays the ring buffer).
  */
 
-import { ipcMain, BrowserWindow } from 'electron'
+import { BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { typedHandle } from './typed-ipc'
 
 type TerminalSession = {
   pty: any // IPty from node-pty
@@ -76,13 +77,8 @@ function attachSenderToSession(sessionId: string, session: TerminalSession, send
   sender.once('destroyed', cleanupOnDestroy)
 }
 
-export function registerTerminalPtyIpc(getMainWindow: () => BrowserWindow | null): void {
-  ipcMain.handle('terminal:create', async (_event, payload: {
-    sessionId: string
-    cwd?: string
-    cols?: number
-    rows?: number
-  }) => {
+export function registerTerminalPtyIpc(_getMainWindow: () => BrowserWindow | null): void {
+  typedHandle('terminal:create', async (_event, payload) => {
     const ptyModule = await loadNodePty()
     if (!ptyModule) {
       return { ok: false, message: 'node-pty not available. Built-in terminal is disabled.' }
@@ -150,21 +146,21 @@ export function registerTerminalPtyIpc(getMainWindow: () => BrowserWindow | null
     }
   })
 
-  ipcMain.handle('terminal:write', (_event, payload: { sessionId: string; data: string }) => {
+  typedHandle('terminal:write', (_event, payload) => {
     const session = sessions.get(payload.sessionId)
     if (session && !session.exited) {
       try { session.pty.write(payload.data) } catch { /* ignore */ }
     }
   })
 
-  ipcMain.handle('terminal:resize', (_event, payload: { sessionId: string; cols: number; rows: number }) => {
+  typedHandle('terminal:resize', (_event, payload) => {
     const session = sessions.get(payload.sessionId)
     if (session && !session.exited) {
       try { session.pty.resize(payload.cols, payload.rows) } catch { /* ignore */ }
     }
   })
 
-  ipcMain.handle('terminal:dispose', (_event, sessionId: string) => {
+  typedHandle('terminal:dispose', (_event, sessionId) => {
     const session = sessions.get(sessionId)
     if (session) {
       try { session.pty.kill() } catch { /* ignore */ }

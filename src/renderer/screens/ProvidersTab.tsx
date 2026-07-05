@@ -119,7 +119,7 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
 
   const isMaskedProviderApiKey = (value: string): boolean => {
     const trimmed = value.trim()
-    return /^[•*]+$/.test(trimmed) || trimmed.includes('鈥⑩€')
+    return /^[•*]+$/.test(trimmed) || trimmed.includes('\u9225\u2469\u20ac')
   }
 
   const providerRequestApiKey = (provider: ProviderDef): string | undefined => {

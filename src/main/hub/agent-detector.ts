@@ -2,7 +2,7 @@
  * Real agent detection - no mock data.
  */
 import { execFileSync, execFile } from "child_process";
-import { getProviderManager } from "../providers/manager";
+import { getProviderManager, isProviderRuntimeUsable } from "../providers/manager";
 import { AGENTS } from "./agents";
 
 export interface DetectedAgent {
@@ -106,7 +106,7 @@ function buildProviderAgents(): DetectedAgent[] {
     return {
       id: b.agentId,
       name: b.agentId.charAt(0).toUpperCase() + b.agentId.slice(1),
-      found: !!provider && provider.enabled && !!provider.apiKey,
+      found: isProviderRuntimeUsable(provider),
       capabilities: caps,
       providerId: provider && provider.id,
       modelId: resolved && resolved.model.id,

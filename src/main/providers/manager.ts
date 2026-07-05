@@ -1,14 +1,14 @@
-/**
+﻿/**
  * ProviderManager
  *
- * 职责：
- *   1. 加载/持久化 ProvidersConfig（JSON 存储）
- *   2. 暴露增删改查 / 启用切换 / 健康检查
- *   3. 提供按 Agent 路由解析的统一入口：resolveBinding(agentId)
+ * Responsibilities:
+ *   1. Load and persist ProvidersConfig.
+ *   2. Manage provider CRUD, enabled state, and health checks.
+ *   3. Resolve agent routes through resolveBinding(agentId).
  */
 
 import { EventEmitter } from 'events'
-import { store, encryptSecret, decryptSecret } from '../store'
+import { store, encryptSecret, decryptSecretDetailed } from '../store'
 import {
   ProvidersConfig,
   ProviderDefinition,
@@ -87,9 +87,12 @@ export interface ProviderSecretEncryptionWarning {
   message: string
 }
 
+export function isProviderRuntimeUsable(provider?: ProviderDefinition | null): provider is ProviderDefinition {
+  return !!provider && provider.enabled && !!provider.apiKey && !provider.apiKeyLocked
+}
+
 /**
- * 默认 Agent 路由，绑定到对应预设的官方模型。
- * 用户在 Settings 里可任意修改。
+ * Default agent routes. Users can override them in Settings.
  */
 export function defaultBindings(): AgentRouteBinding[] {
   return [
@@ -142,7 +145,7 @@ export function defaultBindings(): AgentRouteBinding[] {
       agentId: 'minimax-code',
       providerId: 'minimax',
       modelId: 'MiniMax-M2.7',
-      // 默认 StdIO 直连桌面版内置 opencode（吃桌面版登录态，无需 API Key）
+      // Default StdIO route to the desktop OpenCode runtime; it uses desktop login state and does not need an API key.
       protocol: 'stdio-plain',
       thinkingAllow: ['off', 'auto', 'enabled'],
       thinking: { mode: 'auto', level: 'medium', collapseInUI: true },
@@ -167,6 +170,10 @@ export function sortProvidersForClaude(providers: ProviderDefinition[], currentP
       const aCurrent = !!currentProviderId && a.provider.id === currentProviderId
       const bCurrent = !!currentProviderId && b.provider.id === currentProviderId
       if (aCurrent !== bCurrent) return aCurrent ? -1 : 1
+
+      const aEnabled = !!a.provider.enabled
+      const bEnabled = !!b.provider.enabled
+      if (aEnabled !== bEnabled) return aEnabled ? -1 : 1
 
       return providerSortKey(a.provider, a.index) - providerSortKey(b.provider, b.index)
         || String(a.provider.createdAt ?? '').localeCompare(String(b.provider.createdAt ?? ''))
@@ -454,6 +461,9 @@ export class ProviderManager extends EventEmitter {
   /** MED-20: Debounce timer for health-check saves */
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private warnedSecretEncryptionProviders = new Set<string>()
+  private configRevision = 0
+  private sortedConfigSnapshot: ProvidersConfig | null = null
+  private sortedConfigSnapshotRevision = -1
 
   constructor() {
     super()
@@ -464,9 +474,7 @@ export class ProviderManager extends EventEmitter {
     try {
       const raw = store.get(STORAGE_KEY)
       if (raw) {
-        // 防御性修复：局部损坏字段单独回退，避免整体重置误丢 apiKey
-        // 注意：此处保持 apiKey 为落盘形态（可能是 safeStorage 密文）；
-        //       解密延后到 app ready 后的 unlockSecrets()，以免 ready 前调用 safeStorage 失败而清空密钥。
+        // Keep apiKey in persisted form here; unlockSecrets() runs after app ready.
         const sane = this.sanitize(raw)
         return this.mergeWithBuiltins(sane)
       }
@@ -476,7 +484,7 @@ export class ProviderManager extends EventEmitter {
     return defaultConfig()
   }
 
-  /** 防御性修复存储配置结构：非数组/缺失字段回退默认，保留可用部分（不因局部损坏整体重置） */
+  /** Sanitize stored config without dropping valid provider data because one field is malformed. */
   private sanitize(raw: any): ProvidersConfig {
     const d = defaultConfig()
     if (!raw || typeof raw !== 'object') return d
@@ -499,16 +507,33 @@ export class ProviderManager extends EventEmitter {
   }
 
   /**
-   * 解密内存中的 apiKey（须在 app ready 后调用一次）。
-   * 旧明文配置（无加密前缀）原样保留并在下次 save() 时自动加密（隐式迁移）。
+   * Decrypt provider API keys after app ready. Plain legacy keys are kept in memory
+   * and encrypted on the next save.
    */
   unlockSecrets(): void {
     if (this.secretsUnlocked) return
-    for (const p of this.cfg.providers) p.apiKey = decryptSecret(p.apiKey || '')
+    for (const p of this.cfg.providers) {
+      const result = decryptSecretDetailed(p.apiKey || '')
+      if (result.ok) {
+        p.apiKey = result.value
+        delete p.apiKeyLocked
+        delete p.apiKeyError
+      } else {
+        p.apiKey = result.value
+        p.apiKeyLocked = true
+        p.apiKeyError = result.error || 'Failed to decrypt API key'
+        if (!this.warnedSecretEncryptionProviders.has(p.id)) {
+          this.warnedSecretEncryptionProviders.add(p.id)
+          log.warn(`Failed to decrypt API key for provider ${p.id}; preserving encrypted value until the user re-enters it:`, p.apiKeyError)
+          this.emit(SECRET_ENCRYPTION_WARNING_EVENT, { providerId: p.id, message: p.apiKeyError } satisfies ProviderSecretEncryptionWarning)
+        }
+      }
+    }
     this.secretsUnlocked = true
+    this.invalidateConfigSnapshot()
   }
 
-  /** 把存储的 config 与最新的内置 Provider 合并（新增内置不丢、删除的清理） */
+  /** Merge stored config with current built-in providers. */
   private mergeWithBuiltins(stored: ProvidersConfig): ProvidersConfig {
     const defaults = defaultConfig()
     const storedProviders = new Map(stored.providers.map(p => [p.id, p]))
@@ -516,7 +541,7 @@ export class ProviderManager extends EventEmitter {
     const providers = defaults.providers.map(def => {
       const saved = storedProviders.get(def.id)
       if (!saved) return def
-      // apiKey 必须从已存配置恢复
+      // Restore apiKey from stored config.
       return {
         ...def,
         apiKey: saved.apiKey || '',
@@ -534,7 +559,7 @@ export class ProviderManager extends EventEmitter {
       }
     })
 
-    // 用户自定义的非内置 Provider 也要保留
+    // Preserve custom providers.
     for (const sp of stored.providers) {
       if (!sp.builtIn && !providers.find(p => p.id === sp.id)) {
         providers.push({ ...sp, models: normalizeModels(sp.models || [], sp.id) })
@@ -544,7 +569,7 @@ export class ProviderManager extends EventEmitter {
     const storedBindings = migrateLegacySwappedOfficialBindings(
       stored.routing?.bindings?.length ? [...stored.routing.bindings] : defaults.routing.bindings
     )
-    // 新增内置 Agent 时补齐缺失的默认绑定（老配置升级）
+    // Add missing default bindings introduced by newer versions.
     for (const db of defaults.routing.bindings) {
       if (!storedBindings.find(b => b.agentId === db.agentId)) storedBindings.push(db)
     }
@@ -562,10 +587,11 @@ export class ProviderManager extends EventEmitter {
   }
 
   private save(): void {
-    // 落盘前加密 apiKey（内存 cfg 保持明文供运行时使用）。
-    // encryptSecret 幂等：若 unlockSecrets 尚未执行（cfg 仍为密文），重复加密会被跳过，磁盘不被破坏。
+    // Encrypt API keys before persisting. Locked keys are already encrypted
+    // ciphertext and must be preserved unchanged.
     const persisted = JSON.parse(JSON.stringify(this.cfg)) as ProvidersConfig
     persisted.providers = persisted.providers.map(p => {
+      if (p.apiKeyLocked) return { ...p, apiKey: p.apiKey || '', apiKeyLocked: undefined, apiKeyError: undefined }
       try {
         return { ...p, apiKey: encryptSecret(p.apiKey || '') }
       } catch (error: any) {
@@ -580,6 +606,7 @@ export class ProviderManager extends EventEmitter {
     })
     persisted.version = CONFIG_VERSION
     store.set(STORAGE_KEY, persisted)
+    this.invalidateConfigSnapshot()
     this.emit('config:changed', this.cfg)
   }
 
@@ -590,21 +617,36 @@ export class ProviderManager extends EventEmitter {
 
   /** MED-20: Debounced save for health checks to avoid excessive disk writes */
   private scheduleSave(delayMs = 300): void {
+    this.invalidateConfigSnapshot()
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null
       this.save()
     }, delayMs)
   }
-  // ---- 查询 ----
+  // ---- Queries ----
+  private invalidateConfigSnapshot(): void {
+    this.configRevision += 1
+    this.sortedConfigSnapshot = null
+    this.sortedConfigSnapshotRevision = -1
+  }
+
+  private cloneConfig(config: ProvidersConfig): ProvidersConfig {
+    return JSON.parse(JSON.stringify(config)) as ProvidersConfig
+  }
+
   getConfig(): ProvidersConfig {
     if (!Array.isArray(this.cfg.providers) || this.cfg.providers.length === 0) {
       this.cfg = this.mergeWithBuiltins({ ...this.cfg, providers: [] })
       this.scheduleSave()
     }
-    const config = JSON.parse(JSON.stringify(this.cfg)) as ProvidersConfig
-    config.providers = sortProvidersForClaude(config.providers, claudeCurrentProviderId(config))
-    return config
+    if (!this.sortedConfigSnapshot || this.sortedConfigSnapshotRevision !== this.configRevision) {
+      const config = this.cloneConfig(this.cfg)
+      config.providers = sortProvidersForClaude(config.providers, claudeCurrentProviderId(config))
+      this.sortedConfigSnapshot = config
+      this.sortedConfigSnapshotRevision = this.configRevision
+    }
+    return this.cloneConfig(this.sortedConfigSnapshot)
   }
 
   getProviders(): ProviderDefinition[] {
@@ -612,7 +654,7 @@ export class ProviderManager extends EventEmitter {
   }
 
   getEnabledProviders(): ProviderDefinition[] {
-    return this.cfg.providers.filter(p => p.enabled && p.apiKey)
+    return this.cfg.providers.filter(isProviderRuntimeUsable)
   }
 
   getProvider(id: string): ProviderDefinition | undefined {
@@ -641,33 +683,30 @@ export class ProviderManager extends EventEmitter {
     return this.cfg.routing.bindings.find(b => b.agentId === agentId)
   }
 
- /**解析 Agent → (Provider, Model, Thinking)完整配置；目标 Provider不可用时按 fallbackChain 回退 */
+ /** Resolve Agent -> (Provider, Model, Thinking); fallback when the primary provider is unavailable. */
  resolveBinding(agentId: string): { provider: ProviderDefinition; model: import('./types').ModelDefinition; binding: AgentRouteBinding; thinking: ThinkingConfig } | null {
  const binding = this.getBinding(agentId)
  if (!binding) return null
 
- const isUsable = (p: ProviderDefinition | undefined): p is ProviderDefinition =>
- !!p && p.enabled && !!p.apiKey
-
  let provider = this.getProvider(binding.providerId)
  let usingFallbackProvider = false
- if (!isUsable(provider)) {
+ if (!isProviderRuntimeUsable(provider)) {
  for (const id of this.cfg.routing.fallbackChain) {
  const p = this.getProvider(id)
- if (isUsable(p)) {
+ if (isProviderRuntimeUsable(p)) {
  provider = p
  usingFallbackProvider = p.id !== binding.providerId
  break
  }
  }
  }
- if (!isUsable(provider)) return null
+ if (!isProviderRuntimeUsable(provider)) return null
 
  // LOW-35: When using fallback provider, prefer enabled models with similar capabilities (tools support)
  const enabledModels = provider.models.filter(m => m.enabled !== false)
  const model = usingFallbackProvider
    ? (enabledModels.find(m => m.id === binding.modelId) ?? enabledModels.find(m => m.supportsTools) ?? enabledModels[0])
-   : provider.models.find(m => m.id === binding.modelId)
+   : enabledModels.find(m => m.id === binding.modelId)
  if (!model) return null
  return { provider, model, binding, thinking: binding.thinking }
  }
@@ -680,7 +719,7 @@ export class ProviderManager extends EventEmitter {
     routeReason: 'direct' | 'upstream' | 'fallback_unknown' | 'codex_slot' | 'codex_internal_locked' | 'disabled'
   } | null {
     const provider = this.getProvider(providerId)
-    if (!provider || !provider.enabled || !provider.apiKey) return null
+    if (!isProviderRuntimeUsable(provider)) return null
     const settings = normalizeModelRouteSettings(this.cfg.modelRoutes)
     let requestedModelId = modelId
     let reason: 'direct' | 'upstream' | 'fallback_unknown' | 'codex_slot' | 'codex_internal_locked' | 'disabled' = 'direct'
@@ -700,12 +739,12 @@ export class ProviderManager extends EventEmitter {
       const [fallbackProviderId, fallbackModelId] = splitModelRef(settings.fallbackModelId, provider.id)
       const fallbackProvider = this.getProvider(fallbackProviderId)
       const fallbackModel = fallbackProvider?.models.find(item => item.id === fallbackModelId)
-      if (fallbackProvider?.enabled && fallbackProvider.apiKey && fallbackModel && fallbackModel.enabled !== false) {
+      if (isProviderRuntimeUsable(fallbackProvider) && fallbackModel && fallbackModel.enabled !== false) {
         return modelRouteResult(fallbackProvider, fallbackModel, modelId, 'fallback_unknown')
       }
     }
     if (!model) return null
-    if (model.enabled === false) return modelRouteResult(provider, model, requestedModelId, 'disabled')
+    if (model.enabled === false) return null
     return modelRouteResult(provider, model, requestedModelId, reason)
   }
 
@@ -757,14 +796,14 @@ export class ProviderManager extends EventEmitter {
     if (providerId) {
       const provider = this.getProvider(providerId)
       const model = provider?.models.find(item => item.id === modelId)
-      if (provider?.enabled && provider.apiKey && model && model.enabled !== false) return { provider, model }
+      if (isProviderRuntimeUsable(provider) && model && model.enabled !== false) return { provider, model }
     }
     return this.findEnabledModelById(ref)
   }
 
   private findEnabledModelById(modelId: string): { provider: ProviderDefinition; model: ModelDefinition } | null {
     for (const provider of this.cfg.providers) {
-      if (!provider.enabled || !provider.apiKey) continue
+      if (!isProviderRuntimeUsable(provider)) continue
       const model = provider.models.find(item => item.id === modelId && item.enabled !== false)
       if (model) return { provider, model }
     }
@@ -782,15 +821,19 @@ export class ProviderManager extends EventEmitter {
     return JSON.parse(JSON.stringify(provider.models[index]))
   }
 
-  // ---- 修改 ----
+  // ---- Mutations ----
   upsertProvider(p: ProviderDefinition): void {
     const idx = this.cfg.providers.findIndex(x => x.id === p.id)
     if (idx >= 0) {
+      const existing = this.cfg.providers[idx]
+      const apiKeyChanged = p.apiKey !== existing.apiKey
       this.cfg.providers[idx] = {
-        ...this.cfg.providers[idx],
+        ...existing,
         ...p,
         models: normalizeModels(p.models || this.cfg.providers[idx].models || [], p.id),
-        createdAt: this.cfg.providers[idx].createdAt ?? p.createdAt ?? Date.now()
+        createdAt: this.cfg.providers[idx].createdAt ?? p.createdAt ?? Date.now(),
+        apiKeyLocked: apiKeyChanged ? undefined : p.apiKeyLocked ?? existing.apiKeyLocked,
+        apiKeyError: apiKeyChanged ? undefined : p.apiKeyError ?? existing.apiKeyError
       }
     } else {
       this.cfg.providers.push({
@@ -820,7 +863,7 @@ export class ProviderManager extends EventEmitter {
     const target = this.getProvider(id)
     if (!target || target.builtIn) return false
     this.cfg.providers = this.cfg.providers.filter(p => p.id !== id)
-    // 清理路由
+    // Remove related routes.
     this.cfg.routing.bindings = this.cfg.routing.bindings.filter(b => b.providerId !== id)
     this.cfg.routing.fallbackChain = this.cfg.routing.fallbackChain.filter(x => x !== id)
     this.save()
@@ -838,6 +881,8 @@ export class ProviderManager extends EventEmitter {
     const p = this.getProvider(id)
     if (!p) return
     p.apiKey = key
+    delete p.apiKeyLocked
+    delete p.apiKeyError
     if (key && !p.enabled) p.enabled = true
     this.save()
   }
@@ -890,12 +935,18 @@ export class ProviderManager extends EventEmitter {
     }, -1) + 1
   }
 
-  // ---- 健康检查 ----
+  // ---- Health checks ----
   async checkProviderHealth(id: string): Promise<import('./types').ProviderHealth> {
     const p = this.getProvider(id)
     if (!p) return { reachable: false, status: 'error', lastCheck: Date.now(), error: 'Provider not found' }
+    if (p.apiKeyLocked) {
+      const h: import('./types').ProviderHealth = { reachable: false, status: 'unauthorized', lastCheck: Date.now(), error: 'API key is locked; re-enter it to unlock this provider.' }
+      p.health = h
+      this.scheduleSave()
+      return h
+    }
     if (!p.apiKey) {
-      const h: import('./types').ProviderHealth = { reachable: false, status: 'unauthorized', lastCheck: Date.now(), error: '未配置 API Key' }
+      const h: import('./types').ProviderHealth = { reachable: false, status: 'unauthorized', lastCheck: Date.now(), error: 'API key is not configured' }
       p.health = h
       this.scheduleSave()
       return h
@@ -906,14 +957,14 @@ export class ProviderManager extends EventEmitter {
       const headers = this.buildHeaders(p)
       const res = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(8000) })
       const latencyMs = Date.now() - start
-      // 401/403 = 鉴权失败：服务器虽响应，但 key 无效，不应显示为“可达/绿灯”
+      // 401/403 means auth failed even though the server responded.
       const unauthorized = res.status === 401 || res.status === 403
       const h: import('./types').ProviderHealth = {
         reachable: !unauthorized && res.status < 500,
         status: unauthorized ? 'unauthorized' : (res.status < 400 ? 'ok' : 'error'),
         lastCheck: Date.now(),
         latencyMs,
-        error: unauthorized ? `鉴权失败 (HTTP ${res.status})` : (res.status >= 400 ? `HTTP ${res.status}` : undefined)
+        error: unauthorized ? `Authentication failed (HTTP ${res.status})` : (res.status >= 400 ? `HTTP ${res.status}` : undefined)
       }
       p.health = h
       this.scheduleSave()
@@ -927,15 +978,11 @@ export class ProviderManager extends EventEmitter {
   }
 
   /**
-   * 从厂商 API 拉取模型列表（自动/手动）。
-   * openai 兼容: GET /models → data[].id
-   * anthropic:  GET /models?limit=200 → data[].{id,display_name}
-   * gemini:     GET /models?pageSize=200 → models[].{name,displayName,inputTokenLimit}
-   * 与现有列表按 id 合并（保留人工配置的能力标记），其余字段用启发式默认。
+   * Fetch model lists from provider APIs and merge by id while preserving
+   * manually configured model route fields.
    */
   /**
-   * 参照 cc-switch model_fetch.rs:135-199 构建模型列表 URL 候选。
-   * 返回按优先级排列的 URL 列表，fetchModels 会逐一尝试，404/405 时 fallback 到下一个。
+   * Build candidate model-list URLs; fetchModels tries them in order.
    */
   private buildModelsUrlCandidates(p: ProviderDefinition): string[] {
     return deriveModelListCandidates(p.baseUrl, p.kind, p.apiKey)
@@ -948,15 +995,18 @@ export class ProviderManager extends EventEmitter {
       ...p,
       baseUrl: override?.baseUrl?.trim().replace(/\/+$/, '') || p.baseUrl,
       apiKey: override?.apiKey ?? p.apiKey,
-      kind: override?.kind || p.kind
+      kind: override?.kind || p.kind,
+      apiKeyLocked: override?.apiKey ? false : p.apiKeyLocked,
+      apiKeyError: override?.apiKey ? undefined : p.apiKeyError
     }
-    if (!requestProvider.apiKey) return this.recordModelFetchFailure(p, '未配置 API Key')
+    if (!requestProvider.apiKey) return this.recordModelFetchFailure(p, 'API key is not configured')
+    if (requestProvider.apiKeyLocked) return this.recordModelFetchFailure(p, 'API key is locked; re-enter it to unlock this provider.')
     try {
       const candidates = this.buildModelsUrlCandidates(requestProvider)
       let lastError = ""
       for (const url of candidates) {
         const res = await fetch(url, { method: 'GET', headers: this.buildHeaders(requestProvider), signal: AbortSignal.timeout(10000) })
-        // 404/405 → 尝试下一个候选（参照 cc-switch model_fetch.rs:109-113）
+        // Try the next candidate for 404/405 responses.
         if (res.status === 404 || res.status === 405) {
           lastError = `HTTP ${res.status} from ${url.replace(requestProvider.apiKey || "", "REDACTED")}`
           continue
@@ -973,7 +1023,7 @@ export class ProviderManager extends EventEmitter {
         }
         raw = raw.filter(m => m.id).slice(0, 300)
         if (raw.length === 0) {
-          lastError = `接口未返回模型 from ${url.replace(requestProvider.apiKey || "", "REDACTED")}`
+          lastError = `Model endpoint returned no models from ${url.replace(requestProvider.apiKey || "", "REDACTED")}`
           continue
         }
 
@@ -983,6 +1033,8 @@ export class ProviderManager extends EventEmitter {
         Object.assign(p, {
           baseUrl: requestProvider.baseUrl,
           apiKey: requestProvider.apiKey,
+          apiKeyLocked: undefined,
+          apiKeyError: undefined,
           kind: requestProvider.kind,
           enabled: requestProvider.apiKey && !p.enabled ? true : p.enabled,
           models: nextModels,
@@ -996,9 +1048,9 @@ export class ProviderManager extends EventEmitter {
         this.save()
         appendAppEventLog('providers:fetchModels:ok', { providerId: p.id, baseUrl: p.baseUrl, kind: p.kind, count: p.models.length })
         return { ok: true, count: p.models.length }
-      } // end for — 所有候选 URL 均返回 404/405
+      } // end for: all candidates returned 404/405 or empty model lists
       if (lastError) return this.recordModelFetchFailure(p, lastError)
-      return this.recordModelFetchFailure(p, "所有候选端点均无响应")
+      return this.recordModelFetchFailure(p, "All candidate model endpoints failed")
     } catch (e: any) {
       return this.recordModelFetchFailure(p, e?.message || String(e))
     }
@@ -1053,7 +1105,7 @@ export class ProviderManager extends EventEmitter {
         headers['anthropic-version'] = '2023-06-01'
         break
       case 'gemini':
-        // gemini 通过 query string 鉴权，不放 header
+        // Gemini authenticates through query string, not headers.
         break
     }
     return headers

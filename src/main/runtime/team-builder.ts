@@ -70,8 +70,9 @@ export function saveTeamPreset(input: Partial<TeamPreset> & { name: string; memb
 export function deleteTeamPreset(id: string): boolean {
   const presets = readPresets()
   const before = presets.length
-  writePresets(presets.filter(p => p.id !== id))
-  return presets.length < before
+  const next = presets.filter(p => p.id !== id)
+  writePresets(next)
+  return next.length < before
 }
 
 /**

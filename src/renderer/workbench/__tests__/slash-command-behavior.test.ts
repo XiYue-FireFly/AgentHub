@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { addPaletteQuery, replaceAddToken, shouldRunComposerCommand } from "../ComposerBar"
+import { addPaletteQuery, replaceAddToken, shouldRunComposerCommand } from "../utils/composerCommandUtils"
 import { parseLoopLimit, parseSlashInput, stripLoopFlags } from "../utils/slashCommandUtils"
 import { reasoningFromCommand, resolveModelCommand } from "../utils/modelUtils"
 
@@ -49,10 +49,11 @@ describe("workbench slash command behavior", () => {
 
   it("keeps unknown slash input from silently becoming a normal prompt", () => {
     const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+    const commandUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/composerCommandUtils.ts"), "utf8")
 
     expect(composer).toContain("commandTextForSelection")
     expect(composer).toContain("normalizeCommandToken")
-    expect(composer).toContain("currentText.length > rawFirstToken.length")
+    expect(commandUtils).toContain("currentText.length > rawFirstToken.length")
     expect(composer).toContain("未识别的指令")
   })
 
@@ -116,15 +117,16 @@ describe("workbench slash command behavior", () => {
 
   it("prioritizes workflow commands in the slash palette", () => {
     const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+    const commandUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/composerCommandUtils.ts"), "utf8")
 
     expect(composer).toContain("rankCommandsForPalette")
-    expect(composer).toContain("command.source === 'ecc' ? 0")
+    expect(commandUtils).toContain("command.source === 'ecc' ? 0")
     expect(composer).toContain("slice(0, 12)")
-    expect(composer).toContain("['/plan', 0]")
-    expect(composer).toContain("['/goal', 1]")
-    expect(composer).toContain("['/loop', 2]")
-    expect(composer).toContain("['/tdd', 3]")
-    expect(composer).toContain("['/code-review', 4]")
+    expect(commandUtils).toContain("['/plan', 0]")
+    expect(commandUtils).toContain("['/goal', 1]")
+    expect(commandUtils).toContain("['/loop', 2]")
+    expect(commandUtils).toContain("['/tdd', 3]")
+    expect(commandUtils).toContain("['/code-review', 4]")
   })
 
   it("renders localized slash command descriptions", () => {
@@ -200,7 +202,8 @@ describe("workbench slash command behavior", () => {
     expect(main).toContain("isProviderDirectSelection")
     expect(main).toContain("dispatcher.dispatchProviderDirect")
     expect(main).toContain("retryProviderDirect")
-    expect(main).toContain("const directTarget = payload.targetAgent?.trim()")
+    expect(main).toContain("const requestedDirectTarget = payload.targetAgent?.trim()")
+    expect(main).toContain("usableLocalAgentIds.includes(requestedDirectTarget)")
     expect(main).toContain("await dispatcher.dispatchProviderDirect(message.payload.text, modelSelection")
     expect(main).toContain("activeDispatcher.dispatchProviderDirect(")
     expect(main).toContain("const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)")

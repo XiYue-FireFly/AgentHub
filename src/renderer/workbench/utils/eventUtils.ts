@@ -22,6 +22,9 @@ export type RuntimeAgentStatusUpdate = {
  */
 export function mergeRuntimeEventLists<Event extends WorkbenchRuntimeEvent>(base: Event[], incoming: Event[]): Event[] {
   if (incoming.length === 0) return base
+  if (canAppendWithoutBaseScan(base, incoming)) {
+    return capRuntimeEvents([...base, ...incoming])
+  }
   const seen = new Set(base.map(event => event.id || `${event.threadId}:${event.seq}`))
   const additions = incoming.filter(event => {
     const key = event.id || `${event.threadId}:${event.seq}`
@@ -33,8 +36,30 @@ export function mergeRuntimeEventLists<Event extends WorkbenchRuntimeEvent>(base
   const last = base[base.length - 1]
   const ordered = !last || additions.every(event => event.seq > last.seq)
   const merged = ordered ? [...base, ...additions] : [...base, ...additions].sort((a, b) => a.seq - b.seq)
-  if (merged.length > MAX_EVENTS) return merged.slice(merged.length - MAX_EVENTS)
-  return merged
+  return capRuntimeEvents(merged)
+}
+
+function eventDedupeKey(event: WorkbenchRuntimeEvent): string {
+  return event.id || `${event.threadId}:${event.seq}`
+}
+
+function canAppendWithoutBaseScan<Event extends WorkbenchRuntimeEvent>(base: Event[], incoming: Event[]): boolean {
+  const last = base[base.length - 1]
+  if (!last) return false
+  const seenIncoming = new Set<string>()
+  for (const event of incoming) {
+    if (event.seq <= last.seq) return false
+    if (event.id) return false
+    const key = eventDedupeKey(event)
+    if (seenIncoming.has(key)) return false
+    seenIncoming.add(key)
+  }
+  return true
+}
+
+function capRuntimeEvents<Event extends WorkbenchRuntimeEvent>(events: Event[]): Event[] {
+  if (events.length > MAX_EVENTS) return events.slice(events.length - MAX_EVENTS)
+  return events
 }
 
 /**

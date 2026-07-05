@@ -57,6 +57,20 @@ describe('dispatch request resolver', () => {
     })
   })
 
+  it('drops explicit local agents that are no longer usable', () => {
+    expect(resolve({
+      targetAgent: 'gemini',
+      usableLocalAgents: ['codex']
+    })).toMatchObject({
+      mode: 'lead-workers',
+      targetAgent: null,
+      modelSelection: undefined,
+      selectedProviderDirect: false,
+      selectedLocalDirect: false,
+      scheduleUnavailable: false
+    })
+  })
+
   it('sanitizes schedule agents before dispatching editable schedules', () => {
     const result = resolve({
       mode: 'custom',

@@ -28,6 +28,16 @@ type DraftMetaFile = {
   updatedAt?: string
 }
 
+export type SddDraftHistoryEntry = {
+  version: number
+  timestamp: string
+  content: string
+  title: string
+  message: string
+  author: 'user' | 'system' | 'ai'
+  truncated?: boolean
+}
+
 // ============================================================
 // 路径工具
 // ============================================================
@@ -58,6 +68,10 @@ function buildImgDirPath(workspaceRoot: string, draftId: string): string {
 
 function buildMetaFilePath(workspaceRoot: string, draftId: string): string {
   return path.join(buildDraftDirPath(workspaceRoot, draftId), 'meta.json')
+}
+
+function buildHistoryFilePath(workspaceRoot: string, draftId: string): string {
+  return path.join(buildDraftDirPath(workspaceRoot, draftId), 'history.json')
 }
 
 function generateDraftId(): string {
@@ -371,6 +385,27 @@ export class SddStore {
     } catch {
       return null
     }
+  }
+
+  async getHistory(draftId: string): Promise<SddDraftHistoryEntry[]> {
+    const history = await readJsonFile<{ entries?: SddDraftHistoryEntry[] } | SddDraftHistoryEntry[]>(buildHistoryFilePath(this.workspaceRoot, draftId))
+    if (Array.isArray(history)) return history
+    if (Array.isArray(history?.entries)) return history.entries
+    return []
+  }
+
+  async saveHistory(draftId: string, entries: SddDraftHistoryEntry[]): Promise<void> {
+    const filePath = buildHistoryFilePath(this.workspaceRoot, draftId)
+    await writeFileAtomic(filePath, JSON.stringify({
+      version: 1,
+      draftId,
+      entries,
+      savedAt: new Date().toISOString()
+    }, null, 2))
+  }
+
+  async clearHistory(draftId: string): Promise<void> {
+    await this.saveHistory(draftId, [])
   }
 
   /**

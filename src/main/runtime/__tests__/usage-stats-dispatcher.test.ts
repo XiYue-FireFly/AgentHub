@@ -22,6 +22,7 @@ vi.mock("../../store", () => ({
 }))
 
 vi.mock("../../providers/manager", () => ({
+  isProviderRuntimeUsable: (provider: any) => !!provider && provider.enabled && !!provider.apiKey && !provider.apiKeyLocked,
   getProviderManager: () => ({
     getProvider: (id: string) => id === "deepseek"
       ? {
@@ -51,8 +52,8 @@ vi.mock("../../providers/manager", () => ({
           defaultThinking: { mode: "off", level: "low" }
         }
       : undefined,
-    getBindings: () => [{ agentId: "codex", providerId: "openai", modelId: "gpt-4o" }],
-    getBinding: (agentId: string) => ({ agentId, providerId: "openai", modelId: "gpt-4o" }),
+    getBindings: () => [{ agentId: "codex", providerId: "local-cli", modelId: "gpt-5.5", protocol: "stdio-plain", binary: "mock" }],
+    getBinding: (agentId: string) => ({ agentId, providerId: "local-cli", modelId: "gpt-5.5", protocol: "stdio-plain", binary: "mock" }),
     resolveBinding: () => null
   })
 }))
@@ -171,7 +172,8 @@ describe("usageStats dispatcher integration (isolated)", () => {
       workspaceId: null,
       targetAgent: "codex"
     })
-    const send = vi.fn()
+    let running = false
+    const send = vi.fn(() => { running = false })
     const registry = new AgentRegistry()
     registry.register({
       id: "codex",
@@ -184,7 +186,15 @@ describe("usageStats dispatcher integration (isolated)", () => {
       onError: null,
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
-      send
+      send,
+      getLifecycle: () => ({
+        protocol: "stdio-plain",
+        mode: "oneshot",
+        status: "idle",
+        running,
+        exitCode: 0,
+        lastStderr: ""
+      })
     } as any, ["code"], "openai", "gpt-4o")
     const dispatcher = new Dispatcher(registry, new EventPipeline())
     dispatcher.on("stream", event => runtime.appendStreamEvent(turn.id, event))

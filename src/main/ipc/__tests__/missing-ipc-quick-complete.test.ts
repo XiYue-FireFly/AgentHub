@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { ProviderClient } from "../../providers/client"
 
 const electronMock = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => any>(),
@@ -23,10 +24,18 @@ vi.mock("../../providers/client", () => ({
 describe("missing IPC quick complete handler", () => {
   beforeEach(() => {
     electronMock.handlers.clear()
+    vi.clearAllMocks()
     vi.resetModules()
   })
 
-  it("rejects empty prompts before selecting a provider", async () => {
+  it.each([
+    ["undefined input", undefined, "Invalid IPC payload: input must be an object"],
+    ["null input", null, "Invalid IPC payload: input must be an object"],
+    ["empty string", { prompt: "" }, "Invalid IPC payload: input.prompt must not be empty"],
+    ["whitespace string", { prompt: "   " }, "Invalid IPC payload: input.prompt must not be empty"],
+    ["newline whitespace string", { prompt: "\n\t  \r\n" }, "Invalid IPC payload: input.prompt must not be empty"],
+    ["non-string prompt", { prompt: 123 }, "Invalid IPC payload: input.prompt must be a string"]
+  ])("rejects %s before selecting a provider", async (_label, input, error) => {
     const providerMgr = {
       getProvider: vi.fn(),
       getEnabledProviders: vi.fn()
@@ -45,8 +54,9 @@ describe("missing IPC quick complete handler", () => {
 
     const handler = electronMock.handlers.get("ai:quickComplete")
     expect(handler).toBeTruthy()
-    await expect(handler?.({}, { prompt: "   " })).resolves.toEqual({ ok: false, error: "empty prompt" })
+    expect(handler?.({}, input)).toEqual({ ok: false, error })
     expect(providerMgr.getProvider).not.toHaveBeenCalled()
     expect(providerMgr.getEnabledProviders).not.toHaveBeenCalled()
+    expect(ProviderClient).not.toHaveBeenCalled()
   }, 15000)
 })

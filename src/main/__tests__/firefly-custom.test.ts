@@ -86,8 +86,11 @@ describe("smart five-role custom schedule integration", () => {
       optimization: optimizer()
     })
 
-    expect(source).toContain("function dispatchableLocalAgentIds()")
-    expect(source).toContain("availableAgentIds: dispatchableLocalAgentIds()")
+    expect(source).toContain("async function dispatchableLocalAgentIds()")
+    expect(source).toContain("buildAgentOptions(await refreshLocalAgentStatusCache()).map(agent => agent.agentId)")
+    expect(source).toContain("const usableLocalAgentIds = await dispatchableLocalAgentIds()")
+    expect(source).toContain("availableAgentIds: usableLocalAgentIds")
+    expect(source).not.toContain('import { getCachedLocalAgentStatuses } from "./runtime/local-agents"')
     expect(plan.effectiveMode).toBe("firefly-custom")
     expect(plan.dispatchMode).toBe("chain")
     expect(plan.schedule?.preset).toBe("firefly-custom")

@@ -1,14 +1,41 @@
 # AgentHub Version Register
 
-Current code version: 1.2.3
-Current branch baseline: release-v1.2.3-main
-Updated: 2026-07-04
+Current code version: 1.2.4
+Current branch baseline: new
+Updated: 2026-07-06
 
 This file is the release discipline record for AgentHub. Before any release,
 keep `package.json.version`, `package.json.build.buildVersion`, this current
 version, and release notes aligned.
 
 ## Release History
+
+### 1.2.4
+
+Purpose: fable5 iteration, SDD closed-loop hardening, IPC safety, E2E packaging validation, and text encoding cleanup.
+
+Main changes:
+- Expanded SDD requirements workflows with guarded assistant writeback, plan/Todo synchronization, trace visualization, execution status propagation, and verification evidence handling.
+- Hardened renderer-to-main IPC contracts with runtime validation across the remaining exposed channels.
+- Improved Workbench structure by extracting UI state, panel routing, composer helpers, command routing, and dispatch request resolution into focused modules.
+- Stabilized local-agent execution lifecycle reporting, stdio shutdown on Windows, provider model caching, and runtime event handling.
+- Added Electron smoke E2E coverage and CI support for Linux display-server execution through Xvfb.
+- Cleaned visible Chinese mojibake from source and tests while preserving runtime detection through escaped patterns.
+
+Fixes:
+- Prevents stale SDD assistant responses or verification verdicts from applying to a changed draft.
+- Prevents unrelated manual or cross-draft Todos from being overwritten by SDD plan sync.
+- Prevents same-thread/cross-thread SDD verification evidence leakage.
+- Prevents packaged Electron E2E runs from colliding with the production single-instance lock during tests.
+- Removes directly visible garbled Chinese fragments from source files and keeps UTF-8 text readable.
+
+Verification recorded:
+- `npm run typecheck`
+- `npm run lint` with 0 errors and 33 existing warnings.
+- `npm test` with 216 files and 1372 tests.
+- `npm run build`
+- `npm run test:e2e` with 1 Electron smoke test.
+- `npm run build:win`
 
 ### 1.2.3
 

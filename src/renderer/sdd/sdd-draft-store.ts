@@ -41,6 +41,22 @@ export interface SddRequirementBlock {
   lineNumber: number
 }
 
+export interface SddCommitEvidence {
+  sha: string
+  shortSha: string
+  summary?: string
+  files?: Array<{
+    path: string
+    oldPath?: string | null
+    status: string
+    additions?: number
+    deletions?: number
+  }>
+  linkedAt: string
+  turnId?: string
+  threadId?: string
+}
+
 export interface SddTrace {
   draftId: string
   requirementBlocks: SddRequirementBlock[]
@@ -50,9 +66,11 @@ export interface SddTrace {
     covers: string[]
     status: 'pending' | 'in_progress' | 'completed'
     lineNumber: number
+    turnId?: string
+    commits?: SddCommitEvidence[]
   }>
   coverage: Record<string, string[]>
-  derivedStatuses: Record<string, string>
+  derivedStatuses: Record<string, SddRequirementBlock['status']>
   uncoveredRequirementIds: string[]
   timestamp: string
 }

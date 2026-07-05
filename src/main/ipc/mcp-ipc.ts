@@ -1,25 +1,16 @@
-/**
- * MCP IPC handlers.
- *
- * Extracted from index.ts to isolate MCP-related IPC registrations.
- */
-
-import { ipcMain } from 'electron'
 import { listMcpServers, listMcpServerTools, removeMcpServer, scanLocalMcpServers, setMcpEnabled, testMcpServer, upsertMcpServer } from '../runtime/mcp'
 import { getMcpSystemConfig, setMcpSystemConfig, setMcpEnabled as setMcpSystemEnabled } from '../mcp/config'
+import { typedHandle } from './typed-ipc'
 
 export function registerMcpIpc(): void {
-  // MCP 服务器管理 IPC
-  ipcMain.handle("mcp:list", (_event, workspaceId?: string | null) => listMcpServers(workspaceId))
-  ipcMain.handle("mcp:scanLocal", (_event, workspaceId?: string | null) => scanLocalMcpServers(workspaceId))
-  ipcMain.handle("mcp:upsert", (_event, input: any) => upsertMcpServer(input))
-  ipcMain.handle("mcp:remove", (_event, id: string) => removeMcpServer(id))
-  ipcMain.handle("mcp:setEnabled", (_event, id: string, enabled: boolean, workspaceId?: string | null) => setMcpEnabled(id, enabled, workspaceId))
-  ipcMain.handle("mcp:test", (_event, id: string, workspaceId?: string | null) => testMcpServer(id, workspaceId))
-  ipcMain.handle("mcp:listTools", (_event, id: string, workspaceId?: string | null) => listMcpServerTools(id, workspaceId))
-
-  // MCP 系统级控制配置 IPC
-  ipcMain.handle("mcp:getSystemConfig", () => getMcpSystemConfig())
-  ipcMain.handle("mcp:setSystemConfig", (_event, config: any) => setMcpSystemConfig(config))
-  ipcMain.handle("mcp:setSystemEnabled", (_event, enabled: boolean) => setMcpSystemEnabled(enabled))
+  typedHandle("mcp:list", (_event, workspaceId) => listMcpServers(workspaceId))
+  typedHandle("mcp:scanLocal", (_event, workspaceId) => scanLocalMcpServers(workspaceId))
+  typedHandle("mcp:upsert", (_event, input) => upsertMcpServer(input))
+  typedHandle("mcp:remove", (_event, id) => removeMcpServer(id))
+  typedHandle("mcp:setEnabled", (_event, id, enabled, workspaceId) => setMcpEnabled(id, enabled, workspaceId))
+  typedHandle("mcp:test", (_event, id, workspaceId) => testMcpServer(id, workspaceId))
+  typedHandle("mcp:listTools", (_event, id, workspaceId) => listMcpServerTools(id, workspaceId))
+  typedHandle("mcp:getSystemConfig", () => getMcpSystemConfig())
+  typedHandle("mcp:setSystemConfig", (_event, config) => setMcpSystemConfig(config))
+  typedHandle("mcp:setSystemEnabled", (_event, enabled) => setMcpSystemEnabled(enabled))
 }

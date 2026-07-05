@@ -16,8 +16,9 @@ export interface WorkbenchThinking {
 export function selectableModelOptions(providers: ProviderDef[]): Array<{ providerId: string; modelId: string; label: string; searchable: string }> {
   const options: Array<{ providerId: string; modelId: string; label: string; searchable: string }> = []
   for (const provider of providers) {
-    if (!provider.enabled || !provider.apiKey || !provider.models?.length) continue
+    if (!provider.enabled || !provider.apiKey || provider.apiKeyLocked || !provider.models?.length) continue
     for (const model of provider.models) {
+      if (model.enabled === false) continue
       const label = `${provider.name} / ${model.label || model.id}`
       options.push({
         providerId: provider.id,
@@ -39,7 +40,8 @@ export function isSelectableModel(selection: ModelSelection | null, providers: P
     provider.id === selection.providerId &&
     provider.enabled &&
     !!provider.apiKey &&
-    provider.models?.some(model => model.id === selection.modelId)
+    !provider.apiKeyLocked &&
+    provider.models?.some(model => model.id === selection.modelId && model.enabled !== false)
   )
 }
 

@@ -35,3 +35,15 @@ export function browserCaptureToAttachment(capture: BrowserContextAttachment): W
     createdAt: Date.now()
   }
 }
+
+export function browserCaptureToSnapshot(capture: BrowserContextAttachment): BrowserPageSnapshot {
+  return {
+    url: capture.url || '',
+    title: capture.title || '',
+    textContent: capture.text || '',
+    meta: {},
+    links: Array.isArray(capture.links) ? capture.links : [],
+    hasForms: Array.isArray(capture.forms) && capture.forms.length > 0,
+    capturedAt: new Date(capture.capturedAt || Date.now()).toISOString()
+  }
+}

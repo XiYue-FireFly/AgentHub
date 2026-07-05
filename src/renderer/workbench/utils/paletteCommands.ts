@@ -10,6 +10,7 @@ export type PaletteSetupTab =
   | 'shortcuts'
   | 'skills'
   | 'usage'
+  | 'diagnostics'
 
 export type PaletteExtraAction =
   | { type: 'setup'; tab: PaletteSetupTab }
@@ -54,7 +55,7 @@ export function resolvePaletteExtraAction(id: string, localAgents: LocalAgentSta
   if (id === 'open-usage') return { type: 'setup', tab: 'usage' }
   if (id === 'open-models') return { type: 'setup', tab: 'models' }
   if (id === 'open-prompts') return { type: 'setup', tab: 'shortcuts' }
-  if (id === 'open-diagnostics') return { type: 'setup', tab: 'appearance' }
+  if (id === 'open-diagnostics') return { type: 'setup', tab: 'diagnostics' }
   if (id === 'open-backup') return { type: 'setup', tab: 'appearance' }
   if (id === 'seed-workflows') return { type: 'seed-workflows' }
   if (id.startsWith('switch-agent:')) {

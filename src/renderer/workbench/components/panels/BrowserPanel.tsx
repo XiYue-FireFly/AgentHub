@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon, IC } from '../../../glass/ui'
 import { tr } from '../../../glass/i18n'
-import { normalizeUrl, browserCaptureToAttachment } from '../../utils/browserUtils'
+import { normalizeUrl, browserCaptureToAttachment, browserCaptureToSnapshot } from '../../utils/browserUtils'
 import { PanelTitle } from '../PanelTitle'
 
 interface BrowserPanelProps {
@@ -120,7 +120,7 @@ export function BrowserPanel({
             <button onClick={async () => {
               if (!captured) return
               // Get structured text snapshot, then ask the LLM to summarize it.
-              const snapshotText = await window.electronAPI.browser.summarize(captured)
+              const snapshotText = await window.electronAPI.browser.summarize(browserCaptureToSnapshot(captured))
               const res = await window.electronAPI.ai.quickComplete({
                 prompt: snapshotText,
                 systemPrompt: 'Summarize the following web page snapshot concisely: key topic, main points, and notable links. Reply in the user\'s language.'
@@ -139,7 +139,7 @@ export function BrowserPanel({
             }} disabled={!captured}>{tr('AI 总结', 'AI Summary')}</button>
             <button onClick={async () => {
               if (!captured) return
-              const prompt = await window.electronAPI.browser.analyzePrompt(captured, tr('分析这个页面的主要内容和结构', 'Analyze the main content and structure of this page'))
+              const prompt = await window.electronAPI.browser.analyzePrompt(browserCaptureToSnapshot(captured), tr('分析这个页面的主要内容和结构', 'Analyze the main content and structure of this page'))
               // Run the analysis prompt through the LLM instead of just attaching the prompt text.
               const res = await window.electronAPI.ai.quickComplete({
                 prompt,

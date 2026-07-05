@@ -15,6 +15,7 @@ import {
   type SddWorkflowStage,
   type SddPmFramework
 } from '../pm-skill-frameworks'
+import { parseVerifyResponse } from '../sdd-verify-prompt'
 
 // ============================================================
 // Types
@@ -25,16 +26,46 @@ interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: string
+  mode?: 'chat' | 'plan' | 'verify'
+  applyContext?: unknown
+}
+
+interface RequirementApplyContextLike {
+  kind: 'requirement-apply'
+  preview?: {
+    added?: string[]
+    removed?: string[]
+  }
+}
+
+type RequirementApplyState = 'applying' | 'applied' | 'failed' | 'discarded'
+
+interface RequirementApplyStatus {
+  state: RequirementApplyState
+  text: string
 }
 
 interface SddAssistantPanelProps {
   draftId: string
   workspaceRoot: string
-  onSendMessage?: (message: string, history: Array<{ role: 'user' | 'assistant'; content: string }>, mode?: 'chat' | 'plan') => Promise<string>
+  onSendMessage?: (
+    message: string,
+    history: Array<{ role: 'user' | 'assistant'; content: string }>,
+    mode?: 'chat' | 'plan' | 'verify'
+  ) => Promise<string | { content: string; applyContext?: unknown }>
   onApplyFramework?: (framework: SddPmFramework) => void
   onClose?: () => void
   initialMessage?: string
-  initialMode?: 'chat' | 'plan'
+  initialMessageKey?: string | number
+  initialMode?: 'chat' | 'plan' | 'verify'
+  threadId?: string | null
+  onSyncPlanTodos?: (planMarkdown: string) => Promise<ThreadTodo[]>
+  onApplyVerification?: (verificationMarkdown: string, applyContext?: unknown) => Promise<{
+    appliedCount: number
+    verifiedRequirementIds: string[]
+    warnings: string[]
+  }>
+  onApplyRequirementResponse?: (applyContext?: unknown) => Promise<void>
 }
 
 // ============================================================
@@ -81,6 +112,25 @@ const STAGE_COLORS: Record<SddWorkflowStage, string> = {
   discover: 'sdd-stage-discover',
   structure: 'sdd-stage-structure',
   risk: 'sdd-stage-risk'
+}
+
+function verificationSummary(markdown: string): {
+  pass: number
+  fail: number
+  unknown: number
+  warnings: string[]
+} {
+  const parsed = parseVerifyResponse(markdown)
+  return {
+    pass: parsed.verdicts.filter(verdict => verdict.status === 'pass').length,
+    fail: parsed.verdicts.filter(verdict => verdict.status === 'fail').length,
+    unknown: parsed.verdicts.filter(verdict => verdict.status === 'unknown').length,
+    warnings: parsed.warnings
+  }
+}
+
+function isRequirementApplyContext(value: unknown): value is RequirementApplyContextLike {
+  return !!value && typeof value === 'object' && (value as Partial<RequirementApplyContextLike>).kind === 'requirement-apply'
 }
 
 const ICON_PATHS: Record<AssistantIconName, string[]> = {
@@ -132,11 +182,24 @@ export function SddAssistantPanel({
   onApplyFramework,
   onClose,
   initialMessage,
-  initialMode = 'chat'
+  initialMessageKey,
+  initialMode = 'chat',
+  threadId,
+  onSyncPlanTodos,
+  onApplyVerification,
+  onApplyRequirementResponse
 }: SddAssistantPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [syncingMessageId, setSyncingMessageId] = useState<string | null>(null)
+  const [syncStatusByMessageId, setSyncStatusByMessageId] = useState<Record<string, string>>({})
+  const [applyingVerifyMessageId, setApplyingVerifyMessageId] = useState<string | null>(null)
+  const [verifyStatusByMessageId, setVerifyStatusByMessageId] = useState<Record<string, string>>({})
+  const [applyingRequirementMessageId, setApplyingRequirementMessageId] = useState<string | null>(null)
+  const [requirementStatusByMessageId, setRequirementStatusByMessageId] = useState<Record<string, RequirementApplyStatus>>({})
+  const [previewRequirementMessageId, setPreviewRequirementMessageId] = useState<string | null>(null)
+  const [discardedRequirementMessageIds, setDiscardedRequirementMessageIds] = useState<Set<string>>(() => new Set())
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const msgIdCounter = useRef(0)
   const initialMessageSentFor = useRef<string | null>(null)
@@ -161,12 +224,17 @@ export function SddAssistantPanel({
 
   // Auto-send initial message (e.g. for plan generation mode)
   useEffect(() => {
-    if (!initialMessage || initialMessageSentFor.current === initialMessage || !onSendMessageRef.current) return
+    if (!initialMessage) {
+      initialMessageSentFor.current = null
+      return
+    }
+    const sendKey = String(initialMessageKey ?? initialMessage)
+    if (initialMessageSentFor.current === sendKey || !onSendMessageRef.current) return
     setInput(initialMessage)
     // 使用 setTimeout 确保 state 已更新后再触发发送
     const timer = setTimeout(() => {
-      if (!mountedRef.current || initialMessageSentFor.current === initialMessage) return
-      initialMessageSentFor.current = initialMessage
+      if (!mountedRef.current || initialMessageSentFor.current === sendKey) return
+      initialMessageSentFor.current = sendKey
       const userMessage: ChatMessage = {
         id: `msg-${Date.now()}-${++msgIdCounter.current}`,
         role: 'user',
@@ -184,11 +252,14 @@ export function SddAssistantPanel({
       sendInitialMessage(initialMessage, [], initialMode)
         .then(response => {
           if (!mountedRef.current) return
+          const responseContent = typeof response === 'string' ? response : response.content
           const assistantMessage: ChatMessage = {
             id: `msg-${Date.now()}-${++msgIdCounter.current}`,
             role: 'assistant',
-            content: response,
-            timestamp: new Date().toISOString()
+            content: responseContent,
+            timestamp: new Date().toISOString(),
+            mode: initialMode,
+            applyContext: typeof response === 'string' ? undefined : response.applyContext
           }
           setMessages(prev => [...prev, assistantMessage])
         })
@@ -209,7 +280,7 @@ export function SddAssistantPanel({
     return () => {
       clearTimeout(timer)
     }
-  }, [initialMessage, initialMode, !!onSendMessage])
+  }, [initialMessage, initialMessageKey, initialMode, !!onSendMessage])
 
   // Send message
   const handleSend = async () => {
@@ -230,11 +301,14 @@ export function SddAssistantPanel({
       // 传递对话历史给 AI，支持多轮对话上下文
       const history = messages.map(m => ({ role: m.role, content: m.content }))
       const response = await onSendMessage(userMessage.content, history, 'chat')
+      const responseContent = typeof response === 'string' ? response : response.content
       const assistantMessage: ChatMessage = {
         id: `msg-${Date.now()}-${++msgIdCounter.current}`,
         role: 'assistant',
-        content: response,
-        timestamp: new Date().toISOString()
+        content: responseContent,
+        timestamp: new Date().toISOString(),
+        mode: 'chat',
+        applyContext: typeof response === 'string' ? undefined : response.applyContext
       }
       setMessages(prev => [...prev, assistantMessage])
     } catch (error: any) {
@@ -258,6 +332,86 @@ export function SddAssistantPanel({
       // 默认行为：将框架 prompt 作为用户消息发送
       setInput(framework.prompt)
     }
+  }
+
+  const handleSyncPlanTodos = async (message: ChatMessage) => {
+    if (!onSyncPlanTodos || !threadId || message.mode !== 'plan') return
+    setSyncingMessageId(message.id)
+    setSyncStatusByMessageId(prev => ({ ...prev, [message.id]: tr('同步中...', 'Syncing...') }))
+    try {
+      const todos = await onSyncPlanTodos(message.content)
+      setSyncStatusByMessageId(prev => ({
+        ...prev,
+        [message.id]: todos.length > 0
+          ? tr(`已同步 ${todos.length} 个 Todo`, `Synced ${todos.length} todos`)
+          : tr('没有解析到 Todo，请检查计划是否包含 - [ ] 清单', 'No todos parsed. Use - [ ] checklist items in the plan.')
+      }))
+    } catch (error: any) {
+      setSyncStatusByMessageId(prev => ({
+        ...prev,
+        [message.id]: error?.message || tr('同步失败', 'Sync failed')
+      }))
+    } finally {
+      setSyncingMessageId(null)
+    }
+  }
+
+  const handleApplyVerification = async (message: ChatMessage) => {
+    if (!onApplyVerification || message.mode !== 'verify') return
+    setApplyingVerifyMessageId(message.id)
+    setVerifyStatusByMessageId(prev => ({ ...prev, [message.id]: tr('Applying...', 'Applying...') }))
+    try {
+      const result = await onApplyVerification(message.content, message.applyContext)
+      const warningSuffix = result.warnings.length > 0
+        ? tr(`, ${result.warnings.length} warnings`, `, ${result.warnings.length} warnings`)
+        : ''
+      setVerifyStatusByMessageId(prev => ({
+        ...prev,
+        [message.id]: tr(
+          `Applied ${result.appliedCount} passing criteria${warningSuffix}`,
+          `Applied ${result.appliedCount} passing criteria${warningSuffix}`
+        )
+      }))
+    } catch (error: any) {
+      setVerifyStatusByMessageId(prev => ({
+        ...prev,
+        [message.id]: error?.message || tr('Apply failed', 'Apply failed')
+      }))
+    } finally {
+      setApplyingVerifyMessageId(null)
+    }
+  }
+
+  const handleApplyRequirementResponse = async (message: ChatMessage) => {
+    if (!onApplyRequirementResponse || !isRequirementApplyContext(message.applyContext)) return
+    setApplyingRequirementMessageId(message.id)
+    setRequirementStatusByMessageId(prev => ({
+      ...prev,
+      [message.id]: { state: 'applying', text: tr('Applying...', 'Applying...') }
+    }))
+    try {
+      await onApplyRequirementResponse(message.applyContext)
+      setRequirementStatusByMessageId(prev => ({
+        ...prev,
+        [message.id]: { state: 'applied', text: tr('Applied to document', 'Applied to document') }
+      }))
+    } catch (error: any) {
+      setRequirementStatusByMessageId(prev => ({
+        ...prev,
+        [message.id]: { state: 'failed', text: error?.message || tr('Apply failed', 'Apply failed') }
+      }))
+    } finally {
+      setApplyingRequirementMessageId(null)
+    }
+  }
+
+  const handleDiscardRequirementResponse = (message: ChatMessage) => {
+    setDiscardedRequirementMessageIds(prev => new Set(prev).add(message.id))
+    setPreviewRequirementMessageId(current => current === message.id ? null : current)
+    setRequirementStatusByMessageId(prev => ({
+      ...prev,
+      [message.id]: { state: 'discarded', text: tr('Discarded', 'Discarded') }
+    }))
   }
 
   // Format timestamp
@@ -308,6 +462,116 @@ export function SddAssistantPanel({
                     ? <MarkdownBlock content={msg.content} workspaceRoot={workspaceRoot} />
                     : msg.content}
                 </div>
+                {msg.role === 'assistant' && msg.mode === 'plan' && (
+                  <div className="sdd-message-actions">
+                    <button
+                      type="button"
+                      className="sdd-message-action"
+                      onClick={() => handleSyncPlanTodos(msg)}
+                      disabled={!threadId || !onSyncPlanTodos || syncingMessageId === msg.id}
+                      title={threadId ? tr('同步计划清单到当前会话 Todo', 'Sync plan checklist to current thread todos') : tr('需要先打开一个会话', 'Open a thread first')}
+                    >
+                      <Icon d={IC.check} size={14} />
+                      <span>{syncingMessageId === msg.id ? tr('同步中', 'Syncing') : tr('同步到 Todo', 'Sync to Todo')}</span>
+                    </button>
+                    {syncStatusByMessageId[msg.id] && (
+                      <span className="sdd-message-action-status">{syncStatusByMessageId[msg.id]}</span>
+                    )}
+                  </div>
+                )}
+                {msg.role === 'assistant' && msg.mode === 'verify' && (
+                  <div className="sdd-message-actions">
+                    {(() => {
+                      const summary = verificationSummary(msg.content)
+                      return (
+                        <div className="sdd-verify-summary" aria-label={tr('Verification summary', 'Verification summary')}>
+                          <span className="sdd-verify-summary-pill pass">{tr(`Pass ${summary.pass}`, `Pass ${summary.pass}`)}</span>
+                          <span className="sdd-verify-summary-pill fail">{tr(`Fail ${summary.fail}`, `Fail ${summary.fail}`)}</span>
+                          <span className="sdd-verify-summary-pill unknown">{tr(`Unknown ${summary.unknown}`, `Unknown ${summary.unknown}`)}</span>
+                          {summary.warnings.length > 0 && (
+                            <span className="sdd-verify-summary-warning">{tr(`${summary.warnings.length} parse warnings`, `${summary.warnings.length} parse warnings`)}</span>
+                          )}
+                        </div>
+                      )
+                    })()}
+                    <button
+                      type="button"
+                      className="sdd-message-action"
+                      onClick={() => handleApplyVerification(msg)}
+                      disabled={!onApplyVerification || applyingVerifyMessageId === msg.id}
+                      title={tr('Write passing AI verification criteria back to the requirement document', 'Write passing AI verification criteria back to the requirement document')}
+                    >
+                      <Icon d={IC.check} size={14} />
+                      <span>{applyingVerifyMessageId === msg.id ? tr('Applying', 'Applying') : tr('Apply passed', 'Apply passed')}</span>
+                    </button>
+                    {verifyStatusByMessageId[msg.id] && (
+                      <span className="sdd-message-action-status">{verifyStatusByMessageId[msg.id]}</span>
+                    )}
+                  </div>
+                )}
+                {msg.role === 'assistant' && msg.mode === 'chat' && isRequirementApplyContext(msg.applyContext) && (
+                  <div className="sdd-message-actions">
+                    {(() => {
+                      const requirementStatus = requirementStatusByMessageId[msg.id]
+                      const requirementAlreadyApplied = requirementStatus?.state === 'applied'
+                      const requirementDiscarded = requirementStatus?.state === 'discarded' || discardedRequirementMessageIds.has(msg.id)
+                      return (
+                        <>
+                    <button
+                      type="button"
+                      className="sdd-message-action neutral"
+                      onClick={() => setPreviewRequirementMessageId(current => current === msg.id ? null : msg.id)}
+                    >
+                      <Icon d={IC.file} size={14} />
+                      <span>{previewRequirementMessageId === msg.id ? tr('Hide preview', 'Hide preview') : tr('Preview changes', 'Preview changes')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="sdd-message-action"
+                      onClick={() => handleApplyRequirementResponse(msg)}
+                      disabled={!onApplyRequirementResponse || applyingRequirementMessageId === msg.id || requirementAlreadyApplied || requirementDiscarded}
+                      title={tr('Apply this AI response to the requirement document', 'Apply this AI response to the requirement document')}
+                    >
+                      <Icon d={IC.check} size={14} />
+                      <span>{applyingRequirementMessageId === msg.id ? tr('Applying', 'Applying') : tr('Apply to document', 'Apply to document')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="sdd-message-action danger"
+                      onClick={() => handleDiscardRequirementResponse(msg)}
+                      disabled={requirementAlreadyApplied || requirementDiscarded}
+                    >
+                      <Icon d={IC.x} size={14} />
+                      <span>{tr('Discard', 'Discard')}</span>
+                    </button>
+                    {requirementStatus && (
+                      <span className="sdd-message-action-status">{requirementStatus.text}</span>
+                    )}
+                        </>
+                      )
+                    })()}
+                    {previewRequirementMessageId === msg.id && (
+                      <div className="sdd-requirement-preview">
+                        {(msg.applyContext.preview?.added?.length ?? 0) > 0 && (
+                          <div className="sdd-requirement-preview-column">
+                            <span className="sdd-requirement-preview-title">{tr('Will add', 'Will add')}</span>
+                            {msg.applyContext.preview?.added?.slice(0, 8).map((line, index) => (
+                              <code key={`add-${index}`}>+ {line}</code>
+                            ))}
+                          </div>
+                        )}
+                        {(msg.applyContext.preview?.removed?.length ?? 0) > 0 && (
+                          <div className="sdd-requirement-preview-column">
+                            <span className="sdd-requirement-preview-title">{tr('Will remove', 'Will remove')}</span>
+                            {msg.applyContext.preview?.removed?.slice(0, 8).map((line, index) => (
+                              <code key={`remove-${index}`}>- {line}</code>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             {busy && (

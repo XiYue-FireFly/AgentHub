@@ -7,7 +7,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { AGENT_IDS, AgentUIStatus, BindingDef, ProviderDef } from './glass/meta'
-import { MotionLevel } from './screens/Settings'
+import type { MotionLevel } from './screens/Settings'
 import { useLang } from './glass/i18n'
 import { WorkbenchLayout } from './workbench/WorkbenchLayout'
 import { applyAppearance, loadAppearance, readAppearanceLocal, subscribeSystemTheme } from './appearance'
@@ -193,6 +193,18 @@ function AppInner() {
 
   /* 深链 */
   useEffect(() => {
+    const off = window.electronAPI.providers.onConfigChanged?.((cfg) => {
+      clearConfigRetryTimer()
+      applyProviderConfig(cfg)
+      if (!isEmptyProviderConfig(cfg?.providers)) {
+        configEmptyRetryCount.current = 0
+        setConfigLoadError(null)
+      }
+    })
+    return off
+  }, [applyProviderConfig, clearConfigRetryTimer])
+
+  useEffect(() => {
     const off = window.electronAPI?.app?.onDeepLink?.((link) => {
       if (link.action || link.params?.agent) refreshStatus()
     })
@@ -206,42 +218,43 @@ function AppInner() {
     setProviders(ps => ps.map(p => p.id === id ? { ...p, enabled } : p))
     try { applyProviderConfig(await window.electronAPI.providers.setEnabled(id, enabled)) }
     catch { setProviders(prev) }
-    loadConfig(); refreshStatus()
-  }, [applyProviderConfig, loadConfig, refreshStatus])
+    refreshStatus()
+  }, [applyProviderConfig, refreshStatus])
 
   const onSetKey = useCallback(async (id: string, key: string) => {
     const prev = providersRef.current
     setProviders(ps => ps.map(p => p.id === id ? { ...p, apiKey: key, enabled: p.enabled || !!key } : p))
     try { applyProviderConfig(await window.electronAPI.providers.setKey(id, key)) }
     catch { setProviders(prev) }
-    loadConfig(); refreshStatus()
-  }, [applyProviderConfig, loadConfig, refreshStatus])
+    refreshStatus()
+  }, [applyProviderConfig, refreshStatus])
 
   const onSetBinding = useCallback(async (b: BindingDef) => {
     const prev = bindingsRef.current
     setBindings(bs => bs.some(x => x.agentId === b.agentId) ? bs.map(x => x.agentId === b.agentId ? b : x) : [...bs, b])
-    try { setBindings(await window.electronAPI.routing.setBinding(b)) }
+    try {
+      await window.electronAPI.routing.setBinding(b)
+    }
     catch { setBindings(prev) }
-    loadConfig(); refreshStatus()
-  }, [loadConfig, refreshStatus])
+    refreshStatus()
+  }, [refreshStatus])
 
   const onSetFallback = useCallback(async (chain: string[]) => {
     const prev = fallbackChainRef.current
     setFallbackChain(chain)
     try { await window.electronAPI.routing.setFallback(chain) }
     catch { setFallbackChain(prev) }
-    loadConfig()
-  }, [loadConfig])
+  }, [])
 
   const onUpsertProvider = useCallback(async (p: any) => {
     try { await window.electronAPI.providers.upsert(p) } catch { /* noop */ }
-    loadConfig(); refreshStatus()
-  }, [loadConfig, refreshStatus])
+    refreshStatus()
+  }, [refreshStatus])
 
   const onDeleteProvider = useCallback(async (id: string) => {
     try { await window.electronAPI.providers.delete(id) } catch { /* noop */ }
-    loadConfig(); refreshStatus()
-  }, [loadConfig, refreshStatus])
+    refreshStatus()
+  }, [refreshStatus])
 
   const onReorderProvidersForClaude = useCallback(async (orderedIds: string[]) => {
     const byId = new Map(providers.map(provider => [provider.id, provider]))
@@ -282,7 +295,7 @@ function AppInner() {
       const prov = providers.find(p => p.id === b?.providerId)
       const isStdio = b?.protocol === 'stdio-plain' || b?.protocol === 'acp'
       const local = localAgents.find(agent => agent.agentId === id)
-      const providerUsable = !!prov && prov.enabled && !!prov.apiKey
+      const providerUsable = !!prov && prov.enabled && !!prov.apiKey && !prov.apiKeyLocked
       let st: AgentUIStatus
       if (isStdio && !local?.configured) st = 'off'
       else if (!isStdio && b && !providerUsable) st = 'off'

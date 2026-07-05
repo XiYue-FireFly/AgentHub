@@ -28,7 +28,10 @@ export type ResolvedDispatchRequest = {
 
 export function resolveDispatchRequest(input: ResolveDispatchRequestInput): ResolvedDispatchRequest {
   const overrides = input.overrides || {}
-  const requestedTargetAgent = overrides.targetAgent !== undefined ? overrides.targetAgent : input.targetAgent
+  const rawTargetAgent = overrides.targetAgent !== undefined ? overrides.targetAgent : input.targetAgent
+  const requestedTargetAgent = rawTargetAgent && input.usableLocalAgents.includes(rawTargetAgent)
+    ? rawTargetAgent
+    : null
   const requestedModelSelection = requestedTargetAgent
     ? null
     : (overrides.modelSelection !== undefined ? overrides.modelSelection : input.modelSelection)

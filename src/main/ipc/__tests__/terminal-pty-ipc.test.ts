@@ -26,6 +26,7 @@ class FakeSender extends EventEmitter {
 class FakePty {
   killed = false
   writes: string[] = []
+  resizes: Array<{ cols: number; rows: number }> = []
   dataHandler: ((data: string) => void) | null = null
   exitHandler: ((event: { exitCode: number; signal?: number }) => void) | null = null
 
@@ -41,7 +42,9 @@ class FakePty {
     this.writes.push(data)
   }
 
-  resize() {}
+  resize(cols: number, rows: number) {
+    this.resizes.push({ cols, rows })
+  }
 
   kill() {
     this.killed = true
@@ -118,6 +121,28 @@ describe('Terminal PTY IPC', () => {
 
     expect(sender.listenerCountFor('destroyed')).toBe(0)
     expect(sender.sent).toContainEqual({ channel: 'terminal:exit', payload: { sessionId: 'term-exit', exitCode: 0 } })
+  })
+
+  it('forwards write and resize to a live session and stops forwarding after dispose', async () => {
+    await setup()
+    const create = handlers.get('terminal:create')
+    const write = handlers.get('terminal:write')
+    const resize = handlers.get('terminal:resize')
+    const dispose = handlers.get('terminal:dispose')
+    const sender = new FakeSender()
+    await create?.({ sender }, { sessionId: 'term-io', cwd: process.cwd() })
+
+    await write?.({}, { sessionId: 'term-io', data: 'echo ok\r' })
+    await resize?.({}, { sessionId: 'term-io', cols: 120, rows: 32 })
+
+    expect(spawnedPtys[0].writes).toEqual(['echo ok\r'])
+    expect(spawnedPtys[0].resizes).toEqual([{ cols: 120, rows: 32 }])
+
+    await dispose?.({}, 'term-io')
+    await write?.({}, { sessionId: 'term-io', data: 'after dispose\r' })
+
+    expect(spawnedPtys[0].killed).toBe(true)
+    expect(spawnedPtys[0].writes).toEqual(['echo ok\r'])
   })
 
   it('registers terminal lifecycle handlers', async () => {

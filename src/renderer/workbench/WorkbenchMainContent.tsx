@@ -1,8 +1,7 @@
 import React from 'react'
 import { BindingDef, ProviderDef, type TaskItem } from '../glass/meta'
-import { SetupTab, type ConnectionSummary } from '../glass/connection-status'
+import type { ConnectionSummary } from '../glass/connection-status'
 import { tr } from '../glass/i18n'
-import { SettingsScreen } from '../screens/Settings'
 import { TasksScreen } from '../screens/Tasks'
 import { ErrorBoundary } from '../ErrorBoundary'
 import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
@@ -12,11 +11,11 @@ import { ThreadView } from './ThreadView'
 import { ComposerBar } from './ComposerBar'
 import { GitBranchControl } from './GitBranchControl'
 import type { ViewMode } from './viewModes'
-import type { WorkbenchRightPanel } from './NativeTitlebar'
+import type { WorkbenchRightPanel, WorkbenchSettingsTabKey } from './NativeTitlebar'
 import type { AgentMap, WorkspaceItem } from './types'
 import type { WorkbenchThinking } from './utils/modelUtils'
 
-type SettingsTabKey = SetupTab | 'appearance' | 'memory' | 'updates' | 'shortcuts' | 'models' | 'plugins' | 'usage' | 'agentLoop' | 'requirements'
+type SettingsTabKey = WorkbenchSettingsTabKey
 
 interface WorkbenchMainContentProps {
   view: ViewMode
@@ -43,12 +42,15 @@ interface WorkbenchMainContentProps {
   agents: AgentMap
   localAgents: LocalAgentStatus[]
   sending: boolean
-  sendPrompt: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: { targetAgent?: string | null; mode?: DispatchPreset; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }) => Promise<void>
+  sendPrompt: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: { targetAgent?: string | null; mode?: DispatchPreset; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }) => Promise<any>
   cancelLatest: () => Promise<void>
   openCreateProject: () => void
   openSetup: (tab?: SettingsTabKey) => void
   updateTodoStatus: (todo: ThreadTodo, status: ThreadTodoStatus) => void | Promise<void>
   deleteTodo: (todoId: string) => void | Promise<void>
+  dispatchTodo: (todo: ThreadTodo) => void | Promise<void>
+  dispatchingTodoId: string | null
+  refreshThreadTodos: (threadId?: string | null) => void | Promise<void>
   runSlashCommand: (input: { text: string; command?: WorkbenchCommand | null }) => Promise<boolean>
   retryTurn: (turnId: string) => Promise<void>
   cancelAgent: (turnId: string, agentId: string) => Promise<void>
@@ -91,6 +93,7 @@ interface WorkbenchMainContentProps {
 }
 
 const WorkflowsPanel = React.lazy(() => import('./WorkflowsPanel').then(m => ({ default: m.WorkflowsPanel })))
+const SettingsScreen = React.lazy(() => import('../screens/Settings').then(m => ({ default: m.SettingsScreen })))
 
 export function WorkbenchMainContent({
   view,
@@ -123,6 +126,9 @@ export function WorkbenchMainContent({
   openSetup,
   updateTodoStatus,
   deleteTodo,
+  dispatchTodo,
+  dispatchingTodoId,
+  refreshThreadTodos,
   runSlashCommand,
   retryTurn,
   cancelAgent,
@@ -203,6 +209,8 @@ export function WorkbenchMainContent({
               openTasks={() => setView('tasks')}
               updateTodoStatus={updateTodoStatus}
               deleteTodo={deleteTodo}
+              dispatchTodo={dispatchTodo}
+              dispatchingTodoId={dispatchingTodoId}
             />
           </div>
 
@@ -293,7 +301,13 @@ export function WorkbenchMainContent({
       {view === 'requirements' && (
         <ErrorBoundary label="Requirements">
         <div className="wb-scroll-surface">
-          <SddRequirementsList workspaceRoot={activeWorkspace?.rootPath ?? null} />
+          <SddRequirementsList
+            workspaceRoot={activeWorkspace?.rootPath ?? null}
+            threadId={activeThreadId}
+            threadTodos={threadTodos}
+            events={activeEvents}
+            onThreadTodosChanged={refreshThreadTodos}
+          />
         </div>
         </ErrorBoundary>
       )}

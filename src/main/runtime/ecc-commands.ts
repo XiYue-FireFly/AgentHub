@@ -203,7 +203,7 @@ function normalizeCommands(commands: any[]): EccCommand[] {
 }
 
 function hasMojibake(commands: EccCommand[]): boolean {
-  return commands.some(command => /鍒跺|娴嬭瘯|浠ｇ爜|鎸囦护|鏂囨|鐣岄潰|锟|�/.test([
+  return commands.some(command => /\u9352\u8dfa|\u5a34\u5b2d\u762f|\u6d60\uff47\u721c|\u93b8\u56e6\u62a4|\u93c2\u56e8|\u9423\u5c84\u6f70|\u951f|\ufffd/.test([
     command.description,
     command.payload?.title,
     command.payload?.description,

@@ -23,7 +23,7 @@ export interface ImportedConversation {
   title: string
   exportedAt?: string
   messages: ImportedMessage[]
-  metadata?: Record<string, any>
+  metadata?: Record<string, unknown>
 }
 
 export interface ImportResult {
@@ -104,11 +104,16 @@ function validateAndMigrate(raw: any): ImportResult {
       title: String(raw.title || 'Imported conversation'),
       exportedAt: raw.exportedAt || undefined,
       messages,
-      metadata: raw.metadata || undefined
+      metadata: normalizeMetadata(raw.metadata)
     },
     messageCount: messages.length,
     warnings: warnings.length ? warnings : undefined
   }
+}
+
+function normalizeMetadata(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
 }
 
 /**

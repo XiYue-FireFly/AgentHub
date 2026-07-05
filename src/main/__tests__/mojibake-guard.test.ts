@@ -10,9 +10,9 @@ function readSource(relativePath: string): string {
 
 // GBK-as-UTF8 garble sequences commonly produced by Windows codepage mismatches
 const MOJIBAKE_PATTERNS = [
-  /�/,             // Unicode replacement character
-  /锟斤拷/,              // GBK '锟斤拷' artifact
-  /鍒嬭|娴嬭瘯|浠ｇ爜|鎸囨/, // common GBK misread fragments
+  /\ufffd/,             // Unicode replacement character
+  /\u951f\u65a4\u62f7/, // GBK-as-UTF8 artifact
+  /\u9352\u5b2d|\u5a34\u5b2d\u762f|\u6d60\uff47\u721c|\u93b8\u56e8/, // common GBK misread fragments
 ]
 
 function hasMojibake(text: string, excludeLines: RegExp[] = []): string | null {
@@ -35,8 +35,8 @@ const DETECTOR_LINES = [
   /process-decoder/,
   /text\.includes/,
   /\\\\u[0-9a-fA-F]{4}/,  // regex literals testing for garble
-  /鍒\|/,
-  /锟\|/,
+  /\u9352\|/,
+  /\u951f\|/,
   /not\.toMatch/,
 ]
 

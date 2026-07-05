@@ -1,8 +1,9 @@
 import { BaseAgentAdapter } from './agent-adapter'
-import { spawn, exec, execFileSync, ChildProcess } from 'child_process'
+import { spawn, execFile, execFileSync, ChildProcess } from 'child_process'
 import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { createLogger } from '../../logger'
+import type { LocalAgentAdapterLifecycle } from '../../runtime/types'
 
 const log = createLogger('StdioAdapter')
 const STDOUT_BUFFER_MAX = 256 * 1024
@@ -24,6 +25,15 @@ export function appendBoundedStdoutBuffer(current: string, chunk: string, maxCha
   const combined = current + chunk
   if (combined.length <= maxChars) return combined
   return combined.slice(combined.length - maxChars)
+}
+
+function killWindowsProcessTree(pid: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true }, (error) => {
+      if (error) reject(error)
+      else resolve()
+    })
+  })
 }
 
 /**
@@ -63,6 +73,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
   private errBytes = 0
   private outDecoder: InstanceType<typeof TextDecoder> | null = null
   private lineBuf = ''
+  private runSeq = 0
 
   constructor(id: string, name: string, defaultBinary: string, defaultArgs: string[]) {
     super()
@@ -74,6 +85,8 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
 
   /** oneshot：start 仅做预检（fail fast），真正 spawn 发生在 send() */
   async start(): Promise<void> {
+    this.exitCode = null
+    this.lastStderr = ''
     if (this.binary && /[\\/]/.test(this.binary)) {
       // 完整路径：检查文件存在
       if (!existsSync(this.binary)) {
@@ -94,12 +107,27 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     this.startCount++
   }
 
+  getLifecycle(): LocalAgentAdapterLifecycle {
+    return {
+      protocol: this.protocol,
+      mode: this.mode,
+      status: this.status,
+      running: this.proc !== null,
+      exitCode: this.exitCode,
+      lastStderr: this.lastStderr,
+      runId: this.runSeq
+    }
+  }
+
   send(prompt: string, opts?: { cwd?: string | null }): void {
+    this.runSeq++
     this.buffer = ''
     this.errChunks = []
     this.errBytes = 0
     this.lineBuf = ''
     this.outDecoder = new TextDecoder('utf-8')
+    this.exitCode = null
+    this.lastStderr = ''
     const viaArg = this.execArgs.some(a => a.includes('{prompt}'))
     const needsCommandShell = process.platform === 'win32' && !/\.exe$/i.test(this.binary)
     // 多行提示词保真：直接 spawn（.exe / 非 Windows）时单个 argv 可含换行，原样保留；
@@ -231,7 +259,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     if (this.errChunks.length === 0) return ''
     const raw = Buffer.concat(this.errChunks)
     let text = raw.toString('utf8')
-    if (text.includes('�')) {
+    if (text.includes('\uFFFD')) {
       try { text = new TextDecoder('gbk').decode(raw) } catch { /* 编码不支持则保留 utf8 结果 */ }
     }
     return text
@@ -262,7 +290,11 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     if (p?.pid) {
       if (process.platform === 'win32') {
         // 杀整棵进程树（CLI 可能派生子进程）
-        try { exec(`taskkill /pid ${p.pid} /t /f`, { windowsHide: true }) } catch { /* noop */ }
+        try {
+          await killWindowsProcessTree(p.pid)
+        } catch (error: any) {
+          log.warn(`[${this.name}] taskkill failed for pid ${p.pid}:`, error?.message || String(error))
+        }
       } else {
         try { p.kill('SIGKILL') } catch { /* noop */ }
       }

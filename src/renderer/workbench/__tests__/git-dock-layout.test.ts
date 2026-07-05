@@ -5,11 +5,17 @@ import { describe, expect, it } from "vitest"
 describe("workbench git dock layout", () => {
   it("keeps Git in the wide bottom dock instead of the narrow inspector", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const containers = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchPanelContainers.tsx"), "utf8")
     const styles = readFileSync(join(process.cwd(), "src/renderer/globals.css"), "utf8")
 
-    expect(layout).toContain("rightPanel && rightPanel !== 'git'")
-    expect(layout).toContain("rightPanel === 'git'")
-    expect(layout).toContain("WorkbenchBottomDock")
+    expect(layout).toContain("import { WorkbenchPanelContainers } from './WorkbenchPanelContainers'")
+    expect(layout).toContain("<WorkbenchPanelContainers")
+    expect(layout).not.toContain("rightPanel && rightPanel !== 'git'")
+    expect(layout).not.toContain("<WorkbenchBottomDock")
+    expect(layout).not.toContain("<WorkbenchInspector")
+    expect(containers).toContain("rightPanel && rightPanel !== 'git'")
+    expect(containers).toContain("rightPanel === 'git'")
+    expect(containers).toContain("WorkbenchBottomDock")
     expect(styles).toContain(".wb-bottom-dock")
     expect(styles).toContain("left: calc(var(--wb-sidebar-width, 312px) + 12px)")
     expect(styles).toContain(".wb-bottom-dock .wb-git-workflow")
@@ -34,10 +40,13 @@ describe("workbench git dock layout", () => {
 
   it("keeps non-Git right panel content routing outside WorkbenchLayout", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const containers = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchPanelContainers.tsx"), "utf8")
     const panelContent = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchRightPanelContent.tsx"), "utf8")
 
-    expect(layout).toContain("import { WorkbenchRightPanelContent } from './WorkbenchRightPanelContent'")
-    expect(layout).toContain("<WorkbenchRightPanelContent")
+    expect(containers).toContain("import { WorkbenchRightPanelContent } from './WorkbenchRightPanelContent'")
+    expect(containers).toContain("<WorkbenchRightPanelContent")
+    expect(layout).not.toContain("import { WorkbenchRightPanelContent } from './WorkbenchRightPanelContent'")
+    expect(layout).not.toContain("<WorkbenchRightPanelContent")
     expect(layout).not.toContain("rightPanel === 'side-chat' ?")
     expect(layout).not.toContain("rightPanel === 'terminal' ?")
     expect(panelContent).toContain("export function WorkbenchRightPanelContent")
@@ -61,7 +70,22 @@ describe("workbench git dock layout", () => {
     expect(mainContent).toContain("<ComposerBar")
     expect(mainContent).toContain("<SettingsScreen")
     expect(mainContent).toContain("<SddRequirementsList")
+    expect(mainContent).toContain("threadId={activeThreadId}")
+    expect(mainContent).toContain("onThreadTodosChanged={refreshThreadTodos}")
     expect(mainContent).toContain("<WorkflowsPanel")
+  })
+
+  it("guards async todo refreshes against stale selected thread writes", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const refreshStart = layout.indexOf("const refreshThreadTodos = useCallback")
+    const refreshEnd = layout.indexOf("const appendRuntimeEvents", refreshStart)
+    const refreshSource = layout.slice(refreshStart, refreshEnd)
+
+    expect(refreshStart).toBeGreaterThan(-1)
+    expect(refreshEnd).toBeGreaterThan(refreshStart)
+    expect(refreshSource).toContain("if (!selectedThreadIdRef.current) setThreadTodosState([])")
+    expect(refreshSource).toContain("if (selectedThreadIdRef.current === threadId)")
+    expect(refreshSource).toContain("setThreadTodosState(todos)")
   })
 
   it("keeps workspace creation dialog logic outside WorkbenchLayout", () => {
@@ -124,12 +148,46 @@ describe("workbench git dock layout", () => {
     expect(sendPromptEnd).toBeGreaterThan(sendPromptStart)
     expect(layout).toContain("import { resolveDispatchRequest } from './utils/dispatchRequest'")
     expect(sendPromptSource).toContain("const dispatchRequest = resolveDispatchRequest")
+    expect(sendPromptSource).toContain("return result")
     expect(sendPromptSource).not.toContain("const selectedProviderDirect")
     expect(sendPromptSource).not.toContain("sanitizeCustomSchedule")
     expect(sendPromptSource).not.toContain("customScheduleHasRunnableSteps")
     expect(dispatchRequest).toContain("export function resolveDispatchRequest")
     expect(dispatchRequest).toContain("selectedProviderDirect")
     expect(dispatchRequest).toContain("sanitizeCustomSchedule")
+  })
+
+  it("dispatches Todo rows through sendPrompt and records SDD trace metadata", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const row = readFileSync(join(process.cwd(), "src/renderer/workbench/components/TodoPopoverRow.tsx"), "utf8")
+    const dispatchStart = layout.indexOf("const dispatchThreadTodo = useCallback")
+    const dispatchEnd = layout.indexOf("const cancelAgent", dispatchStart)
+    const dispatchSource = layout.slice(dispatchStart, dispatchEnd)
+
+    expect(dispatchStart).toBeGreaterThan(-1)
+    expect(dispatchEnd).toBeGreaterThan(dispatchStart)
+    expect(dispatchSource).toContain("const result = await sendPrompt(todo.content")
+    expect(dispatchSource).toContain("result?.turn?.id")
+    expect(dispatchSource).toContain("window.electronAPI.todos.upsert")
+    expect(dispatchSource).toContain("persistSddPlanDispatch")
+    expect(dispatchSource.indexOf("const result = await sendPrompt")).toBeLessThan(dispatchSource.indexOf("window.electronAPI.todos.upsert"))
+    expect(row).toContain("onDispatch")
+    expect(row).not.toContain("window.electronAPI.turns.create")
+  })
+
+  it("syncs SDD Todo status changes back into trace metadata", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const updateStart = layout.indexOf("const updateThreadTodoStatus = useCallback")
+    const updateEnd = layout.indexOf("const deleteThreadTodo", updateStart)
+    const updateSource = layout.slice(updateStart, updateEnd)
+
+    expect(updateStart).toBeGreaterThan(-1)
+    expect(updateEnd).toBeGreaterThan(updateStart)
+    expect(layout).toContain("persistSddPlanTodoStatus")
+    expect(updateSource).toContain("window.electronAPI.todos.upsert")
+    expect(updateSource).toContain("if (isSddPlanTodo(todo))")
+    expect(updateSource).toContain("await persistSddPlanTodoStatus(todo, status)")
+    expect(updateSource.indexOf("window.electronAPI.todos.upsert")).toBeLessThan(updateSource.indexOf("persistSddPlanTodoStatus"))
   })
 
   it("keeps the first-run announcement modal outside WorkbenchLayout", () => {
@@ -153,5 +211,17 @@ describe("workbench git dock layout", () => {
     expect(styles).not.toContain('.wb-context-capacity-trigger')
     expect(styles).not.toMatch(/var\(--line\)/)
     expect(styles).not.toMatch(/var\(--bg-2\)/)
+  })
+
+  it("keeps diagnostics settings logs readable and bounded", () => {
+    const settings = readFileSync(join(process.cwd(), "src/renderer/screens/Settings.tsx"), "utf8")
+    const styles = readFileSync(join(process.cwd(), "src/renderer/globals.css"), "utf8")
+
+    expect(settings).toContain("function DiagnosticsSettingsTab")
+    expect(settings).toContain("window.electronAPI.diagnostics.run()")
+    expect(settings).toContain("window.electronAPI.diagnostics.recentLogs(100)")
+    expect(styles).toContain(".wb-settings-shell .wb-diagnostics-log-list")
+    expect(styles).toContain("max-height: 420px")
+    expect(styles).toContain("white-space: pre-wrap")
   })
 })

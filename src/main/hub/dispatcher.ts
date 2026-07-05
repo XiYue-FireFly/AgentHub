@@ -2,14 +2,18 @@
 import { AgentRegistry } from "./registry"
 import { EventPipeline } from "./pipeline"
 import { KeywordRouter } from "./router"
-import { getProviderManager } from "../providers/manager"
+import { getProviderManager, isProviderRuntimeUsable } from "../providers/manager"
 import { buildProviderClient } from "../providers/client"
 import { appendAppEventLog } from "../runtime/app-event-log"
 import { agentSystemPrompt } from "./agents"
 import { buildAgentRuntimeSystemPrompt, buildAgentTaskPrompt, RuntimeMemoryEntry } from "./agent-runtime"
 import { decompositionPrompt, parsePlan, synthesisPrompt, verifyPrompt, parseVerdict, retryPrompt, ORCHESTRATOR_LEAD_SYSTEM } from "./orchestrator"
 import { AgentRouteBinding, ChatCompletionMessage, ThinkingConfig } from "../providers/types"
-import type { ModelSelection } from "../runtime/types"
+import type {
+  LocalAgentAdapterLifecycle,
+  LocalAgentAvailabilityResult,
+  ModelSelection
+} from "../runtime/types"
 import { getWorkspaceManager } from "./workspace"
 import { homedir } from "node:os"
 import { acpMcpServersForWorkspace } from "../runtime/mcp"
@@ -298,15 +302,25 @@ export class Dispatcher extends EventEmitter {
     task.status = "running"
 
     const mgr = getProviderManager()
-    const routed = typeof (mgr as any).resolveGlobalModelRoute === "function"
-      ? mgr.resolveGlobalModelRoute(modelId) || (typeof (mgr as any).resolveModelRoute === "function" ? mgr.resolveModelRoute(providerId, modelId) : null)
-      : typeof (mgr as any).resolveModelRoute === "function"
-        ? mgr.resolveModelRoute(providerId, modelId)
-        : null
     const fallbackProvider = mgr.getProvider(providerId)
+    const directModel = fallbackProvider?.models.find(item => item.id === modelId)
+    if (directModel?.enabled === false) {
+      const err = `Selected model is disabled: ${providerId}/${modelId}`
+      task.status = "failed"
+      task.error = err
+      task.errors.set(agentId, err)
+      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err })
+      this.streamMetaByTask.delete(task.id)
+      return task
+    }
+    const routed = typeof (mgr as any).resolveModelRoute === "function"
+      ? mgr.resolveModelRoute(providerId, modelId)
+      : typeof (mgr as any).resolveGlobalModelRoute === "function"
+        ? mgr.resolveGlobalModelRoute(modelId)
+        : null
     const provider = routed?.provider || fallbackProvider
     const model = routed?.model || fallbackProvider?.models.find(item => item.id === modelId)
-    if (!provider || !provider.enabled || !provider.apiKey) {
+    if (!isProviderRuntimeUsable(provider)) {
       const err = `Selected model provider is unavailable: ${providerId}`
       task.status = "failed"
       task.error = err
@@ -422,11 +436,84 @@ export class Dispatcher extends EventEmitter {
     return task
   }
 
+  private isLocalBinding(binding: AgentRouteBinding | undefined | null): boolean {
+    return binding?.protocol === "stdio-plain" || binding?.protocol === "acp" || binding?.providerId === "local-cli"
+  }
+
+  private adapterLifecycle(adapter: any): LocalAgentAdapterLifecycle {
+    if (typeof adapter?.getLifecycle === "function") return adapter.getLifecycle()
+    return {
+      protocol: adapter?.protocol || "http",
+      mode: adapter?.mode || "oneshot",
+      status: adapter?.status || "idle",
+      running: !!adapter?.proc,
+      exitCode: adapter?.exitCode ?? null,
+      lastStderr: adapter?.lastStderr
+    }
+  }
+
+  private localAgentAvailability(agentId: string, binding?: AgentRouteBinding | null): LocalAgentAvailabilityResult {
+    const agentInfo = this.registry.get(agentId)
+    if (!agentInfo?.adapter) {
+      return {
+        usable: false,
+        agentId,
+        code: "LOCAL_AGENT_ADAPTER_MISSING",
+        message: `Local agent ${agentId} is configured but its adapter is not registered.`
+      }
+    }
+
+    const lifecycle = this.adapterLifecycle(agentInfo.adapter)
+    const expectedProtocol = binding?.protocol || (binding?.providerId === "local-cli" ? "stdio-plain" : lifecycle.protocol)
+    if ((expectedProtocol === "stdio-plain" || expectedProtocol === "acp") && lifecycle.protocol !== expectedProtocol) {
+      return {
+        usable: false,
+        agentId,
+        code: "LOCAL_AGENT_PROTOCOL_MISMATCH",
+        message: `Local agent ${agentId} is configured for ${expectedProtocol}, but the registered adapter is ${lifecycle.protocol}.`,
+        lifecycle
+      }
+    }
+    if (lifecycle.running || lifecycle.status === "busy" || agentInfo.status === "busy") {
+      return {
+        usable: false,
+        agentId,
+        code: "LOCAL_AGENT_BUSY",
+        message: `Local agent ${agentId} is already running and cannot accept another dispatch yet.`,
+        lifecycle
+      }
+    }
+    if (lifecycle.status === "error" || agentInfo.status === "error") {
+      return {
+        usable: false,
+        agentId,
+        code: "LOCAL_AGENT_ERROR",
+        message: `Local agent ${agentId} is in an error state. Reconfigure or restart the adapter before dispatching.`,
+        lifecycle
+      }
+    }
+    if ((expectedProtocol === "stdio-plain" || expectedProtocol === "acp") && !String(agentInfo.adapter.binary || "").trim()) {
+      return {
+        usable: false,
+        agentId,
+        code: "LOCAL_AGENT_BINARY_MISSING",
+        message: `Local agent ${agentId} has no executable configured.`,
+        lifecycle
+      }
+    }
+    return { usable: true, agentId, lifecycle }
+  }
+
+  private usableBindings(bindings: AgentRouteBinding[]): AgentRouteBinding[] {
+    return bindings.filter(binding => !this.isLocalBinding(binding) || this.localAgentAvailability(binding.agentId, binding).usable)
+  }
+
   private resolveTargets(task: DispatchTask, mode: DispatchMode, targetAgent?: string): Array<{ agentId: string }> {
     const mgr = getProviderManager()
-    const bindings = mgr.getBindings()
+    const allBindings = mgr.getBindings()
+    const bindings = this.usableBindings(allBindings)
     if (targetAgent) {
-      const b = bindings.find(x => x.agentId === targetAgent)
+      const b = allBindings.find(x => x.agentId === targetAgent)
       return b ? [{ agentId: targetAgent }] : []
     }
     if (mode === "broadcast") {
@@ -457,7 +544,7 @@ export class Dispatcher extends EventEmitter {
   private async runOrchestrate(task: DispatchTask, text: string, opts: DispatchOptions): Promise<void> {
     try {
       const mgr = getProviderManager()
-      const bindings = mgr.getBindings()
+      const bindings = this.usableBindings(mgr.getBindings())
       if (bindings.length === 0) throw new Error("No agent bound. Open Settings -> Routing to bind an agent.")
 
       const router = new KeywordRouter()
@@ -564,16 +651,23 @@ export class Dispatcher extends EventEmitter {
 
   private async sendToAgent(task: DispatchTask, agentId: string, text: string, opts: DispatchOptions): Promise<{ content: string; error?: string }> {
     const mgr = getProviderManager()
+    const binding = mgr.getBinding(agentId)
     const resolved = mgr.resolveBinding(agentId)
- // stdio routing: 若 registry 注册的是 stdio adapter(非 http),则走本地 CLI 子进程
- const agentInfo = this.registry.get(agentId)
- if (agentInfo && (agentInfo.adapter as any).protocol === 'acp') {
- return this.sendToAgentAcp(task, agentId, text, opts, agentInfo.adapter)
- }
- if (agentInfo && (agentInfo.adapter as any).protocol && (agentInfo.adapter as any).protocol !== 'http') {
- const binding = mgr.getBinding(agentId)
- return this.sendToAgentStdio(task, agentId, text, opts, resolved, agentInfo.adapter, binding)
- }
+    // Local transports are usable only when the current binding explicitly asks for them.
+    // This prevents a stale registry adapter from hijacking an HTTP/API route.
+    if (this.isLocalBinding(binding)) {
+      const availability = this.localAgentAvailability(agentId, binding)
+      if (!availability.usable) {
+        task.errors.set(agentId, availability.message)
+        this.emit("stream", { kind: "error", taskId: task.id, agentId, error: availability.message, code: availability.code })
+        return { content: "", error: availability.message }
+      }
+      const agentInfo = this.registry.get(agentId)!
+      if (binding?.protocol === "acp" || (agentInfo.adapter as any).protocol === "acp") {
+        return this.sendToAgentAcp(task, agentId, text, opts, agentInfo.adapter)
+      }
+      return this.sendToAgentStdio(task, agentId, text, opts, resolved, agentInfo.adapter, binding)
+    }
     if (!resolved) {
       const err = "No available provider for agent " + agentId
       task.errors.set(agentId, err)
@@ -701,14 +795,15 @@ export class Dispatcher extends EventEmitter {
       : null
     const fallbackProvider = mgr.getProvider(selection.providerId)
     const provider = routed?.provider || fallbackProvider
-    if (!routed || !provider || !provider.enabled || !provider.apiKey) {
-      if (!fallbackProvider || !fallbackProvider.enabled || !fallbackProvider.apiKey) {
+    if (!routed || !isProviderRuntimeUsable(provider)) {
+      if (!isProviderRuntimeUsable(fallbackProvider)) {
         throw new Error(`Selected model provider is unavailable: ${selection.providerId}`)
       }
     }
     if (!provider) throw new Error(`Selected model provider is unavailable: ${selection.providerId}`)
     const model = routed?.model || provider.models.find(item => item.id === selection.modelId)
     if (!model) throw new Error(`Selected model not found: ${selection.providerId}/${selection.modelId}`)
+    if (model.enabled === false) throw new Error(`Selected model is disabled: ${selection.providerId}/${selection.modelId}`)
     const effectiveModel = { ...model, id: routed?.upstreamModelId || model.upstreamModel || model.id }
     return {
       ...resolved,
@@ -1032,7 +1127,6 @@ export class Dispatcher extends EventEmitter {
     const STARTUP_SILENCE_MS = 60 * 1000
     // 已产生输出后静默这么久且进程未退出 → 兜底视为已完成（应对输出完却不退出的 CLI）
     const IDLE_AFTER_OUTPUT_MS = 45 * 1000
-    const procField = "proc" // 适配器内部的子进程字段
     const self = this
     let settled = false
     let spawnedOnce = false
@@ -1098,11 +1192,11 @@ export class Dispatcher extends EventEmitter {
         }).catch(onErr)
         const poll = setInterval(() => {
           if (settled) return
-          const proc = adapter[procField]
+          const lifecycle = self.adapterLifecycle(adapter)
           const idle = Date.now() - lastOutputAt
           const elapsed = Date.now() - start
           const hasOutput = content.length > 0 || sawActivity
-          const procGone = spawnedOnce && !proc                                   // 进程退出 = oneshot 正常完成
+          const procGone = spawnedOnce && !lifecycle.running                       // 进程退出 = oneshot 正常完成
           const quietDone = hasOutput && idle > IDLE_AFTER_OUTPUT_MS               // 有输出后久静默 → 兜底完成
           const stalledNoOutput = spawnedOnce && !hasOutput && elapsed > STARTUP_SILENCE_MS // 始终无输出 → 卡死
           const timedOut = elapsed > TIMEOUT_MS
@@ -1125,10 +1219,10 @@ export class Dispatcher extends EventEmitter {
             }
             // 进程退出但 adapter 报告 error（非零退出码）→ 必须 reject，
             // 否则竞态会让 poll 在 onErr 之前 resolveP() 吞掉退出码错误。
-            if (procGone && adapter.status === 'error') {
+            if (procGone && lifecycle.status === 'error') {
               // Include structured exit code and stderr for better diagnostics
-              const code = adapter.exitCode
-              const detail = adapter.lastStderr ? adapter.lastStderr.trim().slice(-300) : ''
+              const code = lifecycle.exitCode
+              const detail = lifecycle.lastStderr ? lifecycle.lastStderr.trim().slice(-300) : ''
               const exitInfo = code !== null ? ` (exit code: ${code})` : ''
               const errMsg = `${agentId} 进程异常退出${exitInfo}${detail ? '：' + detail : ''}${content ? '（已收集部分输出）' : ''}`
               rejectP(Object.assign(new Error(errMsg), { exitCode: code }))

@@ -8,10 +8,12 @@
 export { SddDraftEditor } from './components/SddDraftEditor'
 export { SddProgressBar } from './components/SddProgressBar'
 export { SddRequirementsList } from './components/SddRequirementsList'
+export { SddTracePanel } from './components/SddTracePanel'
 
 // Store
 export { useSddDraftStore } from './sdd-draft-store'
 export type { SddDraft, SddDesignContext, SddRequirementBlock, SddTrace, SddSaveStatus, SddOperationStatus } from './sdd-draft-store'
+export type { SddCommitEvidence } from './sdd-draft-store'
 
 // Actions
 export {
@@ -25,6 +27,12 @@ export {
   listDrafts,
   draftExists
 } from './sdd-draft-actions'
+
+export {
+  persistSddPlanCommitEvidence,
+  persistSddPlanDispatch,
+  persistSddPlanTodoStatus
+} from './sdd-trace-dispatch'
 
 // Prompt builders (参考 Kun SDD 模块)
 export {
@@ -47,9 +55,20 @@ export {
   buildVerifySystemPrompt,
   buildVerifyUserPrompt,
   buildVerifyPrompt,
-  buildBlockVerifyPrompt
+  buildBlockVerifyPrompt,
+  parseVerifyResponse,
+  applyVerifyVerdictsToContent,
+  hashVerifyContent,
+  buildVerifyEvidenceSummary
 } from './sdd-verify-prompt'
-export type { VerifyPromptContext, VerifyPromptResult } from './sdd-verify-prompt'
+export type {
+  VerifyPromptContext,
+  VerifyPromptResult,
+  VerifyCriterionStatus,
+  VerifyCriterionVerdict,
+  ParsedVerifyResponse,
+  ApplyVerifyVerdictsResult
+} from './sdd-verify-prompt'
 
 // Draft history (参考 Kun SDD 模块)
 export {

@@ -4,26 +4,63 @@
  * 显示所有需求，支持创建、删除、搜索、编辑
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
 import { styledConfirm } from '../../lib/confirm'
 import { useSddDraftStore } from '../sdd-draft-store'
-import { listDrafts, createNewDraft, deleteDraft, loadDraft, saveDraftToDisk, parseRequirementBlocks } from '../sdd-draft-actions'
+import { listDrafts, createNewDraft, deleteDraft, loadDraft, saveDraftToDisk, parseRequirementBlocks, persistPlanTrace, applyVerifyVerdicts } from '../sdd-draft-actions'
 import { buildAssistantPrompt } from '../sdd-assistant-prompt'
-import { applyAssistantRequirementResponse } from '../sdd-assistant-apply'
+import { previewAssistantRequirementResponse } from '../sdd-assistant-apply'
+import { recordAiHistory } from '../sdd-draft-history'
 import { buildPlanPrompt } from '../sdd-plan-prompt'
+import { buildVerifyEvidenceSummary, buildVerifyPrompt, hashVerifyContent, parseVerifyResponse, type VerifyDraftSnapshot } from '../sdd-verify-prompt'
 import { SddDraftEditor } from './SddDraftEditor'
 import { SddAssistantPanel } from './SddAssistantPanel'
 
 interface SddRequirementsListProps {
   workspaceRoot: string | null
+  threadId?: string | null
+  threadTodos?: ThreadTodo[]
+  events?: RuntimeEvent[]
+  onThreadTodosChanged?: (threadId: string) => void | Promise<void>
 }
 
 const PLAN_GENERATION_TRIGGER_MESSAGE = 'Generate an implementation plan from the current requirement document.'
-type AssistantRequestMode = 'chat' | 'plan'
+const VERIFY_TRIGGER_MESSAGE = 'Review completed implementation evidence and verify acceptance criteria for this requirement document.'
+type AssistantRequestMode = 'chat' | 'plan' | 'verify'
 
-export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps) {
+interface AssistantRequirementApplyContext {
+  kind: 'requirement-apply'
+  draftId: string
+  workspaceRoot: string
+  contentHash: string
+  nextContent: string
+  preview: {
+    added: string[]
+    removed: string[]
+  }
+}
+
+function isVerifyDraftSnapshot(value: unknown): value is VerifyDraftSnapshot {
+  if (!value || typeof value !== 'object') return false
+  const snapshot = value as Partial<VerifyDraftSnapshot>
+  return typeof snapshot.draftId === 'string' &&
+    typeof snapshot.workspaceRoot === 'string' &&
+    typeof snapshot.contentHash === 'string'
+}
+
+function isAssistantRequirementApplyContext(value: unknown): value is AssistantRequirementApplyContext {
+  if (!value || typeof value !== 'object') return false
+  const context = value as Partial<AssistantRequirementApplyContext>
+  return context.kind === 'requirement-apply' &&
+    typeof context.draftId === 'string' &&
+    typeof context.workspaceRoot === 'string' &&
+    typeof context.contentHash === 'string' &&
+    typeof context.nextContent === 'string'
+}
+
+export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodos = [], events = [], onThreadTodosChanged }: SddRequirementsListProps) {
   const [drafts, setDrafts] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
@@ -31,10 +68,22 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
   const [newTitle, setNewTitle] = useState('')
   const [view, setView] = useState<'list' | 'editor'>('list')
   const [assistantOpen, setAssistantOpen] = useState(false)
-  const [assistantMode, setAssistantMode] = useState<'chat' | 'plan'>('chat')
+  const [assistantMode, setAssistantMode] = useState<AssistantRequestMode>('chat')
+  const [assistantTriggerNonce, setAssistantTriggerNonce] = useState(0)
+  const autoVerifyTriggeredRef = useRef<Set<string>>(new Set())
+  const autoVerifySeenEventKeysRef = useRef<Set<string>>(new Set())
+  const autoVerifyBaselineKeyRef = useRef<string | null>(null)
 
   const activeDraft = useSddDraftStore((s) => s.activeDraft)
   const draftContent = useSddDraftStore((s) => s.content)
+
+  const triggerVerification = useCallback(() => {
+    if (!draftContent) return
+    if (assistantOpen && assistantMode === 'verify') return
+    setAssistantMode('verify')
+    setAssistantTriggerNonce(value => value + 1)
+    setAssistantOpen(true)
+  }, [assistantMode, assistantOpen, draftContent])
 
   // Load drafts
   const refreshDrafts = useCallback(async () => {
@@ -53,6 +102,39 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
   useEffect(() => {
     refreshDrafts()
   }, [refreshDrafts])
+
+  useEffect(() => {
+    if (!activeDraft || !threadId || !draftContent) return
+    const baselineKey = `${activeDraft.workspaceRoot}:${activeDraft.id}:${threadId}`
+    const completedPlanEvents = threadTodos.flatMap(todo => {
+      const source = todo.source
+      if (todo.status !== 'completed') return []
+      if (source?.kind !== 'plan' || source.draftId !== activeDraft.id || source.workspaceRoot !== activeDraft.workspaceRoot || !source.turnId) return []
+      return events.filter(event =>
+        event.threadId === threadId &&
+        event.turnId === source.turnId &&
+        (event.kind === 'turn:status' || event.kind === 'run:status') &&
+        event.payload?.status === 'completed'
+      ).map(event => ({
+        turnId: source.turnId,
+        eventKey: `${baselineKey}:${source.turnId}:${event.id ?? event.seq ?? event.createdAt}`
+      }))
+    })
+    if (autoVerifyBaselineKeyRef.current !== baselineKey) {
+      autoVerifyBaselineKeyRef.current = baselineKey
+      completedPlanEvents.forEach(event => autoVerifySeenEventKeysRef.current.add(event.eventKey))
+      return
+    }
+    const newPlanEvent = completedPlanEvents.find(event =>
+      !autoVerifySeenEventKeysRef.current.has(event.eventKey) &&
+      !autoVerifyTriggeredRef.current.has(`${activeDraft.id}:${event.turnId}`)
+    )
+    completedPlanEvents.forEach(event => autoVerifySeenEventKeysRef.current.add(event.eventKey))
+    const turnId = newPlanEvent?.turnId
+    if (!turnId) return
+    autoVerifyTriggeredRef.current.add(`${activeDraft.id}:${turnId}`)
+    triggerVerification()
+  }, [activeDraft, draftContent, events, threadId, threadTodos, triggerVerification])
 
   // Filter drafts by search
   const filteredDrafts = useMemo(() => {
@@ -115,29 +197,66 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
     message: string,
     history: Array<{ role: 'user' | 'assistant'; content: string }>,
     mode: AssistantRequestMode = 'chat'
-  ): Promise<string> => {
+  ): Promise<string | { content: string; applyContext?: VerifyDraftSnapshot | AssistantRequirementApplyContext }> => {
     const store = useSddDraftStore.getState()
     const draft = store.activeDraft
     if (!draft) throw new Error('No active draft')
+    let requestDraft = { ...draft, content: store.content }
+    let requestBlocks = store.requirementBlocks
 
     let systemPrompt: string
     let userPrompt: string = message
+    let verifySnapshot: VerifyDraftSnapshot | undefined
 
-    if (mode === 'plan') {
-      const planResult = buildPlanPrompt({
-        draft,
-        blocks: store.requirementBlocks,
-        designContext: draft.designContext
-      })
-      systemPrompt = planResult.systemPrompt
-      userPrompt = planResult.userPrompt
+    if (mode === 'plan' || mode === 'verify') {
+      const saved = await saveDraftToDisk()
+      if (!saved) throw new Error(mode === 'plan' ? 'Failed to save draft before planning' : 'Failed to save draft before verification')
+      await parseRequirementBlocks()
+      const latest = useSddDraftStore.getState()
+      const latestDraft = latest.activeDraft ?? draft
+      requestDraft = { ...latestDraft, content: latest.content }
+      requestBlocks = latest.requirementBlocks
+      if (mode === 'plan') {
+        const planResult = buildPlanPrompt({
+          draft: requestDraft,
+          blocks: requestBlocks,
+          designContext: requestDraft.designContext
+        })
+        systemPrompt = planResult.systemPrompt
+        userPrompt = planResult.userPrompt
+      } else {
+        verifySnapshot = {
+          draftId: requestDraft.id,
+          workspaceRoot: requestDraft.workspaceRoot,
+          contentHash: hashVerifyContent(requestDraft.content)
+        }
+        const verifyResult = buildVerifyPrompt({
+          draft: requestDraft,
+          blocks: requestBlocks,
+          evidenceSummary: buildVerifyEvidenceSummary({
+            draftId: requestDraft.id,
+            workspaceRoot: requestDraft.workspaceRoot,
+            relativePath: requestDraft.relativePath,
+            threadId,
+            trace: latest.trace,
+            todos: threadTodos,
+            events
+          }),
+          planContent: latest.trace?.planItems.map(item => {
+            const check = item.status === 'completed' ? 'x' : ' '
+            return `- [${check}] ${item.text}${item.turnId ? ` (turn: ${item.turnId})` : ''}`
+          }).join('\n')
+        })
+        systemPrompt = verifyResult.systemPrompt
+        userPrompt = verifyResult.userPrompt
+      }
       setAssistantMode('chat')
     } else {
       const result = buildAssistantPrompt(
         {
-          draft,
-          blocks: store.requirementBlocks,
-          designContext: draft.designContext,
+          draft: requestDraft,
+          blocks: requestBlocks,
+          designContext: requestDraft.designContext,
           history
         },
         message
@@ -152,15 +271,79 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
     })
     if (!result?.ok) throw new Error(result?.error || 'AI request failed')
     const content = result.content || ''
+    if (mode === 'plan' && content.trim()) {
+      await persistPlanTrace(content, requestDraft)
+    }
     if (mode === 'chat' && content.trim()) {
       const latest = useSddDraftStore.getState()
-      latest.setContent(applyAssistantRequirementResponse(latest.content, content))
-      await saveDraftToDisk()
-      await parseRequirementBlocks()
-      if (workspaceRoot) await refreshDrafts()
+      const latestDraft = latest.activeDraft
+      if (!latestDraft) throw new Error('No active draft')
+      const preview = previewAssistantRequirementResponse(latest.content, content)
+      if (preview.changed) {
+        return {
+          content,
+          applyContext: {
+            kind: 'requirement-apply',
+            draftId: latestDraft.id,
+            workspaceRoot: latestDraft.workspaceRoot,
+            contentHash: hashVerifyContent(latest.content),
+            nextContent: preview.content,
+            preview: {
+              added: preview.added,
+              removed: preview.removed
+            }
+          }
+        }
+      }
     }
-    return content
+    return verifySnapshot ? { content, applyContext: verifySnapshot } : content
+  }, [events, refreshDrafts, threadId, threadTodos])
+
+  const handleApplyAssistantRequirement = useCallback(async (applyContext?: unknown) => {
+    if (!isAssistantRequirementApplyContext(applyContext)) {
+      throw new Error('No pending requirement update to apply.')
+    }
+    const latest = useSddDraftStore.getState()
+    const latestDraft = latest.activeDraft
+    if (!latestDraft) throw new Error('No active draft')
+    if (latestDraft.id !== applyContext.draftId || latestDraft.workspaceRoot !== applyContext.workspaceRoot) {
+      throw new Error('This AI response belongs to a different requirement draft. Ask again for the current draft.')
+    }
+    if (hashVerifyContent(latest.content) !== applyContext.contentHash) {
+      throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
+    }
+
+    recordAiHistory(latestDraft, latest.content, 'assistant requirement writeback')
+    latest.setContent(applyContext.nextContent)
+    const saved = await saveDraftToDisk()
+    if (!saved) throw new Error('Failed to save assistant requirement update')
+    await parseRequirementBlocks()
+    if (workspaceRoot) await refreshDrafts()
   }, [refreshDrafts, workspaceRoot])
+
+  const handleSyncPlanTodos = useCallback(async (planMarkdown: string): Promise<ThreadTodo[]> => {
+    if (!threadId) throw new Error(tr('需要先打开一个会话。', 'Open a thread first.'))
+    const draft = useSddDraftStore.getState().activeDraft
+    const todos = await window.electronAPI.todos.syncFromMarkdown(threadId, planMarkdown, draft ? {
+      workspaceRoot: draft.workspaceRoot,
+      draftId: draft.id,
+      relativePath: draft.relativePath
+    } : undefined)
+    await onThreadTodosChanged?.(threadId)
+    return todos
+  }, [onThreadTodosChanged, threadId])
+
+  const handleApplyVerification = useCallback(async (verificationMarkdown: string, applyContext?: unknown) => {
+    const blocks = useSddDraftStore.getState().requirementBlocks
+    const parsed = parseVerifyResponse(verificationMarkdown, blocks)
+    const result = await applyVerifyVerdicts(parsed.verdicts, isVerifyDraftSnapshot(applyContext) ? applyContext : undefined)
+    await refreshDrafts()
+    return {
+      appliedCount: result.appliedCount,
+      verifiedRequirementIds: result.verifiedRequirementIds,
+      warnings: [...parsed.warnings, ...result.warnings]
+    }
+  }, [refreshDrafts])
 
   // Format date
   const formatDate = (dateStr: string) => {
@@ -189,17 +372,33 @@ export function SddRequirementsList({ workspaceRoot }: SddRequirementsListProps)
             // 触发计划生成：切换到计划模式并打开 AI 助手面板
             if (!draftContent) return
             setAssistantMode('plan')
+            setAssistantTriggerNonce(value => value + 1)
             setAssistantOpen(true)
           }}
+          onVerify={() => {
+            triggerVerification()
+          }}
           nextDisabled={!draftContent}
+          verifyDisabled={!draftContent}
         />
         {assistantOpen && (
           <SddAssistantPanel
             draftId={activeDraft.id}
             workspaceRoot={activeDraft.workspaceRoot}
-            initialMessage={assistantMode === 'plan' ? PLAN_GENERATION_TRIGGER_MESSAGE : undefined}
+            initialMessage={
+              assistantMode === 'plan'
+                ? PLAN_GENERATION_TRIGGER_MESSAGE
+                : assistantMode === 'verify'
+                  ? VERIFY_TRIGGER_MESSAGE
+                  : undefined
+            }
+            initialMessageKey={assistantMode === 'chat' ? undefined : `${assistantMode}-${assistantTriggerNonce}`}
             initialMode={assistantMode}
             onSendMessage={handleSendAssistantMessage}
+            threadId={threadId}
+            onSyncPlanTodos={handleSyncPlanTodos}
+            onApplyVerification={handleApplyVerification}
+            onApplyRequirementResponse={handleApplyAssistantRequirement}
             onClose={() => setAssistantOpen(false)}
           />
         )}

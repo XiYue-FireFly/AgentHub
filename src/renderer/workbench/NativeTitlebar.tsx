@@ -22,6 +22,7 @@ export type WorkbenchSettingsTabKey =
   | 'usage'
   | 'agentLoop'
   | 'requirements'
+  | 'diagnostics'
 
 export type WorkbenchRightPanel = 'runs' | 'git' | 'worktrees' | 'browser' | 'terminal' | 'files' | 'side-chat' | null
 

@@ -13,7 +13,7 @@ import { EventEmitter } from 'events'
 import { AgentLoop, createAgentLoop, type LoopConfig, type LoopContext, type LoopResult, type AgentConfig, type LoopMode, type ApiConfig } from '../loop/agent-loop'
 import type { ModelConfig } from '../loop/model-router'
 import { AgentRegistry } from './registry'
-import { getProviderManager } from '../providers/manager'
+import { getProviderManager, isProviderRuntimeUsable } from '../providers/manager'
 
 // ============================================================
 // Types
@@ -220,7 +220,7 @@ export class AgentLoopIntegration extends EventEmitter {
       const models: ModelConfig[] = []
 
       for (const provider of providers) {
-        if (provider.enabled && provider.apiKey) {
+        if (isProviderRuntimeUsable(provider)) {
           for (const model of provider.models || []) {
             models.push({
               providerId: provider.id,

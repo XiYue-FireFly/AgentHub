@@ -155,6 +155,7 @@ export interface ModelDef {
   id: string
   label: string
   contextWindow?: number
+  enabled?: boolean
   supportsTools?: boolean
   supportsVision?: boolean
   supportsThinking?: boolean
@@ -166,6 +167,8 @@ export interface ProviderDef {
   kind: string
   baseUrl: string
   apiKey: string
+  apiKeyLocked?: boolean
+  apiKeyError?: string
   enabled: boolean
   builtIn: boolean
   models: ModelDef[]

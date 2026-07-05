@@ -71,6 +71,10 @@ export interface ProviderDefinition {
   baseUrl: string
   /** API Key（加密前持久化到本地 config） */
   apiKey: string
+  /** API key exists on disk but cannot be decrypted in this OS/user session. */
+  apiKeyLocked?: boolean
+  /** Last secret unlock/decryption error, shown as diagnostics only. */
+  apiKeyError?: string
   /** 启用状态（关闭后不可路由） */
   enabled: boolean
   /** 是否为内置预设（不可删除，可改名） */

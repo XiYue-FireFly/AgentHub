@@ -64,6 +64,31 @@ export interface ModelSelection {
   source?: "provider" | "local-cli"
 }
 
+export type LocalAgentAdapterProtocol = "stdio-ndjson" | "stdio-plain" | "http" | "acp"
+export type LocalAgentAdapterMode = "interactive" | "oneshot"
+export type LocalAgentAdapterStatus = "idle" | "busy" | "error"
+
+export interface LocalAgentAdapterLifecycle {
+  protocol: LocalAgentAdapterProtocol
+  mode: LocalAgentAdapterMode
+  status: LocalAgentAdapterStatus
+  running: boolean
+  exitCode: number | null
+  lastStderr?: string
+  runId?: number
+}
+
+export type LocalAgentAvailabilityCode =
+  | "LOCAL_AGENT_ADAPTER_MISSING"
+  | "LOCAL_AGENT_PROTOCOL_MISMATCH"
+  | "LOCAL_AGENT_BUSY"
+  | "LOCAL_AGENT_ERROR"
+  | "LOCAL_AGENT_BINARY_MISSING"
+
+export type LocalAgentAvailabilityResult =
+  | { usable: true; agentId: string; lifecycle?: LocalAgentAdapterLifecycle }
+  | { usable: false; agentId: string; code: LocalAgentAvailabilityCode; message: string; lifecycle?: LocalAgentAdapterLifecycle }
+
 export interface WorkbenchThread {
   id: string
   workspaceId: string | null
@@ -220,8 +245,8 @@ export interface LocalSkillCandidate {
 export interface GitQueryResult {
   threadId: string
   turnId: string
-  command: string
-  content: string
+  result: string | null
+  error?: string
 }
 
 export interface McpServerConfig {
@@ -615,9 +640,15 @@ export interface ThreadTodo {
   status: ThreadTodoStatus
   source?: {
     kind: "manual" | "plan" | "agent"
+    threadId?: string
     turnId?: string
+    gitHeadAtDispatch?: string | null
+    gitRootAtDispatch?: string
     relativePath?: string
     contentHash?: string
+    workspaceRoot?: string
+    draftId?: string
+    planItemId?: string
   }
   updatedAt: number
 }

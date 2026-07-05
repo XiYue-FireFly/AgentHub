@@ -1,7 +1,7 @@
-import { ipcMain } from 'electron'
 import { buildContextProjection } from '../runtime/context-ledger'
 import { runGitQuery } from '../runtime/git'
 import { optionalWorkbenchWorkspace } from '../runtime/workspace-helpers'
+import { typedHandle } from './typed-ipc'
 
 interface HubThreadsDeps {
   hub: any
@@ -16,7 +16,7 @@ interface HubThreadsDeps {
 export function registerHubThreadsIpc(deps: HubThreadsDeps): void {
   const { hub, dispatcher, registry, runtimeStore, memory, proxy } = deps
 
-  ipcMain.handle("hub:status", () => ({
+  typedHandle("hub:status", () => ({
     running: hub !== null,
     url: hub?.getUrl() || "",
     proxyUrl: proxy.getUrl(),
@@ -30,30 +30,43 @@ export function registerHubThreadsIpc(deps: HubThreadsDeps): void {
     })) || []
   }))
 
-  ipcMain.handle("threads:list", (_event, workspaceId?: string | null) => runtimeStore.listThreads(workspaceId))
-  ipcMain.handle("threads:create", (_event, input: { workspaceId?: string | null; title?: string }) => {
+  typedHandle("threads:list", (_event, workspaceId) => runtimeStore.listThreads(workspaceId))
+  typedHandle("threads:create", (_event, input) => {
     const workspaceId = optionalWorkbenchWorkspace(input?.workspaceId)
     return runtimeStore.createThread({ ...input, workspaceId })
   })
-  ipcMain.handle("threads:rename", (_event, threadId: string, title: string) => runtimeStore.renameThread(threadId, title))
-  ipcMain.handle("threads:delete", (_event, threadId: string) => runtimeStore.deleteThread(threadId))
-  ipcMain.handle("threads:select", (_event, threadId: string | null) => runtimeStore.selectThread(threadId))
-  ipcMain.handle("threads:fork", (_event, input: { sourceThreadId: string; sourceTurnId: string; message: string }) => {
+  typedHandle("threads:rename", (_event, threadId, title) => runtimeStore.renameThread(threadId, title))
+  typedHandle("threads:delete", (_event, threadId) => runtimeStore.deleteThread(threadId))
+  typedHandle("threads:select", (_event, threadId) => runtimeStore.selectThread(threadId))
+  typedHandle("threads:fork", (_event, input) => {
     if (!input || typeof input.message !== 'string' || !input.message.trim()) {
       throw new Error('Invalid fork input: message is required')
     }
     const newThread = runtimeStore.createThread({ title: `Fork: ${input.message.slice(0, 50)}` })
+    const { turn: forkTurn } = runtimeStore.createTurn({
+      threadId: newThread.id,
+      workspaceId: newThread.workspaceId ?? null,
+      prompt: input.message,
+      mode: "auto",
+      targetAgent: null,
+      attachments: [],
+      modelSelection: undefined,
+      thinking: { mode: "off", level: "minimal" }
+    })
     const sourceEvents = runtimeStore.eventsSince(input.sourceThreadId, 0)
     const turnEvents = sourceEvents.filter((e: any) => e.turnId === input.sourceTurnId)
     for (const event of turnEvents) {
-      runtimeStore.appendStreamEvent(newThread.id, { ...event, turnId: newThread.id })
+      if (!isForkableStreamEvent(event)) continue
+      const stream = runtimeStreamFromEvent(event, forkTurn.id)
+      runtimeStore.appendStreamEvent(forkTurn.id, stream)
     }
+    runtimeStore.setTurnStatus(forkTurn.id, finalStatusFromEvents(turnEvents))
     return newThread
   })
 
-  ipcMain.handle("runtime:snapshot", (_event, workspaceId?: string | null) => runtimeStore.snapshot(workspaceId))
-  ipcMain.handle("runtime:eventsSince", (_event, threadId: string, seq = 0) => runtimeStore.eventsSince(threadId, seq))
-  ipcMain.handle("context:projection", (_event, input: { threadId?: string | null; workspaceId?: string | null; prompt?: string; attachments?: any[]; writeDraft?: { title: string; content: string } | null; pinnedBlocks?: any[] }) => {
+  typedHandle("runtime:snapshot", (_event, workspaceId) => runtimeStore.snapshot(workspaceId))
+  typedHandle("runtime:eventsSince", (_event, threadId, seq = 0) => runtimeStore.eventsSince(threadId, seq))
+  typedHandle("context:projection", (_event, input) => {
     const thread = input?.threadId ? runtimeStore.getThread(input.threadId) : undefined
     const workspaceId = thread ? thread.workspaceId : optionalWorkbenchWorkspace(input?.workspaceId)
     const snapshot = runtimeStore.snapshot(undefined)
@@ -71,9 +84,9 @@ export function registerHubThreadsIpc(deps: HubThreadsDeps): void {
     })
   })
 
-  ipcMain.handle("git:query", async (_event, input: { workspaceId?: string | null; threadId?: string | null; query?: string }) => {
+  typedHandle("git:query", async (_event, input) => {
     const workspaceId = optionalWorkbenchWorkspace(input?.workspaceId)
-    if (!workspaceId) throw new Error("Git 需要先选择工作目录。")
+    if (!workspaceId) throw new Error("Git query requires a workspace")
     const thread = input?.threadId ? runtimeStore.getThread(input.threadId) : undefined
     const { thread: targetThread, turn } = runtimeStore.createTurn({
       threadId: thread?.id ?? null,
@@ -87,7 +100,7 @@ export function registerHubThreadsIpc(deps: HubThreadsDeps): void {
     })
     try {
       const result = await runGitQuery(workspaceId, input?.query || "status")
-      runtimeStore.appendStreamEvent(targetThread.id, {
+      runtimeStore.appendStreamEvent(turn.id, {
         turnId: turn.id,
         type: "content",
         content: result,
@@ -96,16 +109,66 @@ export function registerHubThreadsIpc(deps: HubThreadsDeps): void {
       runtimeStore.setTurnStatus(turn.id, "completed")
       return { threadId: targetThread.id, turnId: turn.id, result }
     } catch (e: any) {
-      runtimeStore.setTurnStatus(turn.id, "failed")
-      runtimeStore.appendStreamEvent(targetThread.id, {
+      runtimeStore.appendStreamEvent(turn.id, {
         turnId: turn.id,
         type: "content",
         content: `Git query failed: ${e?.message || String(e)}`,
         agentId: "git"
       })
+      runtimeStore.setTurnStatus(turn.id, "failed")
       return { threadId: targetThread.id, turnId: turn.id, result: null, error: e?.message || String(e) }
     }
   })
 }
 
 // isProviderDirectSelection is now imported from shared/utils (LOW-08)
+
+function runtimeStreamFromEvent(event: any, turnId: string): any {
+  const payload = event && typeof event.payload === "object" && event.payload !== null
+    ? { ...event.payload }
+    : { ...event }
+  const runtimeKind = typeof event?.kind === "string" ? event.kind : undefined
+  payload.kind = payload.kind ?? streamKindFromRuntimeKind(runtimeKind)
+  payload.agentId = payload.agentId ?? event?.agentId
+  payload.turnId = turnId
+  return payload
+}
+
+function streamKindFromRuntimeKind(kind?: string): string {
+  switch (kind) {
+    case "agent:start":
+      return "start"
+    case "agent:delta":
+      return "delta"
+    case "agent:approval":
+      return "approval"
+    case "agent:done":
+      return "done"
+    case "agent:error":
+      return "error"
+    case "orchestrate":
+      return "orchestrate:fork"
+    default:
+      return "activity"
+  }
+}
+
+function isForkableStreamEvent(event: any): boolean {
+  return [
+    "agent:start",
+    "agent:delta",
+    "agent:activity",
+    "agent:approval",
+    "agent:done",
+    "agent:error",
+    "orchestrate"
+  ].includes(event?.kind)
+}
+
+function finalStatusFromEvents(events: any[]): "completed" | "failed" | "cancelled" {
+  const statusEvent = [...events]
+    .reverse()
+    .find(event => event?.kind === "turn:status" && typeof event?.payload?.status === "string")
+  const status = statusEvent?.payload?.status
+  return status === "failed" || status === "cancelled" ? status : "completed"
+}

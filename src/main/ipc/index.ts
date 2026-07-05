@@ -21,7 +21,8 @@ import { registerHubThreadsIpc } from './hub-threads-ipc'
 import { registerMissingIpc } from './missing-ipc'
 import { registerAgentLoopIpc } from './agent-loop-ipc'
 import { registerSddIpc } from './sdd-ipc'
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { typedHandle } from './typed-ipc'
+import { BrowserWindow, dialog } from 'electron'
 
 interface IpcRegistrationDeps {
   memory: () => any
@@ -131,7 +132,7 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
   })
 
   // Dialog operations
-  ipcMain.handle('dialog:selectDirectory', async () => {
+  typedHandle('dialog:selectDirectory', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory']
     })

@@ -59,6 +59,64 @@ describe("Workbench runtime event loading", () => {
     expect(mergeRuntimeEventLists(base, incoming).map(event => event.id)).toEqual(["a", "c", "b"])
   })
 
+  it("appends monotonic runtime events without changing order", () => {
+    const base = [
+      { id: "", threadId: "t1", turnId: "turn", seq: 1, kind: "agent:start", payload: {}, createdAt: 1 }
+    ] as RuntimeEvent[]
+    const incoming = [
+      { id: "", threadId: "t1", turnId: "turn", seq: 2, kind: "agent:delta", payload: {}, createdAt: 2 },
+      { id: "", threadId: "t1", turnId: "turn", seq: 3, kind: "agent:done", payload: {}, createdAt: 3 }
+    ] as RuntimeEvent[]
+
+    expect(mergeRuntimeEventLists(base, incoming).map(event => event.seq)).toEqual([1, 2, 3])
+  })
+
+  it("deduplicates repeated incoming runtime events before appending", () => {
+    const base = [
+      { id: "a", threadId: "t1", turnId: "turn", seq: 1, kind: "agent:start", payload: {}, createdAt: 1 }
+    ] as RuntimeEvent[]
+    const incoming = [
+      { id: "b", threadId: "t1", turnId: "turn", seq: 2, kind: "agent:delta", payload: {}, createdAt: 2 },
+      { id: "b", threadId: "t1", turnId: "turn", seq: 2, kind: "agent:delta", payload: {}, createdAt: 2 }
+    ] as RuntimeEvent[]
+
+    expect(mergeRuntimeEventLists(base, incoming).map(event => event.id)).toEqual(["a", "b"])
+  })
+
+  it("keeps id-based dedupe against base events even when incoming seq is newer", () => {
+    const base = [
+      { id: "a", threadId: "t1", turnId: "turn", seq: 1, kind: "agent:start", payload: {}, createdAt: 1 }
+    ] as RuntimeEvent[]
+    const incoming = [
+      { id: "a", threadId: "t1", turnId: "turn", seq: 2, kind: "agent:delta", payload: {}, createdAt: 2 },
+      { id: "b", threadId: "t1", turnId: "turn", seq: 3, kind: "agent:done", payload: {}, createdAt: 3 }
+    ] as RuntimeEvent[]
+
+    expect(mergeRuntimeEventLists(base, incoming).map(event => event.id)).toEqual(["a", "b"])
+  })
+
+  it("caps merged runtime events at the newest 5000 entries", () => {
+    const base = Array.from({ length: 4999 }, (_, index) => ({
+      id: `base-${index + 1}`,
+      threadId: "t1",
+      turnId: "turn",
+      seq: index + 1,
+      kind: "agent:delta",
+      payload: {},
+      createdAt: index + 1
+    })) as RuntimeEvent[]
+    const incoming = [
+      { id: "new-5000", threadId: "t1", turnId: "turn", seq: 5000, kind: "agent:delta", payload: {}, createdAt: 5000 },
+      { id: "new-5001", threadId: "t1", turnId: "turn", seq: 5001, kind: "agent:done", payload: {}, createdAt: 5001 }
+    ] as RuntimeEvent[]
+
+    const merged = mergeRuntimeEventLists(base, incoming)
+
+    expect(merged).toHaveLength(5000)
+    expect(merged[0].id).toBe("base-2")
+    expect(merged[4999].id).toBe("new-5001")
+  })
+
   it("flushes only the first content delta key in the extracted utility", () => {
     const seen = new Set<string>()
     const event = {
@@ -88,6 +146,18 @@ describe("Workbench runtime event loading", () => {
     expect(taskHistoryCacheIndex).toBeGreaterThan(-1)
     expect(pendingReturnIndex).toBeGreaterThan(-1)
     expect(taskHistoryCacheIndex).toBeLessThan(pendingReturnIndex)
+  })
+
+  it("syncs SDD plan todo status without depending on the visible thread only", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+
+    expect(layout).toContain("const syncSddPlanTodoForRuntimeEvent = useCallback")
+    expect(layout).toContain("await window.electronAPI.todos.list(event.threadId)")
+    expect(layout).toContain("const todosForEventThread = [...persistedTodos, ...seedOnlyTodos]")
+    expect(layout).toContain("void syncSddPlanTodoForRuntimeEvent(event).catch(() => {})")
+    expect(layout).toContain("await syncSddPlanTodoForRuntimeEvent({")
+    expect(layout).toContain("latestTurn.status === 'completed'")
+    expect(layout).toContain("targetAgent, workspaceId]")
   })
 
   it("drives approval requests from runtime events instead of legacy dispatch stream", () => {
