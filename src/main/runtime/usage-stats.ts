@@ -192,6 +192,22 @@ export function usageRecordDetail(id: string): UsageRequestRecord | null {
   return buildUsageRecords().find(record => record.id === id) ?? null
 }
 
+export function currentUsageSpend(): { dailySpentUsd: number; monthlySpentUsd: number } {
+  const now = Date.now()
+  const todayStart = startOfDay(now)
+  const date = new Date(now)
+  const monthStart = new Date(date.getFullYear(), date.getMonth(), 1).getTime()
+  const records = buildUsageRecords()
+  let dailySpentUsd = 0
+  let monthlySpentUsd = 0
+  for (const record of records) {
+    if (record.costUsd == null) continue
+    if (record.createdAt >= todayStart) dailySpentUsd += record.costUsd
+    if (record.createdAt >= monthStart) monthlySpentUsd += record.costUsd
+  }
+  return { dailySpentUsd, monthlySpentUsd }
+}
+
 export function listUsagePricingRules(): UsagePricingRule[] {
   return pricingState().rules
 }
@@ -486,6 +502,7 @@ function filterUsageRecords(records: UsageRequestRecord[], filter: UsageRecordFi
   const out = records.filter(record => {
     if (from && record.createdAt < from) return false
     if (to && record.createdAt > to) return false
+    if (filter.threadId && record.threadId !== filter.threadId) return false
     if (filter.providerId && record.providerId !== filter.providerId) return false
     if (filter.modelId && record.modelId !== filter.modelId) return false
     if (filter.agentId && record.agentId !== filter.agentId) return false
@@ -496,6 +513,8 @@ function filterUsageRecords(records: UsageRequestRecord[], filter: UsageRecordFi
         record.providerId,
         record.modelId,
         record.agentId,
+        record.threadId,
+        record.turnId,
         record.promptPreview,
         record.responsePreview
       ].filter(Boolean).join(" ").toLowerCase()
@@ -704,7 +723,7 @@ function emptyUsageBucket(): UsageBucket {
   }
 }
 
-function priceUsage(providerId: string, modelId: string, usage: UsageTokenBreakdown): { costUsd: number | null; hasUnpriced: boolean; cacheSavingsUsd: number | null } {
+export function estimateUsageCost(providerId: string, modelId: string, usage: UsageTokenBreakdown): { costUsd: number | null; hasUnpriced: boolean; cacheSavingsUsd: number | null } {
   const rule = findPricingRule(providerId, modelId)
   if (!rule) return { costUsd: null, hasUnpriced: true, cacheSavingsUsd: null }
   const billableInput = billableInputTokens(providerId, modelId, usage)
@@ -721,6 +740,10 @@ function priceUsage(providerId: string, modelId: string, usage: UsageTokenBreakd
     ? usage.cacheReadTokens / 1_000_000 * Math.max(rule.inputUsdPerMillion - cacheReadPrice, 0)
     : 0
   return { costUsd, hasUnpriced: false, cacheSavingsUsd }
+}
+
+function priceUsage(providerId: string, modelId: string, usage: UsageTokenBreakdown): { costUsd: number | null; hasUnpriced: boolean; cacheSavingsUsd: number | null } {
+  return estimateUsageCost(providerId, modelId, usage)
 }
 
 /**
@@ -1034,7 +1057,7 @@ function inputSurfaceTokens(inputTokens: number, cacheReadTokens: number, cacheR
  * CJK characters are ~1.5 tokens each (GPT/Claude tokenizers), not 0.25
  * as the naive chars/4 would suggest. ASCII text remains ~4 chars/token.
  */
-function estimateTokens(text: string): number {
+export function estimateTokens(text: string): number {
   const normalized = text.replace(/\s+/g, ' ').trim()
   if (!normalized.length) return 0
   const cjkChars = (normalized.match(/[一-鿿぀-ゟ゠-ヿ가-힯]/g) || []).length

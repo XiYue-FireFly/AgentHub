@@ -32,6 +32,25 @@ export interface SchedulePreview {
   descriptionEn?: string
   agents?: string[]
   steps?: Array<{ id?: string; label?: string; labelZh?: string; labelEn?: string; agentId: string; prompt?: string; role?: string; mode?: string; dependsOn?: string[] }>
+  graph?: {
+    version: 1
+    nodes: Array<{
+      id: string
+      label: string
+      agentId: string
+      role: string
+      mode: string
+      promptTemplate?: string
+      approvalPolicy?: 'inherit' | 'auto' | 'ask' | 'require' | 'skip'
+    }>
+    edges: Array<{
+      id: string
+      from: string
+      to: string
+      artifactMode: 'summary' | 'full' | 'files' | 'custom'
+    }>
+    layout: Record<string, { x: number; y: number }>
+  }
 }
 
 export interface AgentState {

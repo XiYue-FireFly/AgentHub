@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events"
 import { store } from "../store"
+import { applyPluginActivityParsers } from "./plugin-contributions"
 import { toDispatcherMode } from "./schedules"
 import type {
   AgentRunNode,
@@ -330,7 +331,10 @@ export class WorkbenchRuntimeStore extends EventEmitter {
     const state = this.load()
     const seq = state.nextSeqByThread[threadId] ?? 1
     state.nextSeqByThread[threadId] = seq + 1
-    const event: RuntimeEvent = { id: id("event"), threadId, turnId, seq, kind, agentId, payload, createdAt: Date.now() }
+    const rawEvent: RuntimeEvent = { id: id("event"), threadId, turnId, seq, kind, agentId, payload, createdAt: Date.now() }
+    const event = applyPluginActivityParsers(rawEvent, {
+      workspaceRoot: typeof payload?.workspaceRoot === "string" ? payload.workspaceRoot : null
+    })
     state.events.push(event)
     state.events = pruneRuntimeEvents(state.events)
     this.emit("event", event)

@@ -4402,11 +4402,20 @@ button, input, textarea, select { letter-spacing: 0; }
   background: #fbfcfe;
   padding: 8px;
 }
+.wb-custom-step.selected {
+  border-color: rgba(50, 100, 190, 0.42);
+  box-shadow: 0 0 0 2px rgba(80, 130, 220, 0.08);
+}
 .wb-custom-step-head {
   display: grid;
-  grid-template-columns: 21px 22px 1fr 28px;
+  grid-template-columns: 21px 22px minmax(0, 1fr) auto 28px;
   align-items: center;
   gap: 7px;
+}
+.wb-custom-step-head small {
+  color: var(--wb-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
 }
 .wb-custom-step-head em {
   width: 19px;
@@ -4421,7 +4430,8 @@ button, input, textarea, select { letter-spacing: 0; }
   font-size: 10.5px;
 }
 .wb-custom-step-head input,
-.wb-custom-step-grid select {
+.wb-custom-step-grid select,
+.wb-custom-edge-modes select {
   min-width: 0;
   height: 28px;
   border: 1px solid var(--wb-line);
@@ -4444,9 +4454,89 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-custom-step-head button:disabled { opacity: 0.4; cursor: not-allowed; }
 .wb-custom-step-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
   margin-top: 7px;
+}
+.wb-dag-editor {
+  border: 1px solid var(--wb-line-soft);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgba(255,255,255,0.82), rgba(247,250,254,0.88));
+  overflow: hidden;
+}
+.wb-dag-canvas {
+  display: block;
+  width: 100%;
+  height: 260px;
+  touch-action: none;
+}
+.wb-dag-canvas marker path {
+  fill: rgba(82, 96, 117, 0.62);
+}
+.wb-dag-edge path {
+  fill: none;
+  stroke: rgba(82, 96, 117, 0.45);
+  stroke-width: 1.6;
+}
+.wb-dag-edge text {
+  fill: var(--wb-muted);
+  font-size: 10px;
+  paint-order: stroke;
+  stroke: rgba(255,255,255,0.9);
+  stroke-width: 3px;
+}
+.wb-dag-node {
+  cursor: grab;
+}
+.wb-dag-node:active {
+  cursor: grabbing;
+}
+.wb-dag-node rect {
+  fill: rgba(255,255,255,0.92);
+  stroke: rgba(50, 74, 112, 0.22);
+  stroke-width: 1;
+  filter: drop-shadow(0 8px 16px rgba(37, 51, 75, 0.10));
+}
+.wb-dag-node.selected rect {
+  stroke: rgba(45, 104, 214, 0.68);
+  stroke-width: 1.7;
+}
+.wb-dag-node text {
+  pointer-events: none;
+  fill: var(--wb-text);
+  font-size: 11px;
+}
+.wb-dag-node text:nth-of-type(2),
+.wb-dag-node text:nth-of-type(3) {
+  fill: var(--wb-muted);
+  font-size: 9.5px;
+}
+.wb-custom-prompt-template {
+  width: 100%;
+  min-height: 58px;
+  resize: vertical;
+  margin-top: 7px;
+  border: 1px solid var(--wb-line);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--wb-text);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 7px;
+}
+.wb-custom-edge-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 7px;
+}
+.wb-custom-edge-modes label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 108px;
+  align-items: center;
+  gap: 7px;
+  color: var(--wb-muted);
+  font-size: 11px;
 }
 .wb-custom-deps {
   display: flex;
@@ -5881,6 +5971,22 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-usage-filter-row .ah-input {
   flex: 1;
   min-width: 220px;
+}
+.wb-usage-filter-field {
+  display: grid;
+  gap: 4px;
+  min-width: 160px;
+  flex: 1 1 160px;
+}
+.wb-usage-filter-field span {
+  color: var(--wb-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.wb-usage-filter-field .ah-input {
+  width: 100%;
+  min-width: 0;
 }
 .wb-usage-body {
   margin-top: 14px;
@@ -8437,6 +8543,42 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-composer-schedule-select:focus {
   border-color: #b9ccf5;
   background: #f0f5ff;
+}
+
+.wb-budget-estimate {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  border: 1px solid rgba(85, 109, 148, 0.18);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.68);
+  color: var(--wb-muted);
+  padding: 2px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.wb-budget-estimate strong {
+  color: var(--wb-text);
+  font-size: 11px;
+}
+.wb-budget-estimate em {
+  font-style: normal;
+  color: #66758b;
+}
+.wb-budget-estimate small {
+  color: inherit;
+  font-size: 10.5px;
+}
+.wb-budget-estimate.warning {
+  border-color: rgba(190, 132, 28, 0.35);
+  background: rgba(255, 246, 224, 0.86);
+  color: #8a651b;
+}
+.wb-budget-estimate.blocked {
+  border-color: rgba(190, 70, 70, 0.38);
+  background: rgba(255, 235, 235, 0.9);
+  color: #9d3333;
 }
 
 :root[data-theme="dark"] .wb-composer-schedule-select {
@@ -14166,4 +14308,25 @@ html[data-motion="off"] .wb-processing-dots i {
   font-size: 14px;
   font-weight: 500;
   color: var(--tx-1);
+}
+
+.wb-update-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wb-line), transparent 25%);
+}
+
+.wb-update-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent), white 35%));
+  transition: width 160ms ease;
+}
+
+.wb-note-text {
+  color: var(--tx-3);
+  font-size: 12px;
+  line-height: 1.5;
 }

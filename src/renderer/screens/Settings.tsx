@@ -1584,6 +1584,24 @@ function UpdatesSettingsTab() {
     }
   }
 
+  const download = async () => {
+    setLoading(true)
+    try {
+      setStatus(await window.electronAPI.updates.download())
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const install = async () => {
+    setLoading(true)
+    try {
+      setStatus(await window.electronAPI.updates.install())
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const setChannel = async (channel: UpdateStatus['channel']) => {
     setStatus(await window.electronAPI.updates.setChannel(channel))
   }
@@ -1596,24 +1614,47 @@ function UpdatesSettingsTab() {
         <div className="wb-card-head">
           <div>
             <strong>{tr('版本与更新', 'Version & Updates')}</strong>
-            <span>{tr('检查当前版本、渠道和下载页。', 'Check the current version, channel, and download page.')}</span>
+            <span>{tr('检查、下载并安装 GitHub Release 更新。', 'Check, download, and install GitHub Release updates.')}</span>
           </div>
           <Seg value={status?.channel || 'stable'} onChange={value => setChannel(value as UpdateStatus['channel'])} options={[{ value: 'stable', label: tr('稳定版', 'Stable') }, { value: 'preview', label: tr('预览版', 'Preview') }]} />
         </div>
         <div className="wb-tool-summary-grid">
           <div><strong>{status?.version || '-'}</strong><span>{tr('当前版本', 'Current')}</span></div>
           <div><strong>{status?.latestVersion || '-'}</strong><span>{tr('最新版本', 'Latest')}</span></div>
+          <div><strong>{updateStateLabel(status)}</strong><span>{tr('状态', 'State')}</span></div>
           <div><strong>{status?.checkedAt ? new Date(status.checkedAt).toLocaleString() : '-'}</strong><span>{tr('检查时间', 'Checked at')}</span></div>
         </div>
+        {typeof status?.downloadProgress === 'number' && (
+          <div className="wb-update-progress" aria-label={tr('下载进度', 'Download progress')}>
+            <span style={{ width: `${Math.max(0, Math.min(100, status.downloadProgress))}%` }} />
+          </div>
+        )}
+        {status?.devMode && <div className="wb-note-text">{tr('开发/测试模式不会访问 GitHub；打包后的 Release 版本才会检查远程更新。', 'Development/test mode does not contact GitHub; packaged release builds check remote updates.')}</div>}
         {status?.error && <div className="wb-error-text">{status.error}</div>}
         <div className="wb-card-actions">
-          <button className="ah-btn sm primary" onClick={check} disabled={loading}>{loading ? tr('检查中', 'Checking') : tr('检查更新', 'Check updates')}</button>
+          <button className="ah-btn sm primary" onClick={check} disabled={loading || status?.canCheck === false}>{loading && status?.state === 'checking' ? tr('检查中', 'Checking') : tr('检查更新', 'Check updates')}</button>
+          <button className="ah-btn sm" onClick={download} disabled={loading || !status?.canDownload}>{status?.state === 'downloading' ? tr('下载中', 'Downloading') : tr('下载更新', 'Download update')}</button>
+          <button className="ah-btn sm" onClick={install} disabled={loading || !status?.canInstall}>{tr('重启安装', 'Restart to install')}</button>
           <button className="ah-btn sm" onClick={() => window.electronAPI.updates.openDownload()}>{tr('打开下载页', 'Open download page')}</button>
           <button className="ah-btn sm" onClick={refresh} disabled={loading}>{tr('刷新状态', 'Refresh status')}</button>
         </div>
       </div>
     </div>
   )
+}
+
+function updateStateLabel(status: UpdateStatus | null): string {
+  if (!status?.state) return '-'
+  const labels: Record<string, string> = {
+    idle: tr('空闲', 'Idle'),
+    checking: tr('检查中', 'Checking'),
+    available: tr('可更新', 'Available'),
+    'not-available': tr('已是最新', 'Up to date'),
+    downloading: tr('下载中', 'Downloading'),
+    downloaded: tr('已下载', 'Downloaded'),
+    error: tr('错误', 'Error')
+  }
+  return labels[status.state] || status.state
 }
 
 function DiagnosticsSettingsTab() {

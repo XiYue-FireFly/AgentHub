@@ -84,4 +84,33 @@ describe('budget-center', () => {
     expect(result.allowed).toBe(true)
     expect(result.warning).toBeDefined()
   })
+
+  it('blocks by estimated request cost and projected daily spend', async () => {
+    const { checkBudget, getBudgetConfig } = await import('../budget-center')
+    const perRequest = { ...getBudgetConfig(), perRequestMaxCostUsd: 0.05, blockWhenExceeded: true }
+    expect(checkBudget(perRequest, 0, 0, 1000, 0.06).allowed).toBe(false)
+
+    const daily = { ...getBudgetConfig(), dailyLimitUsd: 1, blockWhenExceeded: true }
+    expect(checkBudget(daily, 0.95, 0.95, 1000, 0.06).allowed).toBe(false)
+  })
+
+  it('estimates dispatch requests from schedule steps', async () => {
+    const { estimateDispatchBudget } = await import('../budget-center')
+    const estimate = estimateDispatchBudget({
+      prompt: 'Build a feature',
+      customSchedule: {
+        preset: 'custom',
+        label: 'Test',
+        description: 'Test',
+        steps: [
+          { id: 'a', label: 'A', agentId: 'codex', role: 'worker', mode: 'auto' },
+          { id: 'b', label: 'B', agentId: 'codex', role: 'reviewer', mode: 'auto', dependsOn: ['a'] }
+        ]
+      }
+    })
+
+    expect(estimate.estimatedRequests).toBe(2)
+    expect(estimate.totalTokens).toBeGreaterThan(0)
+    expect(estimate.check.allowed).toBe(true)
+  })
 })

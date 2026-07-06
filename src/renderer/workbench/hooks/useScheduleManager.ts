@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { DispatchPreset, SchedulePreview } from '../../src/store/workbench-store'
-import { defaultCustomSchedule, defaultSmartFiveRoleSchedule, normalizeStoredScheduleOverrides } from '../customSchedule'
+import { DispatchPreset } from '../../src/store/workbench-store'
+import {
+  defaultCustomSchedule,
+  defaultSmartFiveRoleSchedule,
+  normalizeScheduleForStorage,
+  normalizeStoredSchedule,
+  normalizeStoredScheduleOverrides
+} from '../customSchedule'
 
 const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
 const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
@@ -19,22 +25,26 @@ export function useScheduleManager() {
           window.electronAPI.store.get(SMART_SCHEDULE_STORE_KEY),
           window.electronAPI.store.get(SCHEDULE_OVERRIDES_STORE_KEY)
         ])
-        if (custom) setCustomScheduleState(custom as SchedulePreview)
-        if (smart) setSmartScheduleState(smart as SchedulePreview)
+        const customSchedule = normalizeStoredSchedule(custom, 'custom')
+        const smartSchedule = normalizeStoredSchedule(smart, 'firefly-custom')
+        if (customSchedule) setCustomScheduleState(customSchedule)
+        if (smartSchedule) setSmartScheduleState(smartSchedule)
         if (overrides) setScheduleOverridesState(normalizeStoredScheduleOverrides(overrides as Record<string, SchedulePreview>))
-      } catch { /* store 读取失败，使用默认值 */ }
+      } catch {
+        // Keep defaults if store read fails.
+      }
     }
     load()
   }, [])
 
   const setCustomSchedule = useCallback((schedule: SchedulePreview) => {
-    const next = { ...schedule, preset: 'custom' as DispatchPreset }
+    const next = normalizeScheduleForStorage({ ...schedule, preset: 'custom' as DispatchPreset })
     setCustomScheduleState(next)
     window.electronAPI.store.set(CUSTOM_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [])
 
   const setSmartSchedule = useCallback((schedule: SchedulePreview) => {
-    const next = { ...schedule, preset: 'firefly-custom' as DispatchPreset }
+    const next = normalizeScheduleForStorage({ ...schedule, preset: 'firefly-custom' as DispatchPreset })
     setSmartScheduleState(next)
     window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [])
@@ -48,7 +58,8 @@ export function useScheduleManager() {
       setSmartSchedule(schedule)
       return
     }
-    const next = { ...scheduleOverrides, [preset]: schedule }
+    const nextSchedule = normalizeScheduleForStorage({ ...schedule, preset })
+    const next = { ...scheduleOverrides, [preset]: nextSchedule }
     setScheduleOverridesState(next)
     window.electronAPI.store.set(SCHEDULE_OVERRIDES_STORE_KEY, next).catch(() => {})
   }, [scheduleOverrides, setCustomSchedule, setSmartSchedule])
@@ -56,7 +67,7 @@ export function useScheduleManager() {
   const scheduleForMode = useCallback((preset: DispatchPreset): SchedulePreview => {
     if (preset === 'custom') return customSchedule
     if (preset === 'firefly-custom') return smartSchedule
-    return scheduleOverrides[preset] || { preset }
+    return scheduleOverrides[preset] || normalizeScheduleForStorage({ ...defaultCustomSchedule(), preset })
   }, [customSchedule, smartSchedule, scheduleOverrides])
 
   return {

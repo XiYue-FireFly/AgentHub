@@ -152,9 +152,23 @@ describe('usage and budget IPC runtime validation', () => {
   it('rejects invalid budget payloads before side effects', async () => {
     const updateHandler = vi.fn(async () => validBudgetConfig)
     const checkHandler = vi.fn(async () => ({ allowed: true }))
+    const estimateHandler = vi.fn(async () => ({
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      estimatedRequests: 1,
+      estimatedCostUsd: null,
+      hasUnpriced: true,
+      dailySpentUsd: 0,
+      monthlySpentUsd: 0,
+      projectedDailyUsd: null,
+      projectedMonthlyUsd: null,
+      check: { allowed: true }
+    }))
     const { typedHandle } = await import('../typed-ipc')
     typedHandle('budget:update', updateHandler)
     typedHandle('budget:check', checkHandler)
+    typedHandle('budget:estimateDispatch', estimateHandler)
 
     expect(() => electronMock.handlers.get('budget:update')?.({}, {
       dailyLimitUsd: -1
@@ -182,9 +196,16 @@ describe('usage and budget IPC runtime validation', () => {
     expect(() => electronMock.handlers.get('budget:check')?.({}, 1, -2, 100)).toThrow(
       new IpcPayloadValidationError('budget:check', 'monthlySpent must be at least 0')
     )
+    expect(() => electronMock.handlers.get('budget:estimateDispatch')?.({}, {
+      prompt: '',
+      mode: 'unknown'
+    })).toThrow(
+      new IpcPayloadValidationError('budget:estimateDispatch', 'payload.prompt must not be empty')
+    )
 
     expect(updateHandler).not.toHaveBeenCalled()
     expect(checkHandler).not.toHaveBeenCalled()
+    expect(estimateHandler).not.toHaveBeenCalled()
   })
 
   it('passes valid usage and budget payloads through unchanged', async () => {
@@ -193,15 +214,30 @@ describe('usage and budget IPC runtime validation', () => {
     const pricingHandler = vi.fn(async () => validPricingResult)
     const budgetUpdateHandler = vi.fn(async () => validBudgetConfig)
     const budgetCheckHandler = vi.fn(async () => ({ allowed: true }))
+    const budgetEstimateHandler = vi.fn(async () => ({
+      inputTokens: 100,
+      outputTokens: 512,
+      totalTokens: 612,
+      estimatedRequests: 1,
+      estimatedCostUsd: 0.01,
+      hasUnpriced: false,
+      dailySpentUsd: 1,
+      monthlySpentUsd: 2,
+      projectedDailyUsd: 1.01,
+      projectedMonthlyUsd: 2.01,
+      check: { allowed: true }
+    }))
     const { typedHandle } = await import('../typed-ipc')
     typedHandle('usage:stats', statsHandler)
     typedHandle('usage:records', recordsHandler)
     typedHandle('usage:pricing:upsert', pricingHandler)
     typedHandle('budget:update', budgetUpdateHandler)
     typedHandle('budget:check', budgetCheckHandler)
+    typedHandle('budget:estimateDispatch', budgetEstimateHandler)
 
     const filter = {
       range: '30d' as const,
+      threadId: 'thread-1',
       providerId: 'openai',
       modelId: 'gpt-5.4',
       agentId: 'provider:openai',
@@ -226,13 +262,15 @@ describe('usage and budget IPC runtime validation', () => {
     await expect(electronMock.handlers.get('usage:pricing:upsert')?.({}, validPricingRule)).resolves.toMatchObject({ id: 'openai:gpt-5.4' })
     await expect(electronMock.handlers.get('usage:pricing:upsert')?.({}, { modelId: 'minimal-model' })).resolves.toMatchObject({ id: 'openai:gpt-5.4' })
     await expect(electronMock.handlers.get('budget:update')?.({}, patch)).resolves.toMatchObject({ version: 1 })
-    await expect(electronMock.handlers.get('budget:check')?.({}, 1.5, 20, 1000)).resolves.toEqual({ allowed: true })
+    await expect(electronMock.handlers.get('budget:check')?.({}, 1.5, 20, 1000, 0.02)).resolves.toEqual({ allowed: true })
+    await expect(electronMock.handlers.get('budget:estimateDispatch')?.({}, { prompt: 'hello', mode: 'auto', attachments: [] })).resolves.toMatchObject({ totalTokens: 612 })
 
     expect(statsHandler).toHaveBeenCalledWith({}, '30d', 'models')
     expect(recordsHandler).toHaveBeenCalledWith({}, filter, 2, 25)
     expect(pricingHandler).toHaveBeenCalledWith({}, validPricingRule)
     expect(pricingHandler).toHaveBeenCalledWith({}, { modelId: 'minimal-model' })
     expect(budgetUpdateHandler).toHaveBeenCalledWith({}, patch)
-    expect(budgetCheckHandler).toHaveBeenCalledWith({}, 1.5, 20, 1000)
+    expect(budgetCheckHandler).toHaveBeenCalledWith({}, 1.5, 20, 1000, 0.02)
+    expect(budgetEstimateHandler).toHaveBeenCalledWith({}, { prompt: 'hello', mode: 'auto', attachments: [] })
   })
 })

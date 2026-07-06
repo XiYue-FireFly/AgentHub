@@ -10,7 +10,7 @@ const electronMock = vi.hoisted(() => ({
 const pluginManagerMock = vi.hoisted(() => ({
   scanPlugins: vi.fn(() => []),
   validateManifest: vi.fn(() => ({ valid: true, errors: [] })),
-  getPluginContributions: vi.fn(() => ({ commands: [], skills: [], prompts: [] })),
+  getPluginContributions: vi.fn(() => ({ commands: [], slashCommands: [], skills: [], prompts: [], activityParsers: [], preDispatchHooks: [] })),
   listPluginRepositories: vi.fn(() => []),
   importPluginRepository: vi.fn(async () => ({ ok: true, path: 'plugins/example' }))
 }))
@@ -64,8 +64,11 @@ describe('plugins IPC', () => {
       version: '1.0.0',
       contributes: {
         commands: [{ id: 'example.run', label: 'Run example' }],
+        slashCommands: [{ id: 'example.slash', label: '/example', description: 'Example command', promptTemplate: 'Handle {{input}}' }],
         skills: [{ id: 'example.skill', path: 'skills/example/SKILL.md' }],
-        prompts: [{ id: 'example.prompt', name: 'Prompt', body: 'Hello' }]
+        prompts: [{ id: 'example.prompt', name: 'Prompt', body: 'Hello' }],
+        activityParsers: [{ id: 'todo', pattern: 'TODO: (.+)', fields: { title: '1' } }],
+        preDispatchHooks: [{ id: 'ctx', pattern: 'bug', appendContext: 'Check tests first.' }]
       }
     }
     const pluginEntry = {
@@ -78,7 +81,7 @@ describe('plugins IPC', () => {
 
     expect(electronMock.handlers.get('plugins:scan')?.({}, 'C:/workspace')).toEqual([])
     expect(electronMock.handlers.get('plugins:validate')?.({}, manifest)).toEqual({ valid: true, errors: [] })
-    expect(electronMock.handlers.get('plugins:contributions')?.({}, [pluginEntry])).toEqual({ commands: [], skills: [], prompts: [] })
+    expect(electronMock.handlers.get('plugins:contributions')?.({}, [pluginEntry])).toEqual({ commands: [], slashCommands: [], skills: [], prompts: [], activityParsers: [], preDispatchHooks: [] })
     await expect(electronMock.handlers.get('plugins:importRepository')?.({}, { url: 'https://github.com/acme/example.git' })).resolves.toEqual({
       ok: true,
       path: 'plugins/example'
@@ -158,6 +161,27 @@ describe('plugins IPC', () => {
       version: '1.0.0',
       contributes: { prompts: null }
     })).toThrow(new IpcPayloadValidationError('plugins:install', 'manifest.contributes.prompts must be an array'))
+
+    expect(() => electronMock.handlers.get('plugins:install')?.({}, {
+      id: 'bad-slash',
+      name: 'Bad',
+      version: '1.0.0',
+      contributes: { slashCommands: [{ id: 'bad', label: 'missing-slash' }] }
+    })).toThrow(new IpcPayloadValidationError('plugins:install', 'manifest.contributes.slashCommands[0].label must start with /'))
+
+    expect(() => electronMock.handlers.get('plugins:install')?.({}, {
+      id: 'bad-parser',
+      name: 'Bad',
+      version: '1.0.0',
+      contributes: { activityParsers: [{ id: 'bad', pattern: '[' }] }
+    })).toThrow(new IpcPayloadValidationError('plugins:install', 'manifest.contributes.activityParsers[0].pattern must be a valid RegExp'))
+
+    expect(() => electronMock.handlers.get('plugins:install')?.({}, {
+      id: 'bad-hook',
+      name: 'Bad',
+      version: '1.0.0',
+      contributes: { preDispatchHooks: [{ id: 'bad', requireApproval: 'yes' }] }
+    })).toThrow(new IpcPayloadValidationError('plugins:install', 'manifest.contributes.preDispatchHooks[0].requireApproval must be a boolean'))
 
     expect(() => electronMock.handlers.get('plugins:contributions')?.({}, [{
       id: 'global::bad',

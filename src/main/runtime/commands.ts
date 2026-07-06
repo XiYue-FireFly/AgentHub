@@ -2,6 +2,7 @@ import { getSkillManager } from "../skills/manager"
 import { getCachedLocalAgentStatuses, isUsableLocalAgentStatus } from "./local-agents"
 import { listSchedules } from "./schedules"
 import { listEccCommands } from "./ecc-commands"
+import { getEnabledContributions } from "./plugin-manager-enhanced"
 import type { WorkbenchCommand } from "./types"
 
 const BUILTIN_COMMANDS: WorkbenchCommand[] = [
@@ -60,7 +61,9 @@ export function listWorkbenchCommands(): WorkbenchCommand[] {
       payload: { agentId: agent.agentId, alias: agentAlias(agent.agentId) }
     }))
 
-  return [...BUILTIN_COMMANDS, ...listEccCommands(), ...schedules, ...skills, ...localAgents]
+  const pluginCommands = pluginSlashCommands()
+
+  return [...BUILTIN_COMMANDS, ...listEccCommands(), ...schedules, ...skills, ...localAgents, ...pluginCommands]
 }
 
 export function runWorkbenchCommand(input: { id?: string; text?: string }): WorkbenchCommand | null {
@@ -121,6 +124,42 @@ function agentAlias(agentId: string): string {
 
 function scheduleCommandLabel(preset: string): string {
   return `/schedule:${preset === "firefly-custom" ? "smart-five-role" : preset}`
+}
+
+function pluginSlashCommands(): WorkbenchCommand[] {
+  const contributions = getEnabledContributions()
+  const slashCommands = contributions.slashCommands || []
+  const legacyCommands = contributions.commands || []
+  const modern = slashCommands.map(command => ({
+    id: `plugin:${command.id}`,
+    label: normalizePluginCommandLabel(command.label),
+    description: command.description || command.promptTemplate || command.insertText || command.label,
+    category: "plugin" as const,
+    insertText: command.insertText || command.label + " ",
+    action: "insert" as const,
+    source: "plugin" as const,
+    payload: {
+      pluginCommandId: command.id,
+      template: command.promptTemplate ? "plugin-prompt" : "plugin-insert",
+      promptTemplate: command.promptTemplate
+    }
+  }))
+  const legacy = legacyCommands.map(command => ({
+    id: `plugin:${command.id}`,
+    label: normalizePluginCommandLabel(command.label),
+    description: command.label,
+    category: "plugin" as const,
+    insertText: command.label + " ",
+    action: "insert" as const,
+    source: "plugin" as const,
+    payload: { pluginCommandId: command.id, template: "plugin-insert" }
+  }))
+  return [...modern, ...legacy]
+}
+
+function normalizePluginCommandLabel(label: string): string {
+  const trimmed = label.trim()
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed.replace(/^@+/, "")}`
 }
 
 function normalizeCommandLabel(label: string): string {

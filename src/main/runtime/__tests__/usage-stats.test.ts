@@ -655,6 +655,48 @@ describe("P0-5 usage ledger persistence", () => {
     expect(memory["usage.ledger.v1"]).toHaveLength(10050)
   })
 
+  it("filters ledger records by thread, provider, model, and agent attribution", async () => {
+    const { usageRecords } = await import("../usage-stats")
+    memory["usage.ledger.v1"] = [
+      usageLedgerRecord({
+        eventId: "event-a",
+        threadId: "thread-a",
+        turnId: "turn-a",
+        agentId: "provider:openai",
+        providerId: "openai",
+        modelId: "gpt-4o",
+        source: "actual",
+        totalTokens: 12
+      }),
+      usageLedgerRecord({
+        eventId: "event-b",
+        threadId: "thread-b",
+        turnId: "turn-b",
+        agentId: "codex",
+        providerId: "local-cli",
+        modelId: "codex",
+        source: "estimated",
+        totalTokens: 8
+      })
+    ]
+
+    const page = usageRecords({
+      range: "all",
+      threadId: "thread-a",
+      providerId: "openai",
+      modelId: "gpt-4o",
+      agentId: "provider:openai"
+    }, 1, 10)
+
+    expect(page.total).toBe(1)
+    expect(page.records[0]).toMatchObject({
+      threadId: "thread-a",
+      providerId: "openai",
+      modelId: "gpt-4o",
+      agentId: "provider:openai"
+    })
+  })
+
   it("replaces an older estimated ledger record when real usage arrives for the same event", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const { usageRecords, usageStats } = await import("../usage-stats")

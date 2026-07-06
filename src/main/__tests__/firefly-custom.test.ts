@@ -120,7 +120,7 @@ describe("smart five-role custom schedule integration", () => {
     expect(source).toContain("function availableRouteAgents(agentIds?: string[])")
     expect(source).toContain("const allowed = agentIds?.length ? new Set(agentIds) : null")
     expect(source).toContain("makeRouteDecision(thread.id, turn.id, optimizedDispatchUserPrompt, dispatchPlanBase.routeAgentIds)")
-    expect(source).toContain("makeRouteDecision(thread.id, created.turn.id, retryOptimization.optimizedPrompt, retryPlanBase.routeAgentIds)")
+    expect(source).toContain("makeRouteDecision(thread.id, created.turn.id, retryOptimizedPrompt, retryPlanBase.routeAgentIds)")
     expect(plan.routeAgentIds).toEqual(["codex", "claude"])
     expect(plan.schedule).toBe(customSchedule)
     expect(scheduleHelpers).toContain("function scheduleStepsWithRouteDecision(steps: ScheduleStep[], decision?: RouteDecision): ScheduleStep[]")

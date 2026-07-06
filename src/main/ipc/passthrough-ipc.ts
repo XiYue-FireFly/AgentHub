@@ -1,4 +1,4 @@
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow, app, type IpcMainInvokeEvent } from 'electron'
 import { configureLocalAgent, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from '../runtime/local-agents'
 import { readLocalModelConfig, scanLocalModels } from '../runtime/local-models'
 import { getRunTimeoutMs, setRunTimeoutMs, RUN_TIMEOUT_DEFAULTS } from '../runtime/run-preferences'
@@ -8,7 +8,7 @@ import { listSchedules, previewSchedule } from '../runtime/schedules'
 import { listWorkbenchCommands, runWorkbenchCommand } from '../runtime/commands'
 import { eccCommandStatus, updateEccCommands } from '../runtime/ecc-commands'
 import { clearThreadTodos, deleteThreadTodo, listThreadTodos, setThreadTodos, syncTodosFromMarkdown, upsertThreadTodo } from '../runtime/todos'
-import { checkUpdates, openUpdateDownload, setUpdateChannel, updateStatus } from '../runtime/updates'
+import { checkUpdates, downloadUpdate, installUpdate, openUpdateDownload, setUpdateChannel, updateStatus } from '../runtime/updates'
 import { listPrompts, getPrompt, upsertPrompt, deletePrompt, searchPrompts, getSlashCommands, incrementUseCount, seedDefaultPrompts } from '../runtime/prompt-library'
 import {
   deleteUsagePricingRule,
@@ -24,7 +24,7 @@ import { listTeamPresets, saveTeamPreset, deleteTeamPreset, getDefaultFireflyTea
 import { detectTechStack, generateWorkspaceSummary } from '../runtime/project-knowledge-enhanced'
 import { runDiagnosticSuite } from '../runtime/diagnostics-suite'
 import { createFireflyState, completeRole, getRoleContext, isComplete, getFinalOutput } from '../runtime/firefly-state-machine'
-import { getBudgetConfig, checkBudget, updateBudgetConfig } from '../runtime/budget-center'
+import { getBudgetConfig, checkBudget, updateBudgetConfig, estimateDispatchBudget } from '../runtime/budget-center'
 import { registerModelsIpc } from './models-ipc'
 import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from '../runtime/inline-edit'
 import { appEventLogPath, readRecentAppEventLogs } from '../runtime/app-event-log'
@@ -43,25 +43,29 @@ interface PassthroughDeps {
   registerAgentsFromBindings: () => void
   getWorkspaceManager: () => any
   getMainWindow: () => BrowserWindow | null
+  getActiveWindow?: () => BrowserWindow | null
+  openWorkbench?: () => BrowserWindow
 }
 
 export function registerPassthroughIpc(deps: PassthroughDeps): void {
-  const { memory, store, runtimeStore, registry, providerMgr, resolveAppVersionFromMain, registerAgentsFromBindings, getWorkspaceManager, getMainWindow } = deps
+  const { memory, runtimeStore, registry, providerMgr, resolveAppVersionFromMain, registerAgentsFromBindings, getWorkspaceManager, getMainWindow } = deps
+  const windowForEvent = (event: IpcMainInvokeEvent): BrowserWindow | null =>
+    BrowserWindow.fromWebContents(event.sender) || deps.getActiveWindow?.() || getMainWindow()
 
   // Window controls
-  typedHandle("win:minimize", () => { getMainWindow()?.minimize() })
-  typedHandle("win:maximizeToggle", () => {
-    const win = getMainWindow()
+  typedHandle("win:minimize", (event) => { windowForEvent(event)?.minimize() })
+  typedHandle("win:maximizeToggle", (event) => {
+    const win = windowForEvent(event)
     if (!win) return false
     if (win.isMaximized()) win.unmaximize()
     else win.maximize()
     return win.isMaximized()
   })
-  typedHandle("win:isMaximized", () => getMainWindow()?.isMaximized() ?? false)
-  typedHandle("win:close", () => {
-    if (store.get("minimizeToTray") !== false) getMainWindow()?.hide()
-    else getMainWindow()?.close()
+  typedHandle("win:isMaximized", (event) => windowForEvent(event)?.isMaximized() ?? false)
+  typedHandle("win:close", (event) => {
+    windowForEvent(event)?.close()
   })
+  typedHandle("windows:openWorkbench", () => ({ id: deps.openWorkbench?.().id ?? -1 }))
 
   typedHandle("localAgents:detect", () => refreshLocalAgentStatusCache())
   typedHandle("localAgents:status", () => getCachedLocalAgentStatuses())
@@ -100,6 +104,8 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
   typedHandle("updates:status", () => updateStatus())
   typedHandle("updates:check", (_event, channel) => checkUpdates(channel))
   typedHandle("updates:setChannel", (_event, channel) => setUpdateChannel(channel))
+  typedHandle("updates:download", () => downloadUpdate())
+  typedHandle("updates:install", () => installUpdate())
   typedHandle("updates:openDownload", () => openUpdateDownload())
 
   typedHandle("usage:stats", (_event, range, view) => usageStats(range, view))
@@ -145,7 +151,14 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
 
   typedHandle("budget:get", () => getBudgetConfig())
   typedHandle("budget:update", (_e, patch) => updateBudgetConfig(patch))
-  typedHandle("budget:check", (_e, dailySpent, monthlySpent, requestTokens) => checkBudget(getBudgetConfig(), dailySpent, monthlySpent, requestTokens))
+  typedHandle("budget:check", (_e, dailySpent, monthlySpent, requestTokens, requestCostUsd) => checkBudget(getBudgetConfig(), dailySpent, monthlySpent, requestTokens, requestCostUsd))
+  typedHandle("budget:estimateDispatch", (_e, payload) => estimateDispatchBudget({
+    prompt: payload.prompt,
+    attachments: payload.attachments,
+    customSchedule: payload.customSchedule,
+    modelSelection: payload.modelSelection || null,
+    targetAgent: payload.targetAgent || null
+  }))
 
   typedHandle("inlineEdit:buildPrompt", (_e, request) => buildInlineEditPrompt(request))
   typedHandle("inlineEdit:validate", (_e, original, replacement) => validateEditResult(original, replacement))

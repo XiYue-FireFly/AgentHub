@@ -34,6 +34,17 @@ vi.mock("../../skills/manager", () => ({
   getSkillManager: () => ({ list: () => [] })
 }))
 
+vi.mock("../plugin-manager-enhanced", () => ({
+  getEnabledContributions: () => ({
+    slashCommands: [{
+      id: "summarize",
+      label: "/plugin-summary",
+      description: "Summarize with plugin template",
+      promptTemplate: "Summarize {{input}}"
+    }]
+  })
+}))
+
 describe("workbench command parsing", () => {
   it("parses slash commands and agent aliases", () => {
     expect(parseCommandText("/terminal npm test")).toEqual({ label: "/terminal", args: "npm test" })
@@ -85,5 +96,16 @@ describe("workbench command parsing", () => {
     const agentCommands = listWorkbenchCommands().filter(command => command.source === "local-agent")
 
     expect(agentCommands.map(command => command.label)).toEqual(["/agent:codex"])
+  })
+
+  it("injects manifest-only plugin slash commands into the slash palette", () => {
+    const command = listWorkbenchCommands().find(command => command.source === "plugin" && command.label === "/plugin-summary")
+
+    expect(command).toMatchObject({
+      action: "insert",
+      category: "plugin",
+      payload: { template: "plugin-prompt", promptTemplate: "Summarize {{input}}" }
+    })
+    expect(runWorkbenchCommand({ text: "/plugin-summary current file" })?.source).toBe("plugin")
   })
 })

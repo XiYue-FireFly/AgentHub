@@ -1202,6 +1202,14 @@ export interface PluginCommandContribution {
   label: string
 }
 
+export interface PluginSlashCommandContribution {
+  id: string
+  label: string
+  description?: string
+  insertText?: string
+  promptTemplate?: string
+}
+
 export interface PluginSkillContribution {
   id: string
   path: string
@@ -1214,10 +1222,30 @@ export interface PluginPromptContribution {
   body: string
 }
 
+export interface PluginActivityParserContribution {
+  id: string
+  pattern: string
+  flags?: string
+  kind?: string
+  fields?: Record<string, string>
+}
+
+export interface PluginPreDispatchHookContribution {
+  id: string
+  pattern?: string
+  appendContext?: string
+  denyMessage?: string
+  requireApproval?: boolean
+  message?: string
+}
+
 export interface PluginContributionSet {
   commands?: PluginCommandContribution[]
+  slashCommands?: PluginSlashCommandContribution[]
   skills?: PluginSkillContribution[]
   prompts?: PluginPromptContribution[]
+  activityParsers?: PluginActivityParserContribution[]
+  preDispatchHooks?: PluginPreDispatchHookContribution[]
 }
 
 export interface PluginManifestLike {
@@ -1245,8 +1273,11 @@ export interface PluginValidationResult {
 
 export interface PluginContributionsResult {
   commands: Array<PluginCommandContribution & { pluginId: string }>
+  slashCommands: Array<PluginSlashCommandContribution & { pluginId: string }>
   skills: Array<PluginSkillContribution & { pluginId: string }>
   prompts: Array<PluginPromptContribution & { pluginId: string }>
+  activityParsers: Array<PluginActivityParserContribution & { pluginId: string }>
+  preDispatchHooks: Array<PluginPreDispatchHookContribution & { pluginId: string }>
 }
 
 export interface PluginRepositoryPresetLike {
@@ -1378,7 +1409,7 @@ export type DispatchPreset =
   | 'firefly-custom'
   | 'custom'
 
-export type WorkbenchCommandCategory = 'session' | 'agent' | 'schedule' | 'tool' | 'skill' | 'workspace' | 'ecc'
+export type WorkbenchCommandCategory = 'session' | 'agent' | 'schedule' | 'tool' | 'skill' | 'workspace' | 'ecc' | 'plugin'
 export type WorkbenchCommandAction =
   | 'insert'
   | 'new-thread'
@@ -1392,7 +1423,7 @@ export type WorkbenchCommandAction =
   | 'use-agent'
   | 'set-goal'
   | 'run-loop'
-export type WorkbenchCommandSource = 'builtin' | 'schedule' | 'skill' | 'local-agent' | 'ecc'
+export type WorkbenchCommandSource = 'builtin' | 'schedule' | 'skill' | 'local-agent' | 'ecc' | 'plugin'
 
 export interface WorkbenchCommand {
   id: string
@@ -1414,6 +1445,8 @@ export interface WorkbenchCommandRunInput {
 
 export type ScheduleStepRole = 'lead' | 'worker' | 'reviewer' | 'synthesizer' | 'target' | 'router' | 'executor' | 'gatekeeper'
 export type ScheduleStepMode = 'auto' | 'broadcast' | 'chain' | 'orchestrate'
+export type ScheduleArtifactMode = 'summary' | 'full' | 'files' | 'custom'
+export type ScheduleApprovalPolicy = 'inherit' | 'auto' | 'ask' | 'require' | 'skip'
 
 export interface ScheduleStep {
   id: string
@@ -1426,6 +1459,30 @@ export interface ScheduleStep {
   dependsOn?: string[]
 }
 
+export interface ScheduleGraphNode {
+  id: string
+  label: string
+  agentId: string
+  role: ScheduleStepRole
+  mode: ScheduleStepMode
+  promptTemplate?: string
+  approvalPolicy?: ScheduleApprovalPolicy
+}
+
+export interface ScheduleGraphEdge {
+  id: string
+  from: string
+  to: string
+  artifactMode: ScheduleArtifactMode
+}
+
+export interface ScheduleGraph {
+  version: 1
+  nodes: ScheduleGraphNode[]
+  edges: ScheduleGraphEdge[]
+  layout: Record<string, { x: number; y: number }>
+}
+
 export interface SchedulePreview {
   preset: DispatchPreset
   label: string
@@ -1435,6 +1492,7 @@ export interface SchedulePreview {
   descriptionZh?: string
   descriptionEn?: string
   steps: ScheduleStep[]
+  graph?: ScheduleGraph
 }
 
 export interface EccCommandStatus {
@@ -1450,11 +1508,21 @@ export type UpdateChannel = 'stable' | 'preview'
 export interface UpdateStatus {
   version: string
   channel: UpdateChannel
+  state?: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
   checking: boolean
+  available?: boolean
+  downloaded?: boolean
   latestVersion?: string
   downloadUrl?: string
+  downloadProgress?: number
+  releaseName?: string
+  releaseDate?: string
   error?: string
   checkedAt?: number
+  canCheck?: boolean
+  canDownload?: boolean
+  canInstall?: boolean
+  devMode?: boolean
 }
 
 export type ReleaseCheckStatus = 'pass' | 'fail' | 'warn' | 'skip'
@@ -1784,6 +1852,20 @@ export interface BudgetCheckResultLike {
   warning?: string
 }
 
+export interface BudgetEstimateLike {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  estimatedRequests: number
+  estimatedCostUsd: number | null
+  hasUnpriced: boolean
+  dailySpentUsd: number
+  monthlySpentUsd: number
+  projectedDailyUsd: number | null
+  projectedMonthlyUsd: number | null
+  check: BudgetCheckResultLike
+}
+
 export interface InlineEditRangeLike {
   filePath: string
   startLine: number
@@ -1942,6 +2024,7 @@ export interface UsageRecordFilterLike {
   range?: UsageRange
   from?: number
   to?: number
+  threadId?: string
   providerId?: string
   modelId?: string
   agentId?: string
@@ -2132,6 +2215,10 @@ export interface IpcContract {
   'win:close': {
     args: []
     result: void
+  }
+  'windows:openWorkbench': {
+    args: []
+    result: { id: number }
   }
   'hub:status': {
     args: []
@@ -2571,6 +2658,14 @@ export interface IpcContract {
   }
   'updates:setChannel': {
     args: [channel: UpdateChannel]
+    result: UpdateStatus
+  }
+  'updates:download': {
+    args: []
+    result: UpdateStatus
+  }
+  'updates:install': {
+    args: []
     result: UpdateStatus
   }
   'updates:openDownload': {
@@ -3146,8 +3241,12 @@ export interface IpcContract {
     result: BudgetConfigLike
   }
   'budget:check': {
-    args: [dailySpent: number, monthlySpent: number, requestTokens: number]
+    args: [dailySpent: number, monthlySpent: number, requestTokens: number, requestCostUsd?: number]
     result: BudgetCheckResultLike
+  }
+  'budget:estimateDispatch': {
+    args: [payload: TurnCreateInputLike]
+    result: BudgetEstimateLike
   }
   'inlineEdit:buildPrompt': {
     args: [request: InlineEditRequestLike]
@@ -3505,6 +3604,8 @@ const FIREFLY_PHASES = [
 const DISPATCH_PRESETS = ['auto', 'broadcast', 'chain', 'orchestrate', 'lead-workers', 'parallel-review', 'firefly-custom', 'custom'] as const
 const SCHEDULE_STEP_ROLES = ['lead', 'worker', 'reviewer', 'synthesizer', 'target', 'router', 'executor', 'gatekeeper'] as const
 const SCHEDULE_STEP_MODES = ['auto', 'broadcast', 'chain', 'orchestrate'] as const
+const SCHEDULE_ARTIFACT_MODES = ['summary', 'full', 'files', 'custom'] as const
+const SCHEDULE_APPROVAL_POLICIES = ['inherit', 'auto', 'ask', 'require', 'skip'] as const
 const AGENTIC_MODES = ['all', 'selected'] as const
 const AGENTIC_APPROVAL_PRESETS = ['read-only', 'auto', 'full-access', 'ask-all', 'custom'] as const
 const AGENTIC_GUARDED_TOOLS = ['write', 'exec'] as const
@@ -3987,6 +4088,7 @@ function validateUsageFilter(value: unknown, label = 'filter'): string | null {
     validateEnum(record.range, `${label}.range`, ['all', '90d', '30d', '7d'], { optional: true }) ||
     validateNumber(record.from, `${label}.from`, { optional: true, integer: true, min: 0 }) ||
     validateNumber(record.to, `${label}.to`, { optional: true, integer: true, min: 0 }) ||
+    validateBoundedString(record.threadId, `${label}.threadId`, { optional: true, max: MAX_USAGE_ID_CHARS }) ||
     validateBoundedString(record.providerId, `${label}.providerId`, { optional: true, max: MAX_USAGE_ID_CHARS }) ||
     validateBoundedString(record.modelId, `${label}.modelId`, { optional: true, max: MAX_USAGE_ID_CHARS }) ||
     validateBoundedString(record.agentId, `${label}.agentId`, { optional: true, max: MAX_USAGE_ID_CHARS }) ||
@@ -4038,7 +4140,8 @@ function validateBudgetCheck(args: readonly unknown[]): string | null {
   return (
     validateNumber(args[0], 'dailySpent', { min: 0, max: MAX_BUDGET_USD }) ||
     validateNumber(args[1], 'monthlySpent', { min: 0, max: MAX_BUDGET_USD }) ||
-    validateNumber(args[2], 'requestTokens', { integer: true, min: 0, max: MAX_BUDGET_TOKENS })
+    validateNumber(args[2], 'requestTokens', { integer: true, min: 0, max: MAX_BUDGET_TOKENS }) ||
+    validateNumber(args[3], 'requestCostUsd', { optional: true, min: 0, max: MAX_BUDGET_USD })
   )
 }
 
@@ -4513,6 +4616,109 @@ function validateScheduleStep(value: unknown, label: string): string | null {
   )
 }
 
+function validateScheduleGraphNode(value: unknown, label: string): string | null {
+  const recordIssue = validateRecord(value, label)
+  if (recordIssue) return recordIssue
+  const record = value as Record<string, unknown>
+  return (
+    validateBoundedString(record.id, `${label}.id`, { max: 256 }) ||
+    validateBoundedString(record.label, `${label}.label`, { max: 512 }) ||
+    validateBoundedString(record.agentId, `${label}.agentId`, { max: 256 }) ||
+    validateEnum(record.role, `${label}.role`, SCHEDULE_STEP_ROLES) ||
+    validateEnum(record.mode, `${label}.mode`, SCHEDULE_STEP_MODES) ||
+    validateBoundedString(record.promptTemplate, `${label}.promptTemplate`, { optional: true, allowEmpty: true, max: 64 * 1024 }) ||
+    validateEnum(record.approvalPolicy, `${label}.approvalPolicy`, SCHEDULE_APPROVAL_POLICIES, { optional: true })
+  )
+}
+
+function validateScheduleGraphEdge(value: unknown, label: string): string | null {
+  const recordIssue = validateRecord(value, label)
+  if (recordIssue) return recordIssue
+  const record = value as Record<string, unknown>
+  return (
+    validateBoundedString(record.id, `${label}.id`, { max: 256 }) ||
+    validateBoundedString(record.from, `${label}.from`, { max: 256 }) ||
+    validateBoundedString(record.to, `${label}.to`, { max: 256 }) ||
+    validateEnum(record.artifactMode, `${label}.artifactMode`, SCHEDULE_ARTIFACT_MODES)
+  )
+}
+
+function validateScheduleGraph(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) return null
+  const recordIssue = validateRecord(value, label)
+  if (recordIssue) return recordIssue
+  const record = value as Record<string, unknown>
+  const versionIssue = validateNumber(record.version, `${label}.version`, { integer: true, min: 1, max: 1 })
+  if (versionIssue) return versionIssue
+  if (!Array.isArray(record.nodes)) return `${label}.nodes must be an array`
+  if (!Array.isArray(record.edges)) return `${label}.edges must be an array`
+  if (record.nodes.length > MAX_SCHEDULE_STEPS) return `${label}.nodes must contain at most ${MAX_SCHEDULE_STEPS} items`
+  if (record.edges.length > MAX_SCHEDULE_STEPS * MAX_SCHEDULE_DEPENDS) return `${label}.edges has too many items`
+
+  const nodeIds = new Set<string>()
+  for (const [index, node] of record.nodes.entries()) {
+    const issue = validateScheduleGraphNode(node, `${label}.nodes[${index}]`)
+    if (issue) return issue
+    const id = (node as Record<string, unknown>).id
+    if (typeof id === 'string') {
+      if (nodeIds.has(id)) return `${label}.nodes must not contain duplicate node id ${id}`
+      nodeIds.add(id)
+    }
+  }
+
+  const edgeIds = new Set<string>()
+  const adjacency = new Map<string, string[]>()
+  for (const [index, edge] of record.edges.entries()) {
+    const issue = validateScheduleGraphEdge(edge, `${label}.edges[${index}]`)
+    if (issue) return issue
+    const item = edge as Record<string, unknown>
+    const id = item.id
+    const from = item.from
+    const to = item.to
+    if (typeof id === 'string') {
+      if (edgeIds.has(id)) return `${label}.edges must not contain duplicate edge id ${id}`
+      edgeIds.add(id)
+    }
+    if (typeof from === 'string' && !nodeIds.has(from)) return `${label}.edges[${index}].from references missing node ${from}`
+    if (typeof to === 'string' && !nodeIds.has(to)) return `${label}.edges[${index}].to references missing node ${to}`
+    if (typeof from === 'string' && typeof to === 'string') {
+      if (from === to) return `${label}.edges[${index}] must not point to itself`
+      adjacency.set(from, [...(adjacency.get(from) || []), to])
+    }
+  }
+
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const visit = (nodeId: string): boolean => {
+    if (visiting.has(nodeId)) return true
+    if (visited.has(nodeId)) return false
+    visiting.add(nodeId)
+    for (const next of adjacency.get(nodeId) || []) {
+      if (visit(next)) return true
+    }
+    visiting.delete(nodeId)
+    visited.add(nodeId)
+    return false
+  }
+  for (const nodeId of nodeIds) {
+    if (visit(nodeId)) return `${label}.edges must not contain cycles`
+  }
+
+  const layoutIssue = validateRecord(record.layout, `${label}.layout`)
+  if (layoutIssue) return layoutIssue
+  const layout = record.layout as Record<string, unknown>
+  for (const [nodeId, point] of Object.entries(layout)) {
+    if (!nodeIds.has(nodeId)) return `${label}.layout contains unknown node ${nodeId}`
+    const pointIssue = validateRecord(point, `${label}.layout.${nodeId}`)
+    if (pointIssue) return pointIssue
+    const pointRecord = point as Record<string, unknown>
+    const issue = validateNumber(pointRecord.x, `${label}.layout.${nodeId}.x`, { min: -100000, max: 100000 }) ||
+      validateNumber(pointRecord.y, `${label}.layout.${nodeId}.y`, { min: -100000, max: 100000 })
+    if (issue) return issue
+  }
+  return null
+}
+
 function validateSchedulePreview(value: unknown, label = 'payload.customSchedule'): string | null {
   if (value === undefined || value === null) return null
   const recordIssue = validateRecord(value, label)
@@ -4540,6 +4746,8 @@ function validateSchedulePreview(value: unknown, label = 'payload.customSchedule
       seen.add(id)
     }
   }
+  const graphIssue = validateScheduleGraph(record.graph, `${label}.graph`)
+  if (graphIssue) return graphIssue
   return null
 }
 
@@ -5549,6 +5757,26 @@ function validatePluginContributions(value: unknown, label: string, options: { o
       if (fieldIssue) return fieldIssue
     }
   }
+  if (hasOwn(record, 'slashCommands')) {
+    if (!Array.isArray(record.slashCommands)) return `${label}.slashCommands must be an array`
+    if (record.slashCommands.length > MAX_PLUGIN_CONTRIBUTIONS) return `${label}.slashCommands must contain at most ${MAX_PLUGIN_CONTRIBUTIONS} items`
+    for (const [index, command] of record.slashCommands.entries()) {
+      const commandIssue = validateRecord(command, `${label}.slashCommands[${index}]`)
+      if (commandIssue) return commandIssue
+      const commandRecord = command as Record<string, unknown>
+      const fieldIssue = (
+        validateString(commandRecord.id, `${label}.slashCommands[${index}].id`) ||
+        validateBoundedString(commandRecord.label, `${label}.slashCommands[${index}].label`, { max: 128 }) ||
+        validatePresentBoundedString(commandRecord, 'description', `${label}.slashCommands[${index}].description`, { allowEmpty: true, max: 2048 }) ||
+        validatePresentBoundedString(commandRecord, 'insertText', `${label}.slashCommands[${index}].insertText`, { allowEmpty: true, max: 4096 }) ||
+        validatePresentBoundedString(commandRecord, 'promptTemplate', `${label}.slashCommands[${index}].promptTemplate`, { allowEmpty: true, max: 256 * 1024 })
+      )
+      if (fieldIssue) return fieldIssue
+      const slashLabel = String(commandRecord.label || '')
+      if (!slashLabel.startsWith('/')) return `${label}.slashCommands[${index}].label must start with /`
+      if (/\s/.test(slashLabel)) return `${label}.slashCommands[${index}].label must not contain whitespace`
+    }
+  }
   if (hasOwn(record, 'skills')) {
     if (!Array.isArray(record.skills)) return `${label}.skills must be an array`
     if (record.skills.length > MAX_PLUGIN_CONTRIBUTIONS) return `${label}.skills must contain at most ${MAX_PLUGIN_CONTRIBUTIONS} items`
@@ -5577,6 +5805,57 @@ function validatePluginContributions(value: unknown, label: string, options: { o
         validateBoundedString(promptRecord.body, `${label}.prompts[${index}].body`, { allowEmpty: true, max: 256 * 1024 })
       )
       if (fieldIssue) return fieldIssue
+    }
+  }
+  if (hasOwn(record, 'activityParsers')) {
+    if (!Array.isArray(record.activityParsers)) return `${label}.activityParsers must be an array`
+    if (record.activityParsers.length > MAX_PLUGIN_CONTRIBUTIONS) return `${label}.activityParsers must contain at most ${MAX_PLUGIN_CONTRIBUTIONS} items`
+    for (const [index, parser] of record.activityParsers.entries()) {
+      const parserIssue = validateRecord(parser, `${label}.activityParsers[${index}]`)
+      if (parserIssue) return parserIssue
+      const parserRecord = parser as Record<string, unknown>
+      const fieldIssue = (
+        validateString(parserRecord.id, `${label}.activityParsers[${index}].id`) ||
+        validateBoundedString(parserRecord.pattern, `${label}.activityParsers[${index}].pattern`, { max: 4096 }) ||
+        validatePresentBoundedString(parserRecord, 'flags', `${label}.activityParsers[${index}].flags`, { allowEmpty: true, max: 8 }) ||
+        validatePresentBoundedString(parserRecord, 'kind', `${label}.activityParsers[${index}].kind`, { allowEmpty: true, max: 128 })
+      )
+      if (fieldIssue) return fieldIssue
+      const flags = String(parserRecord.flags || '')
+      if (/[^dgimsuvy]/.test(flags)) return `${label}.activityParsers[${index}].flags contains unsupported RegExp flags`
+      try { new RegExp(String(parserRecord.pattern), flags) } catch { return `${label}.activityParsers[${index}].pattern must be a valid RegExp` }
+      if (parserRecord.fields !== undefined && parserRecord.fields !== null) {
+        const fieldsIssue = validateRecord(parserRecord.fields, `${label}.activityParsers[${index}].fields`)
+        if (fieldsIssue) return fieldsIssue
+        for (const [key, value] of Object.entries(parserRecord.fields as Record<string, unknown>)) {
+          const fieldIssue = (
+            validateBoundedString(key, `${label}.activityParsers[${index}].fields key`, { max: 128 }) ||
+            validateBoundedString(value, `${label}.activityParsers[${index}].fields.${key}`, { max: 128 })
+          )
+          if (fieldIssue) return fieldIssue
+        }
+      }
+    }
+  }
+  if (hasOwn(record, 'preDispatchHooks')) {
+    if (!Array.isArray(record.preDispatchHooks)) return `${label}.preDispatchHooks must be an array`
+    if (record.preDispatchHooks.length > MAX_PLUGIN_CONTRIBUTIONS) return `${label}.preDispatchHooks must contain at most ${MAX_PLUGIN_CONTRIBUTIONS} items`
+    for (const [index, hook] of record.preDispatchHooks.entries()) {
+      const hookIssue = validateRecord(hook, `${label}.preDispatchHooks[${index}]`)
+      if (hookIssue) return hookIssue
+      const hookRecord = hook as Record<string, unknown>
+      const fieldIssue = (
+        validateString(hookRecord.id, `${label}.preDispatchHooks[${index}].id`) ||
+        validatePresentBoundedString(hookRecord, 'pattern', `${label}.preDispatchHooks[${index}].pattern`, { allowEmpty: true, max: 4096 }) ||
+        validatePresentBoundedString(hookRecord, 'appendContext', `${label}.preDispatchHooks[${index}].appendContext`, { allowEmpty: true, max: 256 * 1024 }) ||
+        validatePresentBoundedString(hookRecord, 'denyMessage', `${label}.preDispatchHooks[${index}].denyMessage`, { allowEmpty: true, max: 2048 }) ||
+        validatePresentBoundedString(hookRecord, 'message', `${label}.preDispatchHooks[${index}].message`, { allowEmpty: true, max: 2048 }) ||
+        validateBoolean(hookRecord.requireApproval, `${label}.preDispatchHooks[${index}].requireApproval`, { optional: true })
+      )
+      if (fieldIssue) return fieldIssue
+      if (typeof hookRecord.pattern === 'string' && hookRecord.pattern.trim()) {
+        try { new RegExp(hookRecord.pattern, 'i') } catch { return `${label}.preDispatchHooks[${index}].pattern must be a valid RegExp` }
+      }
     }
   }
   return null
@@ -5730,6 +6009,9 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
   'win:close': {
     validate: validateNoArgs
   },
+  'windows:openWorkbench': {
+    validate: validateNoArgs
+  },
   'app:openExternal': {
     validate: args => validateString(args[0], 'url'),
     response: (_args, error): AppOpenExternalResultLike => ({ ok: false, error })
@@ -5867,6 +6149,12 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
     validate: validateNoArgs
   },
   'updates:openDownload': {
+    validate: validateNoArgs
+  },
+  'updates:download': {
+    validate: validateNoArgs
+  },
+  'updates:install': {
     validate: validateNoArgs
   },
   'routes:explain': {
@@ -6076,6 +6364,9 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
   },
   'budget:check': {
     validate: validateBudgetCheck
+  },
+  'budget:estimateDispatch': {
+    validate: validateTurnCreateInput
   },
   'goals:get': {
     validate: args => validateOptionalGoalThreadId(args[0])

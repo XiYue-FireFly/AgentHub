@@ -151,7 +151,12 @@ describe("plugin-manager", () => {
     const manifest = {
       name: "My Plugin",
       version: "1.0.0",
-      contributes: { commands: [{ id: "test", label: "Test" }] }
+      contributes: {
+        commands: [{ id: "test", label: "Test" }],
+        slashCommands: [{ id: "ask", label: "/ask-plugin", promptTemplate: "Ask {{input}}" }],
+        activityParsers: [{ id: "todo", pattern: "TODO: (.+)", fields: { title: "1" } }],
+        preDispatchHooks: [{ id: "ctx", appendContext: "Plugin context" }]
+      }
     }
     expect(validateManifest(manifest).valid).toBe(true)
     const plugins = [{
@@ -164,6 +169,9 @@ describe("plugin-manager", () => {
     const contribs = getPluginContributions(plugins)
     expect(contribs.commands).toHaveLength(1)
     expect(contribs.commands[0].id).toBe("test")
+    expect(contribs.slashCommands[0].label).toBe("/ask-plugin")
+    expect(contribs.activityParsers[0].id).toBe("todo")
+    expect(contribs.preDispatchHooks[0].id).toBe("ctx")
   })
 
   it("scans Codex-style skill repositories without manifest.json", async () => {

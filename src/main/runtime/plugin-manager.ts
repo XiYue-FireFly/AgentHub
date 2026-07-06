@@ -20,8 +20,11 @@ export interface PluginManifest {
   /** What this plugin contributes */
   contributes?: {
     commands?: Array<{ id: string; label: string }>
+    slashCommands?: Array<{ id: string; label: string; description?: string; insertText?: string; promptTemplate?: string }>
     skills?: Array<{ id: string; path: string }>
     prompts?: Array<{ id: string; name: string; body: string }>
+    activityParsers?: Array<{ id: string; pattern: string; flags?: string; kind?: string; fields?: Record<string, string> }>
+    preDispatchHooks?: Array<{ id: string; pattern?: string; appendContext?: string; denyMessage?: string; requireApproval?: boolean; message?: string }>
   }
 }
 
@@ -178,8 +181,11 @@ export function validateManifest(manifest: any): { valid: boolean; errors: strin
   if (!manifest.version || typeof manifest.version !== 'string') errors.push('Missing or invalid version')
   if (manifest.contributes) {
     if (manifest.contributes.commands && !Array.isArray(manifest.contributes.commands)) errors.push('contributes.commands must be an array')
+    if (manifest.contributes.slashCommands && !Array.isArray(manifest.contributes.slashCommands)) errors.push('contributes.slashCommands must be an array')
     if (manifest.contributes.skills && !Array.isArray(manifest.contributes.skills)) errors.push('contributes.skills must be an array')
     if (manifest.contributes.prompts && !Array.isArray(manifest.contributes.prompts)) errors.push('contributes.prompts must be an array')
+    if (manifest.contributes.activityParsers && !Array.isArray(manifest.contributes.activityParsers)) errors.push('contributes.activityParsers must be an array')
+    if (manifest.contributes.preDispatchHooks && !Array.isArray(manifest.contributes.preDispatchHooks)) errors.push('contributes.preDispatchHooks must be an array')
   }
   return { valid: errors.length === 0, errors }
 }
@@ -189,21 +195,30 @@ export function validateManifest(manifest: any): { valid: boolean; errors: strin
  */
 export function getPluginContributions(plugins: PluginEntry[]): {
   commands: Array<{ pluginId: string; id: string; label: string }>
+  slashCommands: Array<{ pluginId: string; id: string; label: string; description?: string; insertText?: string; promptTemplate?: string }>
   skills: Array<{ pluginId: string; id: string; path: string; content?: string }>
   prompts: Array<{ pluginId: string; id: string; name: string; body: string }>
+  activityParsers: Array<{ pluginId: string; id: string; pattern: string; flags?: string; kind?: string; fields?: Record<string, string> }>
+  preDispatchHooks: Array<{ pluginId: string; id: string; pattern?: string; appendContext?: string; denyMessage?: string; requireApproval?: boolean; message?: string }>
 } {
   const commands: Array<{ pluginId: string; id: string; label: string }> = []
+  const slashCommands: Array<{ pluginId: string; id: string; label: string; description?: string; insertText?: string; promptTemplate?: string }> = []
   const skills: Array<{ pluginId: string; id: string; path: string; content?: string }> = []
   const prompts: Array<{ pluginId: string; id: string; name: string; body: string }> = []
+  const activityParsers: Array<{ pluginId: string; id: string; pattern: string; flags?: string; kind?: string; fields?: Record<string, string> }> = []
+  const preDispatchHooks: Array<{ pluginId: string; id: string; pattern?: string; appendContext?: string; denyMessage?: string; requireApproval?: boolean; message?: string }> = []
 
   for (const plugin of plugins.filter(p => p.enabled)) {
     const c = plugin.manifest.contributes
     if (!c) continue
     if (c.commands) commands.push(...c.commands.map(cmd => ({ pluginId: plugin.id, ...cmd })))
+    if (c.slashCommands) slashCommands.push(...c.slashCommands.map(cmd => ({ pluginId: plugin.id, ...cmd })))
     if (c.skills) skills.push(...c.skills.map(s => ({ pluginId: plugin.id, ...s, content: readPluginSkillContent(plugin.path, s.path) })))
     if (c.prompts) prompts.push(...c.prompts.map(p => ({ pluginId: plugin.id, ...p })))
+    if (c.activityParsers) activityParsers.push(...c.activityParsers.map(parser => ({ pluginId: plugin.id, ...parser })))
+    if (c.preDispatchHooks) preDispatchHooks.push(...c.preDispatchHooks.map(hook => ({ pluginId: plugin.id, ...hook })))
   }
-  return { commands, skills, prompts }
+  return { commands, slashCommands, skills, prompts, activityParsers, preDispatchHooks }
 }
 
 function readPluginSkillContent(pluginRoot: string, skillPath: string): string | undefined {
