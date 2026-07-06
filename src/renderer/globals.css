@@ -11812,6 +11812,17 @@ html[data-motion="off"] .wb-processing-dots i {
   min-height: var(--wb-titlebar-height, 40px);
   z-index: 5200;
 }
+.wb-titlebar.platform-win32 {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  flex: 0 0 var(--wb-titlebar-height, 40px) !important;
+  height: var(--wb-titlebar-height, 40px) !important;
+  min-height: var(--wb-titlebar-height, 40px) !important;
+  position: relative !important;
+  z-index: 5200 !important;
+  overflow: visible !important;
+}
 .wb-titlebar.platform-win32 .wb-menu-wrap,
 .wb-titlebar.platform-win32 .wb-window-actions,
 .wb-titlebar.platform-win32 .wb-hub-state,
@@ -11825,6 +11836,9 @@ html[data-motion="off"] .wb-processing-dots i {
 .wb-titlebar.platform-win32 .wb-window-actions,
 .wb-titlebar.platform-win32 .wb-hub-state {
   display: flex !important;
+}
+.wb-titlebar.platform-win32 .wb-window-actions button {
+  display: inline-flex !important;
 }
 .wb-titlebar.platform-win32 .wb-menu,
 .wb-titlebar.platform-win32 .wb-window-actions button {
@@ -14418,14 +14432,31 @@ html[data-motion="off"] .wb-processing-dots i {
 /* Requirements List */
 .sdd-requirements-list {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 16px;
   padding: 20px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sdd-requirements-full.sdd-list-mode {
+  overflow: hidden;
+}
+
+.sdd-requirements-full.sdd-list-mode > .sdd-requirements-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 .sdd-requirements-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  min-width: 0;
 }
 
 .sdd-requirements-title {
@@ -14454,6 +14485,8 @@ html[data-motion="off"] .wb-processing-dots i {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
   padding: 10px 14px;
   border: 1px solid var(--wb-line);
   border-radius: var(--radius-sm);
@@ -14476,7 +14509,16 @@ html[data-motion="off"] .wb-processing-dots i {
 /* Drafts Container */
 .sdd-drafts-container {
   display: grid;
+  align-content: start;
   gap: 8px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.sdd-drafts-container > .sdd-empty-state {
+  align-self: stretch;
+  min-height: 320px;
+  margin: 0;
 }
 
 .sdd-draft-card {

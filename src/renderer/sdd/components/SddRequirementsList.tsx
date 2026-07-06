@@ -665,7 +665,8 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   }
 
   return (
-    <div className="sdd-requirements-list">
+    <div className="sdd-requirements-full sdd-list-mode">
+      <div className="sdd-requirements-list">
       {/* Header */}
       <div className="sdd-requirements-header">
         <div className="sdd-requirements-title">
@@ -767,6 +768,7 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
             </div>
           </div>
         ))}
+      </div>
       </div>
     </div>
   )

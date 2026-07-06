@@ -86,4 +86,19 @@ describe('SddRequirementsList assistant resize', () => {
     expect(assistantPanelRule).toContain('min-width: 0;')
     expect(assistantPanelRule).not.toContain('min-width: 420px;')
   })
+
+  it('keeps the requirements list view stretched inside the workbench surface', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const source = readFileSync(join(process.cwd(), 'src/renderer/sdd/components/SddRequirementsList.tsx'), 'utf8')
+    const css = readFileSync(join(process.cwd(), 'src/renderer/globals.css'), 'utf8')
+    const listRule = css.match(/\.sdd-requirements-list\s*\{[^}]+\}/)?.[0] ?? ''
+    const draftsRule = css.match(/\.sdd-drafts-container\s*\{[^}]+\}/)?.[0] ?? ''
+
+    expect(source).toContain('className="sdd-requirements-full sdd-list-mode"')
+    expect(listRule).toContain('grid-template-rows: auto auto minmax(0, 1fr);')
+    expect(listRule).toContain('width: 100%;')
+    expect(listRule).toContain('height: 100%;')
+    expect(draftsRule).toContain('overflow: auto;')
+  })
 })

@@ -69,4 +69,12 @@ describe('NativeTitlebar window controls', () => {
     expect(css).toContain('[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-window-actions')
     expect(css).not.toContain('[data-ui-style="mac"] .wb-titlebar .wb-window-actions')
   })
+
+  it('forces the Windows titlebar and window control buttons visible across visual styles', () => {
+    const css = readFileSync(join(process.cwd(), 'src/renderer/globals.css'), 'utf8')
+
+    expect(css).toMatch(/\.wb-titlebar\.platform-win32\s*\{[\s\S]*?display:\s*flex !important/)
+    expect(css).toMatch(/\.wb-titlebar\.platform-win32\s*\{[\s\S]*?height:\s*var\(--wb-titlebar-height,\s*40px\) !important/)
+    expect(css).toMatch(/\.wb-titlebar\.platform-win32 \.wb-window-actions button\s*\{[\s\S]*?display:\s*inline-flex !important/)
+  })
 })
