@@ -211,4 +211,53 @@ describe('SddAssistantPanel', () => {
       { role: 'assistant', content: 'First answer' }
     ], 'chat')
   })
+
+  it('starts a new assistant history session and can return to previous history', async () => {
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValueOnce('First answer')
+      .mockResolvedValueOnce('Second answer')
+      .mockResolvedValueOnce('Follow-up answer')
+    const view = render(
+      <SddAssistantPanel
+        draftId="draft-sessions"
+        workspaceRoot="E:\\workspace"
+        onSendMessage={onSendMessage}
+      />
+    )
+
+    fireEvent.change(view.container.querySelector('.sdd-composer-textarea') as HTMLTextAreaElement, {
+      target: { value: 'First question' }
+    })
+    fireEvent.click(view.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+    await view.findByText('First answer')
+
+    fireEvent.click(view.getByTitle('新开一个需求 AI 对话'))
+    expect(view.queryByText('First answer')).toBeNull()
+
+    fireEvent.change(view.container.querySelector('.sdd-composer-textarea') as HTMLTextAreaElement, {
+      target: { value: 'Second question' }
+    })
+    fireEvent.click(view.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+    await view.findByText('Second answer')
+
+    const firstHistoryButton = view.getByText(/Chat: First question/).closest('button')
+    expect(firstHistoryButton).toBeTruthy()
+    fireEvent.click(firstHistoryButton as HTMLButtonElement)
+
+    expect(await view.findByText('First question')).toBeTruthy()
+    expect(await view.findByText('First answer')).toBeTruthy()
+    expect(view.queryByText('Second answer')).toBeNull()
+
+    fireEvent.change(view.container.querySelector('.sdd-composer-textarea') as HTMLTextAreaElement, {
+      target: { value: 'Follow up first' }
+    })
+    fireEvent.click(view.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+
+    await view.findByText('Follow-up answer')
+    expect(onSendMessage).toHaveBeenLastCalledWith('Follow up first', [
+      { role: 'user', content: 'First question' },
+      { role: 'assistant', content: 'First answer' }
+    ], 'chat')
+  })
 })

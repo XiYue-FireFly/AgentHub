@@ -60,6 +60,7 @@ interface SettingsScreenProps {
   connectionSummary: ConnectionSummary
   goChat: (agentId: string | null) => void
   openSetup: (tab?: TabKey) => void
+  onLocalAgentsChanged?: (agents: LocalAgentStatus[]) => void
 }
 
 const NAV_ITEMS: Array<{ value: TabKey; label: string; labelEn: string; description: string; descriptionEn: string; icon: React.ReactNode }> = [
@@ -206,7 +207,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
             onReorderForClaude={props.onReorderProvidersForClaude}
           />
         )}
-        {visibleTab === 'local-agents' && <LocalAgentsTab />}
+        {visibleTab === 'local-agents' && <LocalAgentsTab onLocalAgentsChanged={props.onLocalAgentsChanged} />}
         {visibleTab === 'models' && <ModelsTab providers={props.providers} />}
         {visibleTab === 'routing' && (
           <RoutingTab
@@ -265,7 +266,7 @@ function SetupNextStep({ summary, onTab, goChat }: {
 }
 
 
-function LocalAgentsTab() {
+function LocalAgentsTab({ onLocalAgentsChanged }: { onLocalAgentsChanged?: (agents: LocalAgentStatus[]) => void }) {
   const [agents, setAgents] = useState<LocalAgentStatus[]>([])
   const [localModels, setLocalModels] = useState<LocalModelConfig[]>([])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -284,6 +285,7 @@ function LocalAgentsTab() {
         window.electronAPI.localModels.scan().catch(() => [] as LocalModelConfig[])
       ])
       setAgents(next)
+      onLocalAgentsChanged?.(next)
       setLocalModels(modelConfigs)
       setDrafts(Object.fromEntries(next.map(agent => [agent.agentId, agent.binary || ''])))
       setArgDrafts(Object.fromEntries(next.map(agent => [agent.agentId, agent.args || ''])))
@@ -306,6 +308,7 @@ function LocalAgentsTab() {
     try {
       const next = await window.electronAPI.localAgents.configure(agent.agentId, { binary, protocol, args })
       setAgents(next)
+      onLocalAgentsChanged?.(next)
       setDrafts(Object.fromEntries(next.map(item => [item.agentId, item.binary || ''])))
       setArgDrafts(Object.fromEntries(next.map(item => [item.agentId, item.args || ''])))
       setProtocolDrafts(Object.fromEntries(next.map(item => [item.agentId, item.protocol === 'acp' ? 'acp' : 'stdio-plain'])))

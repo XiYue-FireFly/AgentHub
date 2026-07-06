@@ -8,6 +8,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
+import type { ProviderDef } from '../../glass/meta'
 import { MarkdownBlock } from '../../workbench/MarkdownBlock'
 import {
   SDD_FRAMEWORK_GROUPS,
@@ -16,7 +17,14 @@ import {
   type SddPmFramework
 } from '../pm-skill-frameworks'
 import { parseVerifyResponse } from '../sdd-verify-prompt'
-import { getAssistantHistory, saveAssistantHistory } from '../sdd-assistant-history'
+import {
+  createAssistantHistorySession,
+  getAssistantHistory,
+  getAssistantHistoryState,
+  saveAssistantHistory,
+  setActiveAssistantHistorySession,
+  type SddAssistantHistoryState
+} from '../sdd-assistant-history'
 
 // ============================================================
 // Types
@@ -49,6 +57,9 @@ interface RequirementApplyStatus {
 interface SddAssistantPanelProps {
   draftId: string
   workspaceRoot: string
+  providers?: ProviderDef[]
+  modelSelection?: ModelSelection | null
+  onModelSelectionChange?: (selection: ModelSelection | null) => void
   onSendMessage?: (
     message: string,
     history: Array<{ role: 'user' | 'assistant'; content: string }>,
@@ -67,6 +78,12 @@ interface SddAssistantPanelProps {
     warnings: string[]
   }>
   onApplyRequirementResponse?: (applyContext?: unknown) => Promise<void>
+}
+
+interface SddModelOption {
+  providerId: string
+  modelId: string
+  label: string
 }
 
 // ============================================================
@@ -172,6 +189,62 @@ function AssistantIcon({ name, size = 18 }: { name: AssistantIconName; size?: nu
   )
 }
 
+function availableSddModels(providers: ProviderDef[] = []): SddModelOption[] {
+  return providers.flatMap(provider => {
+    if (!provider.enabled || !provider.apiKey || provider.apiKeyLocked || !provider.models?.length) return []
+    return provider.models
+      .filter(model => model.enabled !== false)
+      .map(model => ({
+        providerId: provider.id,
+        modelId: model.id,
+        label: `${provider.name} / ${model.label || model.id}`
+      }))
+  })
+}
+
+export function SddModelSelect({
+  providers = [],
+  modelSelection,
+  onModelSelectionChange,
+  compact = false
+}: {
+  providers?: ProviderDef[]
+  modelSelection?: ModelSelection | null
+  onModelSelectionChange?: (selection: ModelSelection | null) => void
+  compact?: boolean
+}) {
+  const options = availableSddModels(providers)
+  const selectedValue = modelSelection?.source === 'provider'
+    ? `${modelSelection.providerId}::${modelSelection.modelId}`
+    : ''
+  if (!onModelSelectionChange) return null
+
+  return (
+    <label className={`sdd-model-select ${compact ? 'compact' : ''}`} title={tr('选择需求 AI 使用的供应商模型', 'Choose the provider model used by Requirements AI')}>
+      <span>{tr('模型', 'Model')}</span>
+      <select
+        value={selectedValue}
+        onChange={(event) => {
+          const value = event.target.value
+          if (!value) {
+            onModelSelectionChange(null)
+            return
+          }
+          const [providerId, modelId] = value.split('::')
+          onModelSelectionChange({ providerId, modelId, source: 'provider' })
+        }}
+      >
+        <option value="">{tr('默认供应商', 'Default provider')}</option>
+        {options.map(option => (
+          <option key={`${option.providerId}::${option.modelId}`} value={`${option.providerId}::${option.modelId}`}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 // ============================================================
 // Component
 // ============================================================
@@ -179,6 +252,9 @@ function AssistantIcon({ name, size = 18 }: { name: AssistantIconName; size?: nu
 export function SddAssistantPanel({
   draftId,
   workspaceRoot,
+  providers,
+  modelSelection,
+  onModelSelectionChange,
   onSendMessage,
   onApplyFramework,
   onClose,
@@ -191,6 +267,7 @@ export function SddAssistantPanel({
   onApplyRequirementResponse
 }: SddAssistantPanelProps) {
   const assistantHistoryScope = `${workspaceRoot || ''}::${draftId}`
+  const [historyState, setHistoryState] = useState<SddAssistantHistoryState>(() => getAssistantHistoryState(draftId, workspaceRoot))
   const [messages, setMessages] = useState<ChatMessage[]>(() => getAssistantHistory(draftId, workspaceRoot))
   const [loadedHistoryScope, setLoadedHistoryScope] = useState(assistantHistoryScope)
   const [input, setInput] = useState('')
@@ -221,8 +298,9 @@ export function SddAssistantPanel({
   }, [])
 
   useEffect(() => {
-    const restoredMessages = getAssistantHistory(draftId, workspaceRoot)
-    setMessages(restoredMessages)
+    const restoredState = getAssistantHistoryState(draftId, workspaceRoot)
+    setHistoryState(restoredState)
+    setMessages(getAssistantHistory(draftId, workspaceRoot, restoredState.activeSessionId))
     setLoadedHistoryScope(assistantHistoryScope)
     setSyncStatusByMessageId({})
     setVerifyStatusByMessageId({})
@@ -233,8 +311,9 @@ export function SddAssistantPanel({
 
   useEffect(() => {
     if (loadedHistoryScope !== assistantHistoryScope) return
-    saveAssistantHistory(draftId, workspaceRoot, messages)
-  }, [assistantHistoryScope, draftId, loadedHistoryScope, messages, workspaceRoot])
+    const nextState = saveAssistantHistory(draftId, workspaceRoot, messages, historyState.activeSessionId)
+    setHistoryState(nextState)
+  }, [assistantHistoryScope, draftId, historyState.activeSessionId, loadedHistoryScope, messages, workspaceRoot])
 
   // Auto scroll to bottom
   useEffect(() => {
@@ -353,6 +432,39 @@ export function SddAssistantPanel({
     }
   }
 
+  const resetSessionActionState = () => {
+    setSyncingMessageId(null)
+    setSyncStatusByMessageId({})
+    setApplyingVerifyMessageId(null)
+    setVerifyStatusByMessageId({})
+    setApplyingRequirementMessageId(null)
+    setRequirementStatusByMessageId({})
+    setPreviewRequirementMessageId(null)
+    setDiscardedRequirementMessageIds(new Set())
+  }
+
+  const handleStartNewHistorySession = () => {
+    if (busy) return
+    saveAssistantHistory(draftId, workspaceRoot, messages, historyState.activeSessionId)
+    const nextState = createAssistantHistorySession(draftId, workspaceRoot)
+    const nextMessages = getAssistantHistory(draftId, workspaceRoot, nextState.activeSessionId)
+    setHistoryState(nextState)
+    setMessages(nextMessages)
+    setInput('')
+    resetSessionActionState()
+  }
+
+  const handleSelectHistorySession = (sessionId: string) => {
+    if (busy || sessionId === historyState.activeSessionId) return
+    saveAssistantHistory(draftId, workspaceRoot, messages, historyState.activeSessionId)
+    const nextState = setActiveAssistantHistorySession(draftId, workspaceRoot, sessionId)
+    const nextSession = nextState.sessions.find(session => session.id === nextState.activeSessionId)
+    setHistoryState(nextState)
+    setMessages(nextSession?.messages ?? [])
+    setInput('')
+    resetSessionActionState()
+  }
+
   const handleSyncPlanTodos = async (message: ChatMessage) => {
     if (!onSyncPlanTodos || !threadId || message.mode !== 'plan') return
     setSyncingMessageId(message.id)
@@ -444,9 +556,50 @@ export function SddAssistantPanel({
   }
 
   const hasMessages = messages.length > 0
+  const activeSessionId = historyState.activeSessionId
 
   return (
     <aside className="sdd-assistant-panel">
+      <div className="sdd-assistant-history-sidebar" aria-label={tr('历史对话', 'Chat history')}>
+        <div className="sdd-assistant-history-header">
+          <span>{tr('历史对话', 'History')}</span>
+          <button
+            type="button"
+            className="sdd-assistant-history-new"
+            onClick={handleStartNewHistorySession}
+            disabled={busy}
+            title={tr('新开一个需求 AI 对话', 'Start a new Requirements AI chat')}
+          >
+            +
+          </button>
+        </div>
+        <div className="sdd-assistant-history-list">
+          {historyState.sessions.map((session) => {
+            const lastMessage = session.messages[session.messages.length - 1]
+            const previewContent = lastMessage?.content?.replace(/\s+/g, ' ').trim()
+            const preview = previewContent
+              ? `${lastMessage.role === 'user' ? tr('用户', 'User') : 'AI'} · ${previewContent}`
+              : tr('空白对话', 'Empty chat')
+            return (
+              <button
+                key={session.id}
+                type="button"
+                className={`sdd-assistant-history-item ${session.id === activeSessionId ? 'active' : ''}`}
+                onClick={() => handleSelectHistorySession(session.id)}
+                disabled={busy}
+                aria-current={session.id === activeSessionId ? 'true' : undefined}
+              >
+                <span className="sdd-assistant-history-title">{session.title}</span>
+                <span className="sdd-assistant-history-preview">{preview}</span>
+                <span className="sdd-assistant-history-meta">
+                  {formatTime(session.updatedAt)}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      <div className="sdd-assistant-main">
       <div className="sdd-assistant-header">
         <div className="sdd-assistant-header-content">
           {onClose && (
@@ -458,6 +611,12 @@ export function SddAssistantPanel({
             <span className="sdd-assistant-sparkle"><AssistantIcon name="sparkles" size={17} /></span>
             <span>{tr('需求 AI', 'Requirements AI')}</span>
           </div>
+          <SddModelSelect
+            providers={providers}
+            modelSelection={modelSelection}
+            onModelSelectionChange={onModelSelectionChange}
+            compact
+          />
         </div>
         <div className="sdd-assistant-path">
           {workspaceRoot}
@@ -692,6 +851,7 @@ export function SddAssistantPanel({
             )}
           </button>
         </div>
+      </div>
       </div>
     </aside>
   )

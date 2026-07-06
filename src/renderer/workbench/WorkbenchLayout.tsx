@@ -1301,6 +1301,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           targetAgent={targetAgent}
           agents={props.agents}
           localAgents={localAgents}
+          onLocalAgentsChanged={setLocalAgents}
           sending={sending}
           sendPrompt={sendPrompt}
           cancelLatest={cancelLatest}

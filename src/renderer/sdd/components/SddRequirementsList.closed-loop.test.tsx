@@ -7,7 +7,7 @@ import { SddRequirementsList } from './SddRequirementsList'
 import { useSddDraftStore, type SddDraft, type SddTrace } from '../sdd-draft-store'
 import { clearDraftHistory, getDraftHistory } from '../sdd-draft-history'
 
-type QuickCompleteInput = { prompt: string; systemPrompt?: string }
+type QuickCompleteInput = { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string }
 
 vi.mock('../../workbench/MarkdownBlock', () => ({
   MarkdownBlock: ({ content }: { content: string }) => <div>{content}</div>
@@ -44,6 +44,17 @@ const trace: SddTrace = {
   uncoveredRequirementIds: [],
   timestamp: '2026-07-04T00:01:00.000Z'
 }
+
+const providers = [{
+  id: 'deepseek',
+  name: 'DeepSeek',
+  kind: 'openai-compatible',
+  baseUrl: 'https://api.deepseek.com',
+  apiKey: 'sk-test',
+  enabled: true,
+  builtIn: false,
+  models: [{ id: 'deepseek-chat', label: 'DeepSeek Chat', enabled: true }]
+}]
 
 function installElectronApi(planMarkdown: string, options: {
   parseBlocks?: SddTrace['requirementBlocks']
@@ -143,6 +154,49 @@ describe('SddRequirementsList closed loop', () => {
     }))
     expect(onThreadTodosChanged).toHaveBeenCalledWith('thread-1')
     await view.findByText('Synced 1 todos')
+  })
+
+  it('uses the selected provider model for requirement AI requests', async () => {
+    const { api } = installElectronApi('- [ ] Implement checkout')
+    const view = render(
+      <SddRequirementsList
+        workspaceRoot="E:\\workspace"
+        threadId="thread-1"
+        providers={providers}
+        modelSelection={{ providerId: 'deepseek', modelId: 'deepseek-chat', source: 'provider' }}
+      />
+    )
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: /Generate Plan/ }))
+
+    await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
+    expect(api.ai.quickComplete.mock.calls[0][0]).toMatchObject({
+      providerId: 'deepseek',
+      modelId: 'deepseek-chat'
+    })
+  })
+
+  it('syncs the current requirement document checklist to the active thread from the editor toolbar', async () => {
+    const { api } = installElectronApi('- [ ] ignored plan')
+    const onThreadTodosChanged = vi.fn(async () => undefined)
+    const view = render(
+      <SddRequirementsList
+        workspaceRoot="E:\\workspace"
+        threadId="thread-1"
+        onThreadTodosChanged={onThreadTodosChanged}
+      />
+    )
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: /Sync Todo/ }))
+
+    await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith('thread-1', draft.content, {
+      workspaceRoot: 'E:\\workspace',
+      draftId: 'draft-1',
+      relativePath: '.agenthub/requirements/draft-1/requirement.md'
+    }))
+    expect(onThreadTodosChanged).toHaveBeenCalledWith('thread-1')
   })
 
   it('saves dirty draft content before generating a plan and sends the latest content to AI', async () => {
@@ -425,10 +479,12 @@ describe('SddRequirementsList closed loop', () => {
   it('requires confirmation before normal assistant chat updates the requirement document', async () => {
     const assistantResponse = 'Add shipping address collection to the checkout requirement.'
     const { api } = installElectronApi(assistantResponse)
+    const onThreadTodosChanged = vi.fn(async () => undefined)
     const view = render(
       <SddRequirementsList
         workspaceRoot="E:\\workspace"
         threadId="thread-1"
+        onThreadTodosChanged={onThreadTodosChanged}
       />
     )
 
@@ -460,6 +516,16 @@ describe('SddRequirementsList closed loop', () => {
       'draft-1',
       expect.stringContaining(assistantResponse)
     ))
+    await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith(
+      'thread-1',
+      expect.stringContaining(assistantResponse),
+      {
+        workspaceRoot: 'E:\\workspace',
+        draftId: 'draft-1',
+        relativePath: '.agenthub/requirements/draft-1/requirement.md'
+      }
+    ))
+    expect(onThreadTodosChanged).toHaveBeenCalledWith('thread-1')
 
     const history = getDraftHistory('draft-1', 'E:\\workspace')
     expect(history).toHaveLength(1)

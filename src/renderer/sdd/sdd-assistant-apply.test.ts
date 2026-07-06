@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyAssistantRequirementResponse,
   cleanAssistantMarkdown,
+  extractCoreRequirementMarkdown,
   looksLikeFullRequirementDocument,
   previewAssistantRequirementResponse
 } from './sdd-assistant-apply'
@@ -93,6 +94,40 @@ describe('sdd assistant requirement response application', () => {
     )
 
     expect(result).toBe(`${revisedDraft}\n`)
+  })
+
+  it('extracts only the core revised requirement document from assistant commentary', () => {
+    const response = `是的，这份需求文档还需要进一步澄清。
+
+主要修改建议
+
+- 补充验收标准
+- 删除模糊表述
+
+基于以上，我为您提供一个修订后的完整需求文档。
+
+学生信息管理系统 V1.0（修订版）
+
+1. 背景
+
+为解决学生信息分散维护的问题，系统提供基础的信息录入、查看和审核能力。
+
+2. 目标
+
+管理员可以维护学生信息，学生可以查看自己的信息。
+
+5. 验收标准（修订）
+
+[ ] AC1（角色与权限）：管理员和学生登录后看到的功能菜单严格符合角色权限。
+[ ] AC2（学生信息查看）：学生登录后，可清晰查看包含学院、年级、班级在内的个人详细信息。`
+
+    const extracted = extractCoreRequirementMarkdown(response)
+    const result = applyAssistantRequirementResponse(baseDraft, response, { now: fixedNow })
+
+    expect(extracted).toContain('学生信息管理系统 V1.0（修订版）')
+    expect(extracted).not.toContain('主要修改建议')
+    expect(result).toBe(`${extracted}\n`)
+    expect(result).not.toContain('是的，这份需求文档还需要进一步澄清')
   })
 
   it('does not classify analysis feedback as a complete requirement document', () => {

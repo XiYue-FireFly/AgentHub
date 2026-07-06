@@ -41,6 +41,7 @@ interface WorkbenchMainContentProps {
   targetAgent: string | null
   agents: AgentMap
   localAgents: LocalAgentStatus[]
+  onLocalAgentsChanged: (agents: LocalAgentStatus[]) => void
   sending: boolean
   sendPrompt: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: { targetAgent?: string | null; mode?: DispatchPreset; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }) => Promise<any>
   cancelLatest: () => Promise<void>
@@ -120,6 +121,7 @@ export function WorkbenchMainContent({
   targetAgent,
   agents,
   localAgents,
+  onLocalAgentsChanged,
   sending,
   sendPrompt,
   cancelLatest,
@@ -309,7 +311,12 @@ export function WorkbenchMainContent({
             threadId={activeThreadId}
             threadTodos={threadTodos}
             events={activeEvents}
+            providers={providers}
+            modelSelection={modelSelection}
+            onModelSelectionChange={setModelSelection}
             onThreadTodosChanged={refreshThreadTodos}
+            onSendRequirementToChat={(prompt, requirementModelSelection) => sendPrompt(prompt, [], { modelSelection: requirementModelSelection ?? modelSelection })}
+            onRequirementSentToChat={() => setView('chat')}
           />
         </div>
         </ErrorBoundary>
@@ -338,6 +345,7 @@ export function WorkbenchMainContent({
             connectionSummary={connectionSummary}
             goChat={agentId => { selectTargetAgent(agentId); setView('chat') }}
             openSetup={openSetup}
+            onLocalAgentsChanged={onLocalAgentsChanged}
           />
           </React.Suspense>
         </div>
