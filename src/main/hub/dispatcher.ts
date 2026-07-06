@@ -27,6 +27,7 @@ import { getApprovalConfig, ApprovalRequest, GuardedTool, savePendingApproval, r
 import { getRunTimeoutMs } from "../runtime/run-preferences"
 import { pushNotification } from "../runtime/notifications"
 import { readLocalModelConfig } from "../runtime/local-models"
+import { compactChatMessages, compactTextByTokenBudget } from "../runtime/token-economy"
 // --- /AgentHub skills + native agentic ---
 
 export type DispatchMode = "auto" | "broadcast" | "chain" | "orchestrate"
@@ -65,12 +66,62 @@ function flattenMessagesForLocalAgent(messages: ChatCompletionMessage[]): string
   ].join("\n\n")
 }
 
-function messagesForDerivedPrompt(opts: DispatchOptions, prompt: string): ChatCompletionMessage[] | undefined {
-  if (!opts.messages?.length) return undefined
-  return [
+function compactMessagesForDerivedPrompt(opts: DispatchOptions, prompt: string): ChatCompletionMessage[] | undefined {
+  if (!opts.messages?.length) return [{ role: "user", content: prompt }]
+  if (opts.preserveCurrentMessage) {
+    const history = compactChatMessages(opts.messages.slice(0, -1), {
+      maxTokens: 3_000,
+      keepRecentMessages: 2,
+      perHistoricalMessageTokens: 700,
+      currentMessageTokens: 1_200
+    }) as ChatCompletionMessage[]
+    return [
+      ...history,
+      { role: "user", content: prompt } as ChatCompletionMessage
+    ]
+  }
+  return compactChatMessages([
     ...opts.messages.slice(0, -1),
     { role: "user", content: prompt } as ChatCompletionMessage
-  ]
+  ], {
+    maxTokens: 8_000,
+    keepRecentMessages: 3,
+    perHistoricalMessageTokens: 900,
+    currentMessageTokens: 5_000
+  }) as ChatCompletionMessage[]
+}
+
+function compactOrchestrateMessages(opts: DispatchOptions, prompt: string, maxTokens = 6_000): ChatCompletionMessage[] {
+  const base = opts.messages?.length ? opts.messages.slice(0, -1) : []
+  if (opts.preserveCurrentMessage) {
+    const history = compactChatMessages(base, {
+      maxTokens: Math.max(0, maxTokens - 3_000),
+      keepRecentMessages: 2,
+      perHistoricalMessageTokens: 600,
+      currentMessageTokens: 1_200
+    }) as ChatCompletionMessage[]
+    return [
+      ...history,
+      { role: "user", content: prompt } as ChatCompletionMessage
+    ]
+  }
+  return compactChatMessages([
+    ...base,
+    { role: "user", content: prompt } as ChatCompletionMessage
+  ], {
+    maxTokens,
+    keepRecentMessages: 3,
+    perHistoricalMessageTokens: 700,
+    currentMessageTokens: Math.max(3_000, Math.floor(maxTokens * 0.65))
+  }) as ChatCompletionMessage[]
+}
+
+function compactOrchestrateText(text: string, maxTokens = 2_500): string {
+  return compactTextByTokenBudget(text, maxTokens, {
+    headTokens: Math.floor(maxTokens * 0.68),
+    tailTokens: Math.floor(maxTokens * 0.2),
+    marker: "[... orchestrator context omitted by token economy ...]"
+  }).text
 }
 
 function localModelConfigAgentId(agentId: string): string {
@@ -143,6 +194,8 @@ export interface DispatchOptions {
   threadId?: string
   /** Metadata copied onto all stream events for this dispatch task. */
   streamMeta?: Record<string, any>
+  /** True when the current turn contains inline text attachments that cannot be recovered from a file path. */
+  preserveCurrentMessage?: boolean
 }
 
 export type StreamEvent =
@@ -564,7 +617,7 @@ export class Dispatcher extends EventEmitter {
         ...opts,
         systemPrompt: ORCHESTRATOR_LEAD_SYSTEM,
         conversationText: planPrompt,
-        messages: messagesForDerivedPrompt(opts, planPrompt)
+        messages: compactMessagesForDerivedPrompt(opts, planPrompt)
       })
       if (planRes.error) throw new Error("分解阶段失败: " + planRes.error)
       let plan = parsePlan(planRes.content)
@@ -593,11 +646,12 @@ export class Dispatcher extends EventEmitter {
           if ((task as any).status === "cancelled") break
           this.emit("stream", { kind: "orchestrate:subtask", taskId: task.id, subtaskId: st.id, agentId: st.agentId, status: "running" })
           try {
-            const prompt = attempt === 1 ? (st.detail || st.title) : retryPrompt(st.detail || st.title, lastNote)
+            const rawPrompt = attempt === 1 ? (st.detail || st.title) : retryPrompt(st.detail || st.title, lastNote)
+            const prompt = opts.preserveCurrentMessage ? rawPrompt : compactOrchestrateText(rawPrompt, 3_000)
             const r = await this.sendToAgent(task, st.agentId!, prompt, {
               ...opts,
               conversationText: prompt,
-              messages: messagesForDerivedPrompt(opts, prompt)
+              messages: compactOrchestrateMessages(opts, prompt)
             })
             // 失败外显：provider 报错绝不伪装成 done(空内容)，发 error 状态并退出该子任务
             if (r.error) {
@@ -607,12 +661,13 @@ export class Dispatcher extends EventEmitter {
             content = r.content
             this.emit("stream", { kind: "orchestrate:subtask", taskId: task.id, subtaskId: st.id, agentId: st.agentId, status: "done", content })
             // 校验：用 lead 作为 verify agent（verify 自身报错时 content 为空 → parseVerdict 宽松判过，避免死循环）
-            const verifyText = verifyPrompt(st.title, st.detail, content)
+            const verifyDetail = opts.preserveCurrentMessage ? (st.detail || "") : compactOrchestrateText(st.detail || "", 1_500)
+            const verifyText = verifyPrompt(st.title, verifyDetail, compactOrchestrateText(content, 3_000))
             const verifyRaw = (await this.sendToAgent(task, leadId, verifyText, {
               ...opts,
               systemPrompt: ORCHESTRATOR_LEAD_SYSTEM,
               conversationText: verifyText,
-              messages: messagesForDerivedPrompt(opts, verifyText)
+              messages: compactOrchestrateMessages(opts, verifyText)
             })).content
             const v = parseVerdict(verifyRaw)
             this.emit("stream", { kind: "orchestrate:verdict", taskId: task.id, subtaskId: st.id, pass: v.pass, note: v.note, attempt })
@@ -632,12 +687,16 @@ export class Dispatcher extends EventEmitter {
 
       // 3. lead 汇总（汇总阶段 provider 报错 → 外显失败，不得静默以空内容标记完成）
       this.emit("stream", { kind: "orchestrate:synthesizing", taskId: task.id })
-      const synthPrompt = synthesisPrompt(text, parts)
+      const synthPrompt = synthesisPrompt(opts.preserveCurrentMessage ? text : compactOrchestrateText(text, 4_000), parts.map(part => ({
+        ...part,
+        content: compactOrchestrateText(part.content || "", 3_000),
+        error: part.error ? compactOrchestrateText(part.error, 800) : part.error
+      })))
       const synth = await this.sendToAgent(task, leadId, synthPrompt, {
         ...opts,
         systemPrompt: ORCHESTRATOR_LEAD_SYSTEM,
         conversationText: synthPrompt,
-        messages: messagesForDerivedPrompt(opts, synthPrompt)
+        messages: compactOrchestrateMessages(opts, synthPrompt, 8_000)
       })
       if (synth.error) throw new Error("汇总阶段失败: " + synth.error)
       this.emit("stream", { kind: "orchestrate:final", taskId: task.id, content: synth.content })

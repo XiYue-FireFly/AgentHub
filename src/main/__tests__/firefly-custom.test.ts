@@ -34,6 +34,9 @@ describe("smart five-role custom schedule integration", () => {
     expect(scheduleHelpers).toContain("const fireflyHandoff = input.schedule.preset === \"firefly-custom\"")
     expect(scheduleHelpers).toContain("const layers = fireflyHandoff ? validation.steps.map(step => [step]) : orderedCustomLayers(validation.steps)")
     expect(scheduleHelpers).toContain("if (fireflyHandoff && step.role === \"router\")")
+    expect(scheduleHelpers).toContain("const compressedHistory = compactScheduleHistory(input.messages, input.prompt)")
+    expect(scheduleHelpers).toContain("dependencyOutputIds(step, stepsById)")
+    expect(scheduleHelpers).toContain("for (const parent of dep?.dependsOn ?? []) visit(parent)")
     expect(scheduleHelpers).toContain("providerId: \"local-router\"")
     expect(scheduleHelpers).toContain("modelId: \"weighted-router\"")
     expect(scheduleHelpers).toContain("gatedCandidateStepIds")
@@ -220,5 +223,17 @@ describe("smart five-role custom schedule integration", () => {
     expect(dispatcher).toContain("CLI exit warning")
     expect(dispatcher).toContain("task.results.set(agentId, content)")
     expect(dispatcher).toContain("kind: \"done\", taskId: task.id, agentId, providerId, modelId, content")
+  })
+
+  it("keeps orchestrate derived prompts token-bounded without dropping compressed thread history", () => {
+    const dispatcher = readFileSync(join(process.cwd(), "src/main/hub/dispatcher.ts"), "utf8")
+
+    expect(dispatcher).toContain("function compactOrchestrateMessages")
+    expect(dispatcher).toContain("compactChatMessages")
+    expect(dispatcher).toContain("messages: compactMessagesForDerivedPrompt(opts, planPrompt)")
+    expect(dispatcher).toContain("messages: compactOrchestrateMessages(opts, prompt)")
+    expect(dispatcher).toContain("messages: compactOrchestrateMessages(opts, verifyText)")
+    expect(dispatcher).toContain("messages: compactOrchestrateMessages(opts, synthPrompt, 8_000)")
+    expect(dispatcher).not.toContain("function currentOnlyDerivedMessages")
   })
 })

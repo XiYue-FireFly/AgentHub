@@ -1,6 +1,7 @@
 import { resolve } from "node:path"
 import { getWorkspaceManager, type Workspace } from "../hub/workspace"
 import { buildProjectMap, flattenProjectMap } from "./project-map"
+import { compactTextByTokenBudget } from "./token-economy"
 
 function sameResolvedPath(left: string, right: string): boolean {
   const resolvedLeft = resolve(left)
@@ -19,12 +20,20 @@ function formatWorkspaceContext(workspace: Workspace): string {
   ]
   const projectMap = buildProjectMap(workspace.rootPath, 2)
   if (projectMap) {
-    const entries = flattenProjectMap(projectMap).slice(0, 80)
+    const seen = new Set<string>()
+    const entries = flattenProjectMap(projectMap)
+      .filter(entry => {
+        const normalized = entry.replace(/\s+/g, " ").trim().toLowerCase()
+        if (!normalized || seen.has(normalized)) return false
+        seen.add(normalized)
+        return true
+      })
+      .slice(0, 64)
     if (entries.length) {
       lines.push("", "Top-level project map:", ...entries.map(entry => `- ${entry}`))
     }
   }
-  return lines.join("\n")
+  return compactTextByTokenBudget(lines.join("\n"), 2_400).text
 }
 
 export function workspaceContextPrompt(workspaceId: string | null | undefined): string {

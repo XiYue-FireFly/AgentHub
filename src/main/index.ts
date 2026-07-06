@@ -35,6 +35,7 @@ import { applyRouteDecisionToPlan, planDispatch } from "./runtime/dispatch-plann
 import { estimateDispatchBudget } from "./runtime/budget-center"
 import { resolvePluginPreDispatchHooks } from "./runtime/plugin-contributions"
 import { workspaceContextPrompt } from "./runtime/workspace-context"
+import { compactChatMessages, compactTextByTokenBudget, estimateMessagesTokens } from "./runtime/token-economy"
 import { runPreDispatchHooks } from "./hooks/hook-engine"
 // keyboard-shortcuts imports moved to src/main/ipc/workflow-ipc.ts
 // diagnostics, backup imports moved to src/main/ipc/workflow-ipc.ts
@@ -79,6 +80,13 @@ let memoryLibrary: MemoryLibrary | null = null
 const runtimeStore = getWorkbenchRuntimeStore()
 const taskToTurn = new Map<string, string>()
 const IMAGE_DATA_URL_BYTES = 2 * 1024 * 1024
+const MODEL_HISTORY_MAX_TOKENS = 24_000
+const MODEL_CURRENT_MESSAGE_MAX_TOKENS = 12_000
+const ATTACHMENT_TEXT_MAX_TOKENS = 4_000
+
+function hasInlineTextAttachment(attachments?: WorkbenchAttachment[]): boolean {
+  return attachments?.some(att => !!att.text && !att.path) ?? false
+}
 
 function liveWorkbenchWindows(): BrowserWindow[] {
   return [...workbenchWindows].filter(win => !win.isDestroyed())
@@ -147,9 +155,16 @@ function attachmentContextBlock(attachments?: WorkbenchAttachment[]): string {
       lines.push("Use the local image path above as visual context. If the agent supports image input, inspect the image directly; otherwise reason from the filename/path and ask for clarification only if needed.")
       if (att.dataUrl) lines.push(`Inline preview data URL: ${att.dataUrl.slice(0, 8192)}${att.dataUrl.length > 8192 ? "...[truncated]" : ""}`)
     } else if (att.text) {
+      const content = att.path
+        ? compactTextByTokenBudget(att.text, ATTACHMENT_TEXT_MAX_TOKENS, {
+          headTokens: Math.floor(ATTACHMENT_TEXT_MAX_TOKENS * 0.72),
+          tailTokens: Math.floor(ATTACHMENT_TEXT_MAX_TOKENS * 0.18),
+          marker: `[... attachment content omitted by token economy; original ${att.text.length} chars. Use the file path above or ask for a narrower excerpt if needed ...]`
+        }).text
+        : att.text
       lines.push("Content:")
       lines.push("```")
-      lines.push(att.text)
+      lines.push(content)
       lines.push("```")
     }
     return lines.join("\n")
@@ -194,15 +209,34 @@ function modelMessagesForTurn(threadId: string, currentPrompt: string, attachmen
     if (assistant) messages.push({ role: "assistant", content: assistant })
   }
   messages.push({ role: "user", content: promptWithAttachments(currentPrompt, attachments) })
-  return compactModelMessages(messages)
+  const preserveCurrentMessage = hasInlineTextAttachment(attachments)
+  return compactModelMessages(messages, MODEL_HISTORY_MAX_TOKENS, preserveCurrentMessage)
 }
 
-function compactModelMessages(messages: ChatCompletionMessage[], maxChars = 48_000): ChatCompletionMessage[] {
-  let total = messages.reduce((sum, message) => sum + message.content.length, 0)
-  const compacted = [...messages]
-  while (compacted.length > 1 && total > maxChars) {
-    const removed = compacted.shift()
-    total -= removed?.content.length || 0
+function compactModelMessages(messages: ChatCompletionMessage[], maxTokens = MODEL_HISTORY_MAX_TOKENS, preserveCurrentMessage = false): ChatCompletionMessage[] {
+  if (preserveCurrentMessage && messages.length > 0) {
+    const current = messages[messages.length - 1]
+    const currentTokens = estimateMessagesTokens([current])
+    const historyBudget = Math.max(0, maxTokens - currentTokens)
+    const history = messages.slice(0, -1)
+    const compactedHistory = historyBudget > 0
+      ? compactChatMessages(history, {
+        maxTokens: historyBudget,
+        keepRecentMessages: 3,
+        perHistoricalMessageTokens: 1_200,
+        currentMessageTokens: 2_000
+      }) as ChatCompletionMessage[]
+      : []
+    return [...compactedHistory, current]
+  }
+  const compacted = compactChatMessages(messages, {
+    maxTokens,
+    keepRecentMessages: 4,
+    perHistoricalMessageTokens: 1_600,
+    currentMessageTokens: MODEL_CURRENT_MESSAGE_MAX_TOKENS
+  }) as ChatCompletionMessage[]
+  while (compacted.length > 1 && estimateMessagesTokens(compacted) > maxTokens) {
+    compacted.shift()
   }
   return compacted
 }
@@ -606,6 +640,7 @@ typedHandle("turns:create", async (_event, payload) => {
   const dispatchMode = dispatchPlanBase.dispatchMode
   const scheduleForTurn = dispatchPlanBase.schedule
   const workspaceRoot = workspaceId ? getWorkspaceManager().getById(workspaceId)?.rootPath : null
+  const preserveCurrentMessage = hasInlineTextAttachment(attachments)
   const preDispatchOutcome = await runPreDispatchHooks(
     resolvePluginPreDispatchHooks({ workspaceRoot }),
     {
@@ -628,7 +663,7 @@ typedHandle("turns:create", async (_event, payload) => {
   const dispatchPrompt = previewMessages[previewMessages.length - 1]?.content || promptWithAttachments(optimizedDispatchUserPrompt, attachments)
   const budgetEstimate = estimateDispatchBudget({
     prompt: dispatchPrompt,
-    attachments,
+    attachments: [],
     customSchedule: scheduleForTurn,
     modelSelection: turnModelSelection,
     targetAgent: directTarget || null
@@ -701,7 +736,8 @@ typedHandle("turns:create", async (_event, payload) => {
         turnId: turn.id,
         threadId: thread.id,
         conversationText: dispatchPrompt,
-        messages
+        messages,
+        preserveCurrentMessage
       }
     )
     : !directTarget && scheduleForTurn
@@ -716,6 +752,7 @@ typedHandle("turns:create", async (_event, payload) => {
         isCancelled: () => runtimeStore.getTurn(turn.id)?.status === "cancelled",
         thinking: payload.thinking as ThinkingConfig | undefined,
         modelSelection: turnModelSelection,
+        preserveCurrentMessage,
         routeDecision,
         recentUserMessages: recentUserPrompts(thread.id, turn.id),
         emitMemoryCandidates
@@ -731,7 +768,8 @@ typedHandle("turns:create", async (_event, payload) => {
         turnId: turn.id,
         threadId: thread.id,
         conversationText: dispatchPrompt,
-        messages
+        messages,
+        preserveCurrentMessage
       }
     )
   void runner
@@ -817,6 +855,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
     optimization: retryOptimization
   })
   const retryWorkspaceRoot = thread.workspaceId ? getWorkspaceManager().getById(thread.workspaceId)?.rootPath : null
+  const retryPreserveCurrentMessage = hasInlineTextAttachment(turn.attachments)
   const retryPreDispatchOutcome = await runPreDispatchHooks(
     resolvePluginPreDispatchHooks({ workspaceRoot: retryWorkspaceRoot }),
     {
@@ -837,7 +876,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
   const retryPreviewPrompt = retryPreviewMessages[retryPreviewMessages.length - 1]?.content || promptWithAttachments(retryOptimizedPrompt, turn.attachments)
   const retryBudgetEstimate = estimateDispatchBudget({
     prompt: retryPreviewPrompt,
-    attachments: turn.attachments ?? [],
+    attachments: [],
     customSchedule: retryPlanBase.schedule,
     modelSelection: retryModelSelection,
     targetAgent: retryTargetAgent || null
@@ -901,6 +940,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
       conversationText: retryPrompt,
       messages: retryMessages,
       modelSelection: retryModelSelection,
+      preserveCurrentMessage: retryPreserveCurrentMessage,
       thinking: turn.thinking
     })
     : !retryTargetAgent && retrySchedule
@@ -915,6 +955,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
         messages: retryMessages,
         isCancelled: () => runtimeStore.getTurn(created.turn.id)?.status === "cancelled",
         thinking: turn.thinking,
+        preserveCurrentMessage: retryPreserveCurrentMessage,
         routeDecision: retryRouteDecision,
         recentUserMessages: recentUserPrompts(thread.id, created.turn.id),
         emitMemoryCandidates
@@ -926,6 +967,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
       conversationText: retryPrompt,
       messages: retryMessages,
       modelSelection: retryModelSelection,
+      preserveCurrentMessage: retryPreserveCurrentMessage,
       thinking: turn.thinking
     })
   void retryRunner
