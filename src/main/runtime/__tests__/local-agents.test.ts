@@ -3,18 +3,27 @@ import { describe, expect, it, vi, beforeEach } from "vitest"
 const bindings: any[] = []
 const existingBinaries = new Set(["C:/bin/codex.cmd", "C:/bin/opencode.exe", "C:/bin/hermes.exe", "C:/bin/gemini.cmd", "C:/bin/codebuddy.exe", "C:/bin/antigravity.exe"])
 const failingBinaries = new Set<string>()
+const throwingBinaries = new Set<string>()
+const execFileCalls: Array<{ binary: string; args: string[] }> = []
 
 vi.mock("node:fs", () => ({
   existsSync: (path: string) => existingBinaries.has(path)
 }))
 
 vi.mock("node:child_process", () => ({
-  execFile: (binary: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string) => void) => {
-    if (failingBinaries.has(binary)) {
+  execFile: (binary: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string) => void) => {
+    execFileCalls.push({ binary, args })
+    const commandLine = args[3] || ""
+    const cmdTarget = commandLine.match(/"([^"]+\.(?:cmd|bat))"/i)?.[1] || commandLine.match(/(\S+\.(?:cmd|bat))/i)?.[1]
+    const target = binary.toLowerCase().endsWith("cmd.exe") ? cmdTarget || binary : binary
+    if (throwingBinaries.has(target)) {
+      throw new Error("spawn EINVAL")
+    }
+    if (failingBinaries.has(target)) {
       callback(new Error("not available"), "")
       return
     }
-    callback(null, `${binary} 1.0.0\n`)
+    callback(null, `${target} 1.0.0\n`)
   }
 }))
 
@@ -53,6 +62,8 @@ describe("local agent statuses", () => {
     existingBinaries.add("C:/bin/codebuddy.exe")
     existingBinaries.add("C:/bin/antigravity.exe")
     failingBinaries.clear()
+    throwingBinaries.clear()
+    execFileCalls.length = 0
   })
 
   it("reports installed and configured local agents", async () => {
@@ -185,6 +196,54 @@ describe("local agent statuses", () => {
     expect(gemini?.installed).toBe(false)
     expect(gemini?.configured).toBe(false)
     expect(gemini?.diagnostic?.code).toBe("configured-binary-unavailable")
+  })
+
+  it("does not reject detection when a configured binary throws synchronously during probing", async () => {
+    throwingBinaries.add("gemini")
+    bindings.push({ agentId: "gemini", providerId: "local-cli", modelId: "local", protocol: "stdio-plain", binary: "gemini" })
+    const { detectLocalAgentStatuses } = await import("../local-agents")
+
+    const statuses = await detectLocalAgentStatuses()
+    const gemini = statuses.find(s => s.agentId === "gemini")
+
+    expect(gemini?.installed).toBe(false)
+    expect(gemini?.configured).toBe(false)
+    expect(gemini?.diagnostic?.code).toBe("configured-binary-unavailable")
+  })
+
+  it("normalizes quoted configured executable paths before probing", async () => {
+    bindings.push({ agentId: "gemini", providerId: "local-cli", modelId: "local", protocol: "stdio-plain", binary: "\"C:/bin/gemini.cmd\"" })
+    const { detectLocalAgentStatuses } = await import("../local-agents")
+
+    const gemini = (await detectLocalAgentStatuses()).find(s => s.agentId === "gemini")
+
+    expect(gemini?.installed).toBe(true)
+    expect(gemini?.configured).toBe(true)
+    expect(gemini?.binary).toBe("C:/bin/gemini.cmd")
+    if (process.platform === "win32") {
+      const cmdProbe = execFileCalls.find(call => call.binary.toLowerCase().endsWith("cmd.exe") && call.args.join(" ").includes("gemini.cmd"))
+      expect(cmdProbe?.args.join(" ")).toContain("C:/bin/gemini.cmd")
+    }
+  })
+
+  it("accepts first-class local agent command names when probing configured bindings", async () => {
+    bindings.push({ agentId: "codex", providerId: "local-cli", modelId: "local", protocol: "stdio-plain", binary: "codex" })
+    const { detectLocalAgentStatuses } = await import("../local-agents")
+
+    const codex = (await detectLocalAgentStatuses()).find(s => s.agentId === "codex")
+
+    expect(codex?.installed).toBe(true)
+    expect(codex?.configured).toBe(true)
+  })
+
+  it("accepts Windows shim command names when probing configured bindings", async () => {
+    bindings.push({ agentId: "codex", providerId: "local-cli", modelId: "local", protocol: "stdio-plain", binary: "codex.cmd" })
+    const { detectLocalAgentStatuses } = await import("../local-agents")
+
+    const codex = (await detectLocalAgentStatuses()).find(s => s.agentId === "codex")
+
+    expect(codex?.installed).toBe(true)
+    expect(codex?.configured).toBe(true)
   })
 
   it("revalidates cached configured agents in the background after uninstall", async () => {
