@@ -171,6 +171,33 @@ export interface ScheduleStep {
   dependsOn?: string[]
 }
 
+export type ScheduleArtifactMode = "summary" | "full" | "files" | "custom"
+export type ScheduleApprovalPolicy = "inherit" | "auto" | "ask" | "require" | "skip"
+
+export interface ScheduleGraphNode {
+  id: string
+  label: string
+  agentId: string
+  role: AgentRunNode["role"]
+  mode: "auto" | "broadcast" | "chain" | "orchestrate"
+  promptTemplate?: string
+  approvalPolicy?: ScheduleApprovalPolicy
+}
+
+export interface ScheduleGraphEdge {
+  id: string
+  from: string
+  to: string
+  artifactMode: ScheduleArtifactMode
+}
+
+export interface ScheduleGraph {
+  version: 1
+  nodes: ScheduleGraphNode[]
+  edges: ScheduleGraphEdge[]
+  layout: Record<string, { x: number; y: number }>
+}
+
 export interface SchedulePreview {
   preset: DispatchPreset
   label: string
@@ -180,6 +207,7 @@ export interface SchedulePreview {
   descriptionZh?: string
   descriptionEn?: string
   steps: ScheduleStep[]
+  graph?: ScheduleGraph
 }
 
 export interface WorkbenchCommand {
@@ -188,7 +216,7 @@ export interface WorkbenchCommand {
   description: string
   descriptionZh?: string
   descriptionEn?: string
-  category: "session" | "agent" | "schedule" | "tool" | "skill" | "workspace" | "ecc"
+  category: "session" | "agent" | "schedule" | "tool" | "skill" | "workspace" | "ecc" | "plugin"
   insertText?: string
   action:
     | "insert"
@@ -203,7 +231,7 @@ export interface WorkbenchCommand {
     | "use-agent"
     | "set-goal"
     | "run-loop"
-  source: "builtin" | "schedule" | "skill" | "local-agent" | "ecc"
+  source: "builtin" | "schedule" | "skill" | "local-agent" | "ecc" | "plugin"
   payload?: Record<string, any>
 }
 
@@ -392,6 +420,26 @@ export interface UsageRequestRecord {
   rawUsage?: any
 }
 
+export interface BudgetCheckResult {
+  allowed: boolean
+  reason?: string
+  warning?: string
+}
+
+export interface BudgetEstimate {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  estimatedRequests: number
+  estimatedCostUsd: number | null
+  hasUnpriced: boolean
+  dailySpentUsd: number
+  monthlySpentUsd: number
+  projectedDailyUsd: number | null
+  projectedMonthlyUsd: number | null
+  check: BudgetCheckResult
+}
+
 export interface UsagePricingRule {
   id: string
   providerId?: string
@@ -409,6 +457,7 @@ export interface UsageRecordFilter {
   range?: UsageRange
   from?: number
   to?: number
+  threadId?: string
   providerId?: string
   modelId?: string
   agentId?: string
@@ -656,9 +705,19 @@ export interface ThreadTodo {
 export interface UpdateStatus {
   version: string
   channel: "stable" | "preview"
+  state?: "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error"
   checking: boolean
+  available?: boolean
+  downloaded?: boolean
   latestVersion?: string
   downloadUrl?: string
+  downloadProgress?: number
+  releaseName?: string
+  releaseDate?: string
   error?: string
   checkedAt?: number
+  canCheck?: boolean
+  canDownload?: boolean
+  canInstall?: boolean
+  devMode?: boolean
 }

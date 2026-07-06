@@ -15,7 +15,14 @@ import { NativeTitlebar } from './NativeTitlebar'
 import { clampInspectorWidth } from './WorkbenchPanels'
 import { localAgentOptions } from './localAgentOptions'
 import { readRememberedWorkspaceId, rememberWorkbenchWorkspaceId, resolveWorkbenchWorkspaceId } from './workspaceSelection'
-import { customScheduleHasRunnableSteps, defaultCustomSchedule, defaultSmartFiveRoleSchedule, isStoredSchedule, normalizeStoredScheduleOverrides } from './customSchedule'
+import {
+  customScheduleHasRunnableSteps,
+  defaultCustomSchedule,
+  defaultSmartFiveRoleSchedule,
+  normalizeScheduleForStorage,
+  normalizeStoredSchedule,
+  normalizeStoredScheduleOverrides
+} from './customSchedule'
 import { readAppearanceLocal } from '../appearance'
 import { styledConfirm } from '../lib/confirm'
 import {
@@ -169,19 +176,19 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [])
 
   const setCustomSchedule = useCallback((schedule: SchedulePreview) => {
-    const next = { ...schedule, preset: 'custom' as DispatchPreset }
+    const next = normalizeScheduleForStorage({ ...schedule, preset: 'custom' as DispatchPreset })
     setCustomScheduleState(next)
     window.electronAPI.store.set(CUSTOM_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [])
 
   const setSmartSchedule = useCallback((schedule: SchedulePreview) => {
-    const next = { ...schedule, preset: 'firefly-custom' as DispatchPreset }
+    const next = normalizeScheduleForStorage({ ...schedule, preset: 'firefly-custom' as DispatchPreset })
     setSmartScheduleState(next)
     window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [])
 
   const setScheduleForMode = useCallback((preset: DispatchPreset, schedule: SchedulePreview) => {
-    const next = { ...schedule, preset }
+    const next = normalizeScheduleForStorage({ ...schedule, preset })
     if (preset === 'custom') {
       setCustomSchedule(next)
       return
@@ -406,12 +413,16 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   useEffect(() => {
     window.electronAPI.store.get(CUSTOM_SCHEDULE_STORE_KEY)
-      .then(value => { if (isStoredSchedule(value, 'custom')) setCustomScheduleState(value) })
+      .then(value => {
+        const schedule = normalizeStoredSchedule(value, 'custom')
+        if (schedule) setCustomScheduleState(schedule)
+      })
       .catch(() => {})
     window.electronAPI.store.get(SMART_SCHEDULE_STORE_KEY)
       .then(value => {
         smartScheduleStoreLoaded.current = true
-        if (isStoredSchedule(value, 'firefly-custom')) setSmartScheduleState(value)
+        const schedule = normalizeStoredSchedule(value, 'firefly-custom')
+        if (schedule) setSmartScheduleState(schedule)
       })
       .catch(() => {})
     window.electronAPI.store.get(SCHEDULE_OVERRIDES_STORE_KEY)
@@ -1144,6 +1155,20 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       return true
     }
     if (command.action === 'insert' && command.payload?.template) {
+      if (command.payload.template === 'plugin-prompt') {
+        const template = String(command.payload.promptTemplate || '')
+        const nextPrompt = template
+          .replaceAll('{{input}}', args)
+          .replaceAll('{{prompt}}', args)
+          .trim()
+        if (!nextPrompt) return false
+        await sendPrompt(nextPrompt)
+        return true
+      }
+      if (command.payload.template === 'plugin-insert') {
+        if (args) await sendPrompt(args)
+        return Boolean(args)
+      }
       if (command.payload.template === 'model') {
         const result = resolveModelCommand(args, selectableModels)
         if (result.selection) {
@@ -1312,6 +1337,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           thinking={thinking}
           setThinking={setThinking}
           schedules={schedules}
+          scheduleForMode={scheduleForMode}
           workspaces={workspaces}
           pendingComposerAttachments={pendingComposerAttachments}
           onExternalAttachmentsConsumed={() => setPendingComposerAttachments([])}

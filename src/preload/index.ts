@@ -26,6 +26,9 @@ const api = {
       return () => ipcRenderer.removeListener('win:maximized', handler)
     }
   },
+  windows: {
+    openWorkbench: () => typedInvoke('windows:openWorkbench')
+  },
   providers: {
     get: () => typedInvoke('providers:get'),
     upsert: (p: Record<string, unknown>) => typedInvoke('providers:upsert', p),
@@ -273,6 +276,8 @@ const api = {
     status: () => typedInvoke('updates:status'),
     check: (channel?: IpcArgs<'updates:check'>[0]) => typedInvoke('updates:check', channel),
     setChannel: (channel: IpcArgs<'updates:setChannel'>[0]) => typedInvoke('updates:setChannel', channel),
+    download: () => typedInvoke('updates:download'),
+    install: () => typedInvoke('updates:install'),
     openDownload: () => typedInvoke('updates:openDownload')
   },
   browser: {
@@ -479,7 +484,8 @@ const api = {
   budget: {
     get: () => typedInvoke('budget:get'),
     update: (patch: IpcArgs<'budget:update'>[0]) => typedInvoke('budget:update', patch),
-    check: (dailySpent: number, monthlySpent: number, requestTokens: number) => typedInvoke('budget:check', dailySpent, monthlySpent, requestTokens)
+    check: (dailySpent: number, monthlySpent: number, requestTokens: number, requestCostUsd?: number) => typedInvoke('budget:check', dailySpent, monthlySpent, requestTokens, requestCostUsd),
+    estimateDispatch: (input: IpcArgs<'budget:estimateDispatch'>[0]) => typedInvoke('budget:estimateDispatch', input)
   },
   // --- P4-F3: Memory Studio ---
   memoryStudio: {

@@ -32,6 +32,9 @@ import { upsertThreadTodo } from "./runtime/todos"
 import { buildContextProjection } from "./runtime/context-ledger"
 import { optimizePromptForDispatch } from "./runtime/prompt-optimizer"
 import { applyRouteDecisionToPlan, planDispatch } from "./runtime/dispatch-planner"
+import { estimateDispatchBudget } from "./runtime/budget-center"
+import { resolvePluginPreDispatchHooks } from "./runtime/plugin-contributions"
+import { runPreDispatchHooks } from "./hooks/hook-engine"
 // keyboard-shortcuts imports moved to src/main/ipc/workflow-ipc.ts
 // diagnostics, backup imports moved to src/main/ipc/workflow-ipc.ts
 // notifications, onboarding imports moved to src/main/ipc/workflow-ipc.ts
@@ -57,7 +60,8 @@ function resolveAppVersionFromMain(): string {
   try { return app.getVersion() } catch { return '1.0.0' }
 }
 
-let mainWindow: BrowserWindow | null = null
+const workbenchWindows = new Set<BrowserWindow>()
+let lastFocusedWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let hub: HubServer | null = null
 const registry = new AgentRegistry()
@@ -74,6 +78,37 @@ let memoryLibrary: MemoryLibrary | null = null
 const runtimeStore = getWorkbenchRuntimeStore()
 const taskToTurn = new Map<string, string>()
 const IMAGE_DATA_URL_BYTES = 2 * 1024 * 1024
+
+function liveWorkbenchWindows(): BrowserWindow[] {
+  return [...workbenchWindows].filter(win => !win.isDestroyed())
+}
+
+function getActiveWorkbenchWindow(): BrowserWindow | null {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && workbenchWindows.has(focused) && !focused.isDestroyed()) return focused
+  if (lastFocusedWindow && !lastFocusedWindow.isDestroyed()) return lastFocusedWindow
+  return liveWorkbenchWindows()[0] ?? null
+}
+
+function revealWindow(win: BrowserWindow): void {
+  if (win.isDestroyed()) return
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  lastFocusedWindow = win
+}
+
+function broadcastToWorkbenchWindows(channel: string, payload: unknown): void {
+  for (const win of liveWorkbenchWindows()) {
+    win.webContents.send(channel, payload)
+  }
+}
+
+function sendToActiveWindow(action: string, params: Record<string, string> = {}): void {
+  const win = getActiveWorkbenchWindow()
+  if (!win || win.isDestroyed()) return
+  win.webContents.send("app:menu-command", { action, params })
+}
 
 function materializeAttachments(attachments: WorkbenchAttachment[], workspaceId: string | null): WorkbenchAttachment[] {
   if (!attachments.length) return []
@@ -283,9 +318,7 @@ runtimeStore.on("event", (event) => {
     if (event.payload?.status === "completed") showWindowsNotification("AgentHub", "Task completed.")
     if (event.payload?.status === "failed") showWindowsNotification("AgentHub", String(event.payload?.error || "Task failed.").slice(0, 120))
   }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("runtime:event", event)
-  }
+  broadcastToWorkbenchWindows("runtime:event", event)
 })
 
 function memory(): MemoryLibrary {
@@ -316,11 +349,11 @@ function showWindowsNotification(title: string, body: string): void {
   }
 }
 
-function createWindow(): void {
+function createWindow(): BrowserWindow {
   const isDevRenderer = Boolean(process.env.ELECTRON_RENDERER_URL)
   const iconPath = appAssetPath(process.platform === "win32" ? "icon.ico" : "icon.png")
   windowLog.info(`create renderer=${process.env.ELECTRON_RENDERER_URL || "file"} dev=${isDevRenderer}`)
-  mainWindow = new BrowserWindow({
+  const win = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 960,
@@ -340,35 +373,37 @@ function createWindow(): void {
     frame: false,
     backgroundColor: "#f7f8fb"
   })
-  installWebviewGuards(mainWindow.webContents)
-  installAppMenu(mainWindow)
+  workbenchWindows.add(win)
+  lastFocusedWindow = win
+  installWebviewGuards(win.webContents)
   let hasShownMainWindow = isDevRenderer
   const revealMainWindow = (): void => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+    if (win.isDestroyed()) return
+    revealWindow(win)
     hasShownMainWindow = true
-    windowLog.info(`reveal visible=${mainWindow.isVisible()} focused=${mainWindow.isFocused()} minimized=${mainWindow.isMinimized()}`)
+    windowLog.info(`reveal visible=${win.isVisible()} focused=${win.isFocused()} minimized=${win.isMinimized()}`)
   }
-  mainWindow.on("ready-to-show", () => {
+  win.on("focus", () => {
+    lastFocusedWindow = win
+  })
+  win.on("ready-to-show", () => {
     windowLog.info("ready-to-show")
     revealMainWindow()
   })
-  mainWindow.webContents.once("did-finish-load", () => {
+  win.webContents.once("did-finish-load", () => {
     windowLog.info("did-finish-load")
     if (!hasShownMainWindow) revealMainWindow()
   })
-  mainWindow.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+  win.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
     if (!isMainFrame) return
     windowLog.error(`Failed to load renderer ${url}: ${code} ${description}`)
     revealMainWindow()
   })
-  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+  win.webContents.on("render-process-gone", (_event, details) => {
     windowLog.error("Renderer process gone:", details)
     revealMainWindow()
   })
-  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     const prefix = level >= 2 ? "error" : level === 1 ? "warn" : "log"
     console[prefix](`[Renderer:${prefix}] ${message} (${sourceId}:${line})`)
   })
@@ -376,23 +411,27 @@ function createWindow(): void {
     if (!hasShownMainWindow) revealMainWindow()
   }, isDevRenderer ? 1500 : 5000)
   revealTimer.unref?.()
-  mainWindow.on("maximize", () => mainWindow?.webContents.send("win:maximized", true))
-  mainWindow.on("unmaximize", () => mainWindow?.webContents.send("win:maximized", false))
-  mainWindow.on("close", (event) => {
+  win.on("maximize", () => win.webContents.send("win:maximized", true))
+  win.on("unmaximize", () => win.webContents.send("win:maximized", false))
+  win.on("close", (event) => {
     if ((app as any).isQuitting) return
-    if (store.get("minimizeToTray") !== false) {
+    const visibleWindows = liveWorkbenchWindows().filter(item => item.isVisible())
+    const isLastVisibleWindow = visibleWindows.length <= 1 && visibleWindows[0] === win
+    if (store.get("minimizeToTray") !== false && isLastVisibleWindow) {
       event.preventDefault()
-      mainWindow?.hide()
+      win.hide()
     }
   })
-  mainWindow.on("closed", () => {
-    mainWindow = null
+  win.on("closed", () => {
+    workbenchWindows.delete(win)
+    if (lastFocusedWindow === win) lastFocusedWindow = liveWorkbenchWindows()[0] ?? null
   })
   if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, "../renderer/index.html"))
+    win.loadFile(join(__dirname, "../renderer/index.html"))
   }
+  return win
 }
 
 function createTray(): void {
@@ -410,14 +449,16 @@ function createTray(): void {
   tray.on("double-click", () => ensureWindowVisible())
 }
 
-function ensureWindowVisible(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createWindow()
-    return
-  }
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.show()
-  mainWindow.focus()
+function ensureWindowVisible(): BrowserWindow {
+  const win = getActiveWorkbenchWindow() || createWindow()
+  revealWindow(win)
+  return win
+}
+
+function openWorkbench(): BrowserWindow {
+  const win = createWindow()
+  revealWindow(win)
+  return win
 }
 
 function registerAgentsFromBindings(): void {
@@ -562,7 +603,36 @@ typedHandle("turns:create", async (_event, payload) => {
   const effectiveMode = dispatchPlanBase.effectiveMode
   const dispatchMode = dispatchPlanBase.dispatchMode
   const scheduleForTurn = dispatchPlanBase.schedule
-  const optimizedDispatchUserPrompt = promptOptimization.optimizedPrompt
+  const workspaceRoot = workspaceId ? getWorkspaceManager().getById(workspaceId)?.rootPath : null
+  const preDispatchOutcome = await runPreDispatchHooks(
+    resolvePluginPreDispatchHooks({ workspaceRoot }),
+    {
+      threadId: existingThread?.id || "new",
+      prompt: promptOptimization.optimizedPrompt,
+      workspace: workspaceRoot || undefined
+    }
+  )
+  if (preDispatchOutcome.denied) {
+    throw new Error(preDispatchOutcome.denied)
+  }
+  const pluginContext = preDispatchOutcome.additionalContext.length
+    ? ["[Plugin PreDispatch Context]", ...preDispatchOutcome.additionalContext].join("\n\n")
+    : ""
+  const optimizedDispatchUserPrompt = [promptOptimization.optimizedPrompt, pluginContext].filter(Boolean).join("\n\n")
+  const previewMessages = existingThread
+    ? modelMessagesForTurn(existingThread.id, optimizedDispatchUserPrompt, attachments)
+    : [{ role: "user" as const, content: promptWithAttachments(optimizedDispatchUserPrompt, attachments) }]
+  const dispatchPrompt = previewMessages[previewMessages.length - 1]?.content || promptWithAttachments(optimizedDispatchUserPrompt, attachments)
+  const budgetEstimate = estimateDispatchBudget({
+    prompt: dispatchPrompt,
+    attachments,
+    customSchedule: scheduleForTurn,
+    modelSelection: turnModelSelection,
+    targetAgent: directTarget || null
+  })
+  if (!budgetEstimate.check.allowed) {
+    throw new Error(budgetEstimate.check.reason || "Budget guardrail blocked this dispatch.")
+  }
   const { thread, turn } = runtimeStore.createTurn({
     threadId: payload.threadId ?? null,
     workspaceId,
@@ -587,7 +657,18 @@ typedHandle("turns:create", async (_event, payload) => {
   runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "prompt-optimizer", {
     intent: promptOptimization.intent,
     matchedSkills: promptOptimization.matchedSkills,
-    matchedPlugins: promptOptimization.matchedPlugins
+    matchedPlugins: promptOptimization.matchedPlugins,
+    pluginPreDispatch: {
+      additionalContextCount: preDispatchOutcome.additionalContext.length,
+      warnings: preDispatchOutcome.warnings
+    }
+  })
+  runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "budget-guard", {
+    totalTokens: budgetEstimate.totalTokens,
+    estimatedRequests: budgetEstimate.estimatedRequests,
+    estimatedCostUsd: budgetEstimate.estimatedCostUsd,
+    hasUnpriced: budgetEstimate.hasUnpriced,
+    warning: budgetEstimate.check.warning
   })
   const routeDecision = !directRun && dispatchPlanBase.routeAgentIds?.length
     ? makeRouteDecision(thread.id, turn.id, optimizedDispatchUserPrompt, dispatchPlanBase.routeAgentIds)
@@ -607,7 +688,6 @@ typedHandle("turns:create", async (_event, payload) => {
     selectedAgentId: routeDecision?.selectedAgentId
   })
   const messages = modelMessagesForTurn(thread.id, optimizedDispatchUserPrompt, attachments)
-  const dispatchPrompt = messages[messages.length - 1]?.content || promptWithAttachments(optimizedDispatchUserPrompt, attachments)
   const runner = providerDirect && turnModelSelection
     ? activeDispatcher.dispatchProviderDirect(
       dispatchPrompt,
@@ -733,6 +813,34 @@ typedHandle("turns:retry", async (_event, turnId) => {
     attachments: turn.attachments ?? [],
     optimization: retryOptimization
   })
+  const retryWorkspaceRoot = thread.workspaceId ? getWorkspaceManager().getById(thread.workspaceId)?.rootPath : null
+  const retryPreDispatchOutcome = await runPreDispatchHooks(
+    resolvePluginPreDispatchHooks({ workspaceRoot: retryWorkspaceRoot }),
+    {
+      threadId: thread.id,
+      prompt: retryOptimization.optimizedPrompt,
+      workspace: retryWorkspaceRoot || undefined
+    }
+  )
+  if (retryPreDispatchOutcome.denied) {
+    throw new Error(retryPreDispatchOutcome.denied)
+  }
+  const retryPluginContext = retryPreDispatchOutcome.additionalContext.length
+    ? ["[Plugin PreDispatch Context]", ...retryPreDispatchOutcome.additionalContext].join("\n\n")
+    : ""
+  const retryOptimizedPrompt = [retryOptimization.optimizedPrompt, retryPluginContext].filter(Boolean).join("\n\n")
+  const retryPreviewMessages = modelMessagesForTurn(thread.id, retryOptimizedPrompt, turn.attachments, turn.id)
+  const retryPreviewPrompt = retryPreviewMessages[retryPreviewMessages.length - 1]?.content || promptWithAttachments(retryOptimizedPrompt, turn.attachments)
+  const retryBudgetEstimate = estimateDispatchBudget({
+    prompt: retryPreviewPrompt,
+    attachments: turn.attachments ?? [],
+    customSchedule: retryPlanBase.schedule,
+    modelSelection: retryModelSelection,
+    targetAgent: retryTargetAgent || null
+  })
+  if (!retryBudgetEstimate.check.allowed) {
+    throw new Error(retryBudgetEstimate.check.reason || "Budget guardrail blocked this dispatch.")
+  }
   const created = runtimeStore.createTurn({
     threadId: thread.id,
     workspaceId: thread.workspaceId,
@@ -748,10 +856,21 @@ typedHandle("turns:retry", async (_event, turnId) => {
   runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "prompt-optimizer", {
     intent: retryOptimization.intent,
     matchedSkills: retryOptimization.matchedSkills,
-    matchedPlugins: retryOptimization.matchedPlugins
+    matchedPlugins: retryOptimization.matchedPlugins,
+    pluginPreDispatch: {
+      additionalContextCount: retryPreDispatchOutcome.additionalContext.length,
+      warnings: retryPreDispatchOutcome.warnings
+    }
+  })
+  runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "budget-guard", {
+    totalTokens: retryBudgetEstimate.totalTokens,
+    estimatedRequests: retryBudgetEstimate.estimatedRequests,
+    estimatedCostUsd: retryBudgetEstimate.estimatedCostUsd,
+    hasUnpriced: retryBudgetEstimate.hasUnpriced,
+    warning: retryBudgetEstimate.check.warning
   })
   const retryRouteDecision = !retryDirectRun && retryPlanBase.routeAgentIds?.length
-    ? makeRouteDecision(thread.id, created.turn.id, retryOptimization.optimizedPrompt, retryPlanBase.routeAgentIds)
+    ? makeRouteDecision(thread.id, created.turn.id, retryOptimizedPrompt, retryPlanBase.routeAgentIds)
     : undefined
   const retryPlan = applyRouteDecisionToPlan(retryPlanBase, retryRouteDecision)
   runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "dispatch-planner", {
@@ -767,8 +886,8 @@ typedHandle("turns:retry", async (_event, turnId) => {
     reasons: retryPlan.reasons,
     selectedAgentId: retryRouteDecision?.selectedAgentId
   })
-  const retryMessages = modelMessagesForTurn(thread.id, retryOptimization.optimizedPrompt, turn.attachments, turn.id)
-  const retryPrompt = retryMessages[retryMessages.length - 1]?.content || promptWithAttachments(retryOptimization.optimizedPrompt, turn.attachments)
+  const retryMessages = modelMessagesForTurn(thread.id, retryOptimizedPrompt, turn.attachments, turn.id)
+  const retryPrompt = retryMessages[retryMessages.length - 1]?.content || promptWithAttachments(retryOptimizedPrompt, turn.attachments)
   const retrySchedule = retryPlan.schedule
   const retryRunner = retryProviderDirect && retryModelSelection
     ? activeDispatcher.dispatchProviderDirect(retryPrompt, retryModelSelection, {
@@ -863,9 +982,10 @@ function parseDeepLink(url: string): { action: string; params: Record<string, st
 function handleDeepLink(url: string): void {
   const link = parseDeepLink(url)
   if (!link) return
-  if (mainWindow) {
-    ensureWindowVisible()
-    mainWindow.webContents.send('app:deep-link', link)
+  const win = getActiveWorkbenchWindow()
+  if (win) {
+    revealWindow(win)
+    win.webContents.send('app:deep-link', link)
   } else {
     pendingDeepLink = link
   }
@@ -928,15 +1048,18 @@ app.whenReady().then(async () => {
     hub,
     router,
     proxy,
-    getMainWindow: () => mainWindow
+    getMainWindow: getActiveWorkbenchWindow,
+    getActiveWindow: getActiveWorkbenchWindow,
+    openWorkbench
   })
 
-  createWindow()
+  installAppMenu({ sendToActiveWindow, openWorkbench: () => { openWorkbench() } })
+  const firstWindow = createWindow()
   createTray()
 
   if (pendingDeepLink) {
-    mainWindow?.webContents.once("did-finish-load", () => {
-      mainWindow?.webContents.send("app:deep-link", pendingDeepLink)
+    firstWindow.webContents.once("did-finish-load", () => {
+      firstWindow.webContents.send("app:deep-link", pendingDeepLink)
       pendingDeepLink = null
     })
   }

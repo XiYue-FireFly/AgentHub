@@ -52,6 +52,7 @@ export function ComposerBar({
   thinking,
   setThinking,
   schedules,
+  scheduleForMode,
   sending,
   onSend,
   onCancel,
@@ -78,6 +79,7 @@ export function ComposerBar({
   thinking: ComposerThinkingConfig
   setThinking: (thinking: ComposerThinkingConfig) => void
   schedules: SchedulePreview[]
+  scheduleForMode?: (preset: DispatchPreset) => SchedulePreview | undefined
   sending: boolean
   onSend: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: ComposerSendOverrides) => void
   onCancel: () => void
@@ -116,6 +118,8 @@ export function ComposerBar({
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('full')
   const [quickRole, setQuickRole] = useState<'none' | 'reviewer' | 'executor' | 'gatekeeper'>('none')
   const [queue, setQueue] = useState<Array<{ text: string; attachments: WorkbenchAttachment[]; overrides?: any }>>([])
+  const [budgetEstimate, setBudgetEstimate] = useState<BudgetEstimate | null>(null)
+  const [budgetEstimateLoading, setBudgetEstimateLoading] = useState(false)
   const [cursorIndex, setCursorIndex] = useState(0)
   const [modelPickerAnchor, setModelPickerAnchor] = useState<PickerAnchor>(null)
   const [workspacePickerAnchor, setWorkspacePickerAnchor] = useState<PickerAnchor>(null)
@@ -160,6 +164,7 @@ export function ComposerBar({
     : tr('请先在设置里配置本地 Agent 或 API 厂商', 'Configure a local agent or API provider in Settings first')
   const activeModelRows = filterPickerModelRows(activeProviderId ? apiModelRows : [], modelQuery)
   const selectedPickerModelKey = modelSelectionKey(modelSelection)
+  const budgetBlocked = budgetEstimate?.check.allowed === false
 
   const refreshApprovalMode = useCallback(async () => {
     const config = await window.electronAPI.agentic.getApprovalConfig()
@@ -183,6 +188,32 @@ export function ComposerBar({
     const timer = window.setTimeout(() => onRefreshProviders(), 350)
     return () => window.clearTimeout(timer)
   }, [providers.length, onRefreshProviders])
+
+  useEffect(() => {
+    const prompt = text.trim()
+    if (!prompt && attachments.length === 0) {
+      setBudgetEstimate(null)
+      setBudgetEstimateLoading(false)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const quickSchedule = quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds) || undefined
+      const selectedSchedule = quickSchedule || (!targetAgent && !(modelSelection?.source === 'provider') ? scheduleForMode?.(mode) : undefined)
+      setBudgetEstimateLoading(true)
+      window.electronAPI.budget.estimateDispatch({
+        workspaceId,
+        prompt: prompt || 'Please analyze the attached content.',
+        mode,
+        targetAgent,
+        modelSelection: modelSelection || undefined,
+        attachments,
+        customSchedule: selectedSchedule
+      }).then(setBudgetEstimate)
+        .catch(() => setBudgetEstimate(null))
+        .finally(() => setBudgetEstimateLoading(false))
+    }, 450)
+    return () => window.clearTimeout(timer)
+  }, [text, attachments, quickRole, readyAgentIds, targetAgent, modelSelection, scheduleForMode, mode, workspaceId])
 
   useEffect(() => {
     let alive = true
@@ -815,7 +846,7 @@ export function ComposerBar({
             )}
             {sending
               ? <button className="wb-send stop" onClick={onCancel} title={tr('停止', 'Stop')}><Icon d={IC.stop} size={15} /></button>
-              : <button className="wb-send" disabled={!text.trim() && attachments.length === 0 && queue.length === 0} onClick={send} title={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
+              : <button className="wb-send" disabled={budgetBlocked || (!text.trim() && attachments.length === 0 && queue.length === 0)} onClick={send} title={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
           </div>
         </div>
 
@@ -975,6 +1006,7 @@ export function ComposerBar({
               ))}
             </select>
           </div>
+          <BudgetEstimatePill estimate={budgetEstimate} loading={budgetEstimateLoading} />
           <span className="wb-composer-key-hint">{tr('Type / for commands, @ for context', 'Type / for commands, @ for context')}</span>
         </div>
       </div>
@@ -990,6 +1022,37 @@ function localAgentRows(agentIds: string[]): PickerAgentRow[] {
     subtitle: tr('本地 CLI', 'Local CLI'),
     agentId
   }))
+}
+
+function BudgetEstimatePill({ estimate, loading }: { estimate: BudgetEstimate | null; loading: boolean }) {
+  if (!estimate && !loading) return null
+  const blocked = estimate?.check.allowed === false
+  const warning = !!estimate?.check.warning
+  const className = `wb-budget-estimate ${blocked ? 'blocked' : warning ? 'warning' : ''}`
+  return (
+    <span className={className} title={estimate?.check.reason || estimate?.check.warning || undefined}>
+      {loading && !estimate
+        ? 'Estimating...'
+        : (
+          <>
+            <strong>{formatBudgetTokens(estimate?.totalTokens || 0)}</strong>
+            <em>{estimate?.estimatedRequests || 1}x</em>
+            <small>{estimate?.estimatedCostUsd == null ? 'unpriced' : formatBudgetCost(estimate.estimatedCostUsd)}</small>
+          </>
+        )}
+    </span>
+  )
+}
+
+function formatBudgetTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M tok`
+  if (tokens >= 1_000) return `${Math.round(tokens / 100) / 10}k tok`
+  return `${tokens} tok`
+}
+
+function formatBudgetCost(cost: number): string {
+  if (cost < 0.01) return '<$0.01'
+  return `$${cost.toFixed(2)}`
 }
 
 function providerAgentRows(providers: ProviderDef[]): PickerAgentRow[] {

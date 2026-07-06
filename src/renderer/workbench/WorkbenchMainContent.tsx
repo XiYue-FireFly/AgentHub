@@ -87,6 +87,7 @@ interface WorkbenchMainContentProps {
   thinking: WorkbenchThinking
   setThinking: (thinking: WorkbenchThinking) => void
   schedules: SchedulePreview[]
+  scheduleForMode?: (preset: DispatchPreset) => SchedulePreview | undefined
   workspaces: WorkspaceItem[]
   pendingComposerAttachments: WorkbenchAttachment[]
   onExternalAttachmentsConsumed: () => void
@@ -156,6 +157,7 @@ export function WorkbenchMainContent({
   thinking,
   setThinking,
   schedules,
+  scheduleForMode,
   workspaces,
   pendingComposerAttachments,
   onExternalAttachmentsConsumed
@@ -258,6 +260,7 @@ export function WorkbenchMainContent({
             thinking={thinking}
             setThinking={setThinking}
             schedules={schedules}
+            scheduleForMode={scheduleForMode}
             sending={sending}
             onSend={sendPrompt}
             onCancel={cancelLatest}

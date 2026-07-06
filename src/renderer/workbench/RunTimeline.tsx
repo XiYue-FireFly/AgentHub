@@ -4,7 +4,12 @@ import { AGENT_META } from '../glass/meta'
 import { getLang, tr } from '../glass/i18n'
 import { SetupTab } from '../glass/connection-status'
 import { localAgentOptions } from './localAgentOptions'
-import { buildCustomScheduleTemplate } from './customSchedule'
+import {
+  buildCustomScheduleTemplate,
+  scheduleGraphFromSteps,
+  validateScheduleGraph,
+  withCompiledScheduleGraph
+} from './customSchedule'
 
 export function RunTimeline({
   events,
@@ -126,7 +131,7 @@ export function RunTimeline({
           </div>
           <p>{scheduleDescription(schedule, mode)}</p>
           {schedule && (
-            <CustomScheduleEditor
+            <DagScheduleEditor
               schedule={schedule}
               setSchedule={next => setScheduleForMode(mode, next)}
               localAgents={localAgents}
@@ -220,6 +225,267 @@ function terminalStatus(run: TerminalRun): string {
   if (run.status === 'completed') return run.exitCode === 0 ? tr('完成', 'done') : `${tr('退出', 'exit')} ${run.exitCode}`
   if (run.status === 'cancelled') return tr('已取消', 'cancelled')
   return `${tr('失败', 'failed')}${run.exitCode !== null ? ` ${run.exitCode}` : ''}`
+}
+
+function DagScheduleEditor({
+  schedule,
+  setSchedule,
+  localAgents,
+  lockedPreset = 'custom'
+}: {
+  schedule: SchedulePreview
+  setSchedule: (schedule: SchedulePreview) => void
+  localAgents: LocalAgentStatus[]
+  lockedPreset?: DispatchPreset
+}) {
+  const agents = localAgentOptions(localAgents)
+  const graph = React.useMemo(() => schedule.graph || scheduleGraphFromSteps(schedule), [schedule])
+  const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(graph.nodes[0]?.id ?? null)
+  const [graphError, setGraphError] = React.useState<string | null>(null)
+  const dragRef = React.useRef<{ id: string; dx: number; dy: number } | null>(null)
+  const selectedNode = graph.nodes.find(node => node.id === selectedNodeId) || graph.nodes[0] || null
+  const graphValidation = validateScheduleGraph(graph)
+
+  React.useEffect(() => {
+    if (selectedNodeId && graph.nodes.some(node => node.id === selectedNodeId)) return
+    setSelectedNodeId(graph.nodes[0]?.id ?? null)
+  }, [graph.nodes, selectedNodeId])
+
+  const updateGraph = (nextGraph: ScheduleGraph) => {
+    const validation = validateScheduleGraph(nextGraph)
+    if (!validation.ok) {
+      setGraphError(validation.errors[0] || tr('调度图无效。', 'Invalid schedule graph.'))
+      return
+    }
+    setGraphError(null)
+    setSchedule(withCompiledScheduleGraph({ ...schedule, preset: lockedPreset }, nextGraph))
+  }
+
+  const patchGraph = (updater: (current: ScheduleGraph) => ScheduleGraph) => updateGraph(updater(graph))
+
+  const updateNode = (nodeId: string, patch: Partial<ScheduleGraphNode>) => {
+    patchGraph(current => ({
+      ...current,
+      nodes: current.nodes.map(node => node.id === nodeId ? { ...node, ...patch } : node)
+    }))
+  }
+
+  const addStep = () => {
+    const index = graph.nodes.length + 1
+    const previous = graph.nodes[graph.nodes.length - 1]
+    const id = `custom-${Date.now().toString(36)}`
+    patchGraph(current => ({
+      ...current,
+      nodes: [
+        ...current.nodes,
+        {
+          id,
+          label: tr(`步骤 ${index}`, `Step ${index}`),
+          agentId: agents[0] || 'auto',
+          role: 'worker',
+          mode: 'auto',
+          approvalPolicy: 'inherit'
+        }
+      ],
+      edges: previous
+        ? [...current.edges, { id: `${previous.id}->${id}`, from: previous.id, to: id, artifactMode: 'summary' }]
+        : current.edges,
+      layout: { ...current.layout, [id]: { x: 28 + (index % 2) * 180, y: 32 + Math.floor(index / 2) * 116 } }
+    }))
+    setSelectedNodeId(id)
+  }
+
+  const removeStep = (nodeId: string) => {
+    if (graph.nodes.length <= 1) return
+    const nextNodes = graph.nodes.filter(node => node.id !== nodeId)
+    patchGraph(current => ({
+      ...current,
+      nodes: nextNodes,
+      edges: current.edges.filter(edge => edge.from !== nodeId && edge.to !== nodeId),
+      layout: Object.fromEntries(Object.entries(current.layout).filter(([id]) => id !== nodeId))
+    }))
+    setSelectedNodeId(nextNodes[0]?.id ?? null)
+  }
+
+  const toggleDependency = (nodeId: string, depId: string) => {
+    if (nodeId === depId) return
+    patchGraph(current => {
+      const exists = current.edges.some(edge => edge.from === depId && edge.to === nodeId)
+      return {
+        ...current,
+        edges: exists
+          ? current.edges.filter(edge => !(edge.from === depId && edge.to === nodeId))
+          : [...current.edges, { id: `${depId}->${nodeId}`, from: depId, to: nodeId, artifactMode: 'summary' }]
+      }
+    })
+  }
+
+  const updateEdgeArtifactMode = (edgeId: string, artifactMode: ScheduleArtifactMode) => {
+    patchGraph(current => ({
+      ...current,
+      edges: current.edges.map(edge => edge.id === edgeId ? { ...edge, artifactMode } : edge)
+    }))
+  }
+
+  const onNodePointerDown = (event: React.PointerEvent<SVGGElement>, nodeId: string) => {
+    const point = graph.layout[nodeId] || { x: 0, y: 0 }
+    dragRef.current = { id: nodeId, dx: event.clientX - point.x, dy: event.clientY - point.y }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setSelectedNodeId(nodeId)
+  }
+
+  const onNodePointerMove = (event: React.PointerEvent<SVGGElement>) => {
+    const drag = dragRef.current
+    if (!drag) return
+    const x = Math.max(0, Math.min(360, event.clientX - drag.dx))
+    const y = Math.max(0, Math.min(330, event.clientY - drag.dy))
+    patchGraph(current => ({
+      ...current,
+      layout: { ...current.layout, [drag.id]: { x, y } }
+    }))
+  }
+
+  const onNodePointerUp = (event: React.PointerEvent<SVGGElement>) => {
+    dragRef.current = null
+    event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  const applyTemplate = (kind: 'five' | 'parallel' | 'executor') => {
+    const next = buildCustomScheduleTemplate(kind, { ...schedule, preset: lockedPreset }, agents)
+    if (next) setSchedule({ ...next, preset: lockedPreset })
+  }
+
+  const templatesDisabled = agents.length === 0
+
+  return (
+    <div className="wb-custom-schedule">
+      <div className="wb-template-buttons">
+        <button onClick={() => applyTemplate('five')} disabled={templatesDisabled}>{tr('五角色', 'Five-role')}</button>
+        <button onClick={() => applyTemplate('parallel')} disabled={templatesDisabled}>{tr('并行评审', 'Parallel review')}</button>
+        <button onClick={() => applyTemplate('executor')} disabled={templatesDisabled}>{tr('执行门禁', 'Executor gate')}</button>
+      </div>
+      {templatesDisabled && (
+        <div className="wb-muted-box">{tr('没有可用本地 Agent 时不能套用调度模板。请先在路由设置里配置 CLI。', 'Configure a usable local CLI agent before applying schedule templates.')}</div>
+      )}
+      {(graphError || !graphValidation.ok) && (
+        <div className="wb-muted-box danger">{graphError || graphValidation.errors[0]}</div>
+      )}
+      <div className="wb-dag-editor">
+        <svg className="wb-dag-canvas" viewBox="0 0 520 420" role="img" aria-label={tr('调度编排图', 'Schedule graph')}>
+          <defs>
+            <marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0,0 L8,4 L0,8 Z" />
+            </marker>
+          </defs>
+          {graph.edges.map(edge => {
+            const from = graph.layout[edge.from] || { x: 0, y: 0 }
+            const to = graph.layout[edge.to] || { x: 0, y: 0 }
+            return (
+              <g key={edge.id} className="wb-dag-edge">
+                <path d={`M ${from.x + 142} ${from.y + 34} C ${from.x + 188} ${from.y + 34}, ${to.x - 34} ${to.y + 34}, ${to.x + 8} ${to.y + 34}`} markerEnd="url(#dag-arrow)" />
+                <text x={(from.x + to.x) / 2 + 88} y={(from.y + to.y) / 2 + 24}>{edge.artifactMode}</text>
+              </g>
+            )
+          })}
+          {graph.nodes.map((node, index) => {
+            const point = graph.layout[node.id] || { x: 28 + index * 24, y: 32 + index * 84 }
+            const selected = selectedNode?.id === node.id
+            return (
+              <g
+                key={node.id}
+                className={`wb-dag-node ${selected ? 'selected' : ''}`}
+                transform={`translate(${point.x} ${point.y})`}
+                onPointerDown={event => onNodePointerDown(event, node.id)}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={onNodePointerUp}
+              >
+                <rect width="148" height="72" rx="8" />
+                <text x="14" y="24">{node.label || node.id}</text>
+                <text x="14" y="46">{agentName(node.agentId)} / {roleLabel(node.role)}</text>
+                <text x="14" y="62">{dependencyLabel(graph.edges.filter(edge => edge.to === node.id).length)}</text>
+              </g>
+            )
+          })}
+        </svg>
+      </div>
+      {graph.nodes.map((node, index) => (
+        <div key={node.id} className={`wb-custom-step ${selectedNode?.id === node.id ? 'selected' : ''}`} onClick={() => setSelectedNodeId(node.id)}>
+          <div className="wb-custom-step-head">
+            <em>{index + 1}</em>
+            {AGENT_META[node.agentId] ? <AgentMark id={node.agentId} size={22} radius={6} /> : <Icon d={IC.broadcast} size={15} />}
+            <input value={node.label} onChange={event => updateNode(node.id, { label: event.target.value })} />
+            <small>{roleLabel(node.role)}{dependencyLabel(graph.edges.filter(edge => edge.to === node.id).length)}</small>
+            <button onClick={() => removeStep(node.id)} disabled={graph.nodes.length <= 1} title={tr('删除步骤', 'Delete step')}>
+              <Icon d={IC.trash} size={13} />
+            </button>
+          </div>
+          <div className="wb-custom-step-grid">
+            <select value={agents.includes(node.agentId) ? node.agentId : 'auto'} onChange={event => updateNode(node.id, { agentId: event.target.value })}>
+              {!agents.includes(node.agentId) && <option value="auto">{agents.length === 0 ? tr('无可用本地 Agent', 'No local agents ready') : tr('请选择可用 Agent', 'Select a ready agent')}</option>}
+              {agents.map(agentId => <option key={agentId} value={agentId}>{agentName(agentId)}</option>)}
+            </select>
+            <select value={node.role} onChange={event => updateNode(node.id, { role: event.target.value as ScheduleGraphNode['role'] })}>
+              <option value="router">{tr('路由', 'Router')}</option>
+              <option value="executor">{tr('执行', 'Executor')}</option>
+              <option value="gatekeeper">{tr('门禁', 'Gatekeeper')}</option>
+              <option value="lead">{tr('主控', 'Lead')}</option>
+              <option value="worker">{tr('工作', 'Worker')}</option>
+              <option value="reviewer">{tr('评审', 'Reviewer')}</option>
+              <option value="synthesizer">{tr('汇总', 'Synthesizer')}</option>
+              <option value="target">{tr('目标', 'Target')}</option>
+            </select>
+            <select value={node.mode} onChange={event => updateNode(node.id, { mode: event.target.value as ScheduleGraphNode['mode'] })}>
+              <option value="auto">auto</option>
+              <option value="broadcast">broadcast</option>
+              <option value="chain">chain</option>
+              <option value="orchestrate">orchestrate</option>
+            </select>
+            <select value={node.approvalPolicy || 'inherit'} onChange={event => updateNode(node.id, { approvalPolicy: event.target.value as ScheduleApprovalPolicy })}>
+              <option value="inherit">{tr('继承审批', 'Inherit approval')}</option>
+              <option value="auto">{tr('自动', 'Auto')}</option>
+              <option value="ask">{tr('询问', 'Ask')}</option>
+              <option value="require">{tr('强制审批', 'Require')}</option>
+              <option value="skip">{tr('跳过', 'Skip')}</option>
+            </select>
+          </div>
+          <textarea
+            className="wb-custom-prompt-template"
+            value={node.promptTemplate || ''}
+            onChange={event => updateNode(node.id, { promptTemplate: event.target.value })}
+            placeholder={tr('节点提示词模板（可选）', 'Node prompt template (optional)')}
+          />
+          <div className="wb-custom-deps">
+            <span>{tr('依赖', 'Depends on')}</span>
+            {graph.nodes.filter(candidate => candidate.id !== node.id).map(candidate => (
+              <label key={candidate.id}>
+                <input
+                  type="checkbox"
+                  checked={graph.edges.some(edge => edge.from === candidate.id && edge.to === node.id)}
+                  onChange={() => toggleDependency(node.id, candidate.id)}
+                />
+                {candidate.label || candidate.id}
+              </label>
+            ))}
+            {graph.nodes.length <= 1 && <small>{tr('添加更多步骤后可设置依赖关系。', 'Add more steps to set dependencies.')}</small>}
+          </div>
+          <div className="wb-custom-edge-modes">
+            {graph.edges.filter(edge => edge.to === node.id).map(edge => (
+              <label key={edge.id}>
+                {graph.nodes.find(candidate => candidate.id === edge.from)?.label || edge.from}
+                <select value={edge.artifactMode} onChange={event => updateEdgeArtifactMode(edge.id, event.target.value as ScheduleArtifactMode)}>
+                  <option value="summary">summary</option>
+                  <option value="full">full</option>
+                  <option value="files">files</option>
+                  <option value="custom">custom</option>
+                </select>
+              </label>
+            ))}
+          </div>
+        </div>
+      ))}
+      <button className="wb-wide-button" onClick={addStep}><Icon d={IC.plus} size={14} /> {tr('添加步骤', 'Add step')}</button>
+    </div>
+  )
 }
 
 function CustomScheduleEditor({

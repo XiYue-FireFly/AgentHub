@@ -38,6 +38,8 @@ interface IpcRegistrationDeps {
   router: any
   proxy: any
   getMainWindow: () => BrowserWindow | null
+  getActiveWindow?: () => BrowserWindow | null
+  openWorkbench?: () => BrowserWindow
 }
 
 /**
@@ -105,7 +107,9 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
     resolveAppVersionFromMain: deps.resolveAppVersionFromMain,
     registerAgentsFromBindings: deps.registerAgentsFromBindings,
     getWorkspaceManager: deps.getWorkspaceManager,
-    getMainWindow: deps.getMainWindow
+    getMainWindow: deps.getMainWindow,
+    getActiveWindow: deps.getActiveWindow,
+    openWorkbench: deps.openWorkbench
   })
 
   // Hub, threads, runtime, context handlers (18 handlers)

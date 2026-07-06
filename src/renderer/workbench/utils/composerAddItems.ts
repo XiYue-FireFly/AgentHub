@@ -58,7 +58,7 @@ export function buildBaseAddItems(input: { hasWorkspace: boolean; hasAgents: boo
   return items
 }
 
-export function buildPluginAddItems(plugins: any[], contributions: { commands?: any[]; skills?: any[]; prompts?: any[] }): ComposerAddItem[] {
+export function buildPluginAddItems(plugins: any[], contributions: { commands?: any[]; slashCommands?: any[]; skills?: any[]; prompts?: any[] }): ComposerAddItem[] {
   const pluginById = new Map<string, any>()
   for (const plugin of plugins || []) pluginById.set(plugin.id, plugin)
   const items: ComposerAddItem[] = []
@@ -111,6 +111,23 @@ export function buildPluginAddItems(plugins: any[], contributions: { commands?: 
       token: pluginMentionToken(pluginName, command.id || title),
       pluginId: command.pluginId,
       pluginName
+    })
+  }
+  for (const command of contributions.slashCommands || []) {
+    const plugin = pluginById.get(command.pluginId)
+    const pluginName = plugin?.manifest?.name || command.pluginId || 'Plugin'
+    const title = command.label || command.id || 'slash command'
+    items.push({
+      id: `plugin-slash-command:${command.pluginId}:${command.id}`,
+      section: 'plugins',
+      kind: 'plugin-command',
+      title,
+      detail: `${pluginName} - Slash command`,
+      icon: IC.terminal,
+      token: command.insertText || `${title} `,
+      pluginId: command.pluginId,
+      pluginName,
+      body: command.promptTemplate || command.insertText || command.description
     })
   }
   return items.sort((a, b) => a.title.localeCompare(b.title))

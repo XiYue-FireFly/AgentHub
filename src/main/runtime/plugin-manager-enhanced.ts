@@ -36,8 +36,11 @@ export interface InstalledPlugin {
   /** Plugin-provided contributions */
   contributes: {
     commands?: Array<{ id: string; label: string }>
+    slashCommands?: Array<{ id: string; label: string; description?: string; insertText?: string; promptTemplate?: string }>
     skills?: Array<{ id: string; path: string }>
     prompts?: Array<{ id: string; name: string; body: string }>
+    activityParsers?: Array<{ id: string; pattern: string; flags?: string; kind?: string; fields?: Record<string, string> }>
+    preDispatchHooks?: Array<{ id: string; pattern?: string; appendContext?: string; denyMessage?: string; requireApproval?: boolean; message?: string }>
   }
 }
 
@@ -104,12 +107,18 @@ export function togglePlugin(id: string): boolean | null {
 export function getEnabledContributions(): InstalledPlugin['contributes'] {
   const plugins = readRegistry().filter(p => p.enabled)
   const commands: Array<{ id: string; label: string }> = []
+  const slashCommands: Array<{ id: string; label: string; description?: string; insertText?: string; promptTemplate?: string }> = []
   const skills: Array<{ id: string; path: string }> = []
   const prompts: Array<{ id: string; name: string; body: string }> = []
+  const activityParsers: Array<{ id: string; pattern: string; flags?: string; kind?: string; fields?: Record<string, string> }> = []
+  const preDispatchHooks: Array<{ id: string; pattern?: string; appendContext?: string; denyMessage?: string; requireApproval?: boolean; message?: string }> = []
   for (const p of plugins) {
     if (p.contributes.commands) commands.push(...p.contributes.commands)
+    if (p.contributes.slashCommands) slashCommands.push(...p.contributes.slashCommands)
     if (p.contributes.skills) skills.push(...p.contributes.skills)
     if (p.contributes.prompts) prompts.push(...p.contributes.prompts)
+    if (p.contributes.activityParsers) activityParsers.push(...p.contributes.activityParsers)
+    if (p.contributes.preDispatchHooks) preDispatchHooks.push(...p.contributes.preDispatchHooks)
   }
-  return { commands, skills, prompts }
+  return { commands, slashCommands, skills, prompts, activityParsers, preDispatchHooks }
 }

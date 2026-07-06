@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master, 'sync/*']
+    branches: [main, master, new, 'sync/*']
   pull_request:
 
 jobs:

@@ -110,6 +110,9 @@ interface ElectronAPI {
     close: () => Promise<void>
     onMaximized: (callback: (maximized: boolean) => void) => () => void
   }
+  windows: {
+    openWorkbench: () => Promise<{ id: number }>
+  }
   store: {
     get: (key: string, defaultValue?: unknown) => Promise<unknown>
     set: (key: string, value: unknown) => Promise<boolean>
@@ -280,6 +283,8 @@ interface ElectronAPI {
     status: () => Promise<UpdateStatus>
     check: (channel?: 'stable' | 'preview') => Promise<UpdateStatus>
     setChannel: (channel: 'stable' | 'preview') => Promise<UpdateStatus>
+    download: () => Promise<UpdateStatus>
+    install: () => Promise<UpdateStatus>
     openDownload: () => Promise<void>
   }
   browser: {
@@ -300,7 +305,8 @@ interface ElectronAPI {
   budget: {
     get: () => Promise<BudgetConfig>
     update: (patch: Partial<BudgetConfig>) => Promise<BudgetConfig>
-    check: (dailySpent: number, monthlySpent: number, requestTokens: number) => Promise<BudgetCheckResult>
+    check: (dailySpent: number, monthlySpent: number, requestTokens: number, requestCostUsd?: number) => Promise<BudgetCheckResult>
+    estimateDispatch: (input: TurnCreateInput) => Promise<BudgetEstimate>
   }
   goals: {
     get: (threadId?: string | null) => Promise<WorkbenchGoal | null>
@@ -854,6 +860,33 @@ interface WorkbenchSnapshot {
   activeThreadId: string | null
 }
 
+type ScheduleArtifactMode = 'summary' | 'full' | 'files' | 'custom'
+type ScheduleApprovalPolicy = 'inherit' | 'auto' | 'ask' | 'require' | 'skip'
+
+interface ScheduleGraphNode {
+  id: string
+  label: string
+  agentId: string
+  role: string
+  mode: string
+  promptTemplate?: string
+  approvalPolicy?: ScheduleApprovalPolicy
+}
+
+interface ScheduleGraphEdge {
+  id: string
+  from: string
+  to: string
+  artifactMode: ScheduleArtifactMode
+}
+
+interface ScheduleGraph {
+  version: 1
+  nodes: ScheduleGraphNode[]
+  edges: ScheduleGraphEdge[]
+  layout: Record<string, { x: number; y: number }>
+}
+
 interface SchedulePreview {
   preset: DispatchPreset
   label: string
@@ -863,6 +896,7 @@ interface SchedulePreview {
   descriptionZh?: string
   descriptionEn?: string
   steps: Array<{ id: string; label: string; labelZh?: string; labelEn?: string; agentId: string; role: string; mode: string; dependsOn?: string[] }>
+  graph?: ScheduleGraph
 }
 
 interface WorkbenchCommand {
@@ -871,10 +905,10 @@ interface WorkbenchCommand {
   description: string
   descriptionZh?: string
   descriptionEn?: string
-  category: 'session' | 'agent' | 'schedule' | 'tool' | 'skill' | 'workspace' | 'ecc'
+  category: 'session' | 'agent' | 'schedule' | 'tool' | 'skill' | 'workspace' | 'ecc' | 'plugin'
   insertText?: string
   action: 'insert' | 'new-thread' | 'clear-thread' | 'show-context' | 'open-panel' | 'run-terminal' | 'run-git' | 'use-schedule' | 'use-skill' | 'use-agent' | 'set-goal' | 'run-loop'
-  source: 'builtin' | 'schedule' | 'skill' | 'local-agent' | 'ecc'
+  source: 'builtin' | 'schedule' | 'skill' | 'local-agent' | 'ecc' | 'plugin'
   payload?: Record<string, any>
 }
 
@@ -1111,6 +1145,7 @@ interface UsageRecordFilter {
   range?: UsageRange
   from?: number
   to?: number
+  threadId?: string
   providerId?: string
   modelId?: string
   agentId?: string
@@ -1537,11 +1572,21 @@ interface ThreadTodo {
 interface UpdateStatus {
   version: string
   channel: 'stable' | 'preview'
+  state?: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
   checking: boolean
+  available?: boolean
+  downloaded?: boolean
   latestVersion?: string
   downloadUrl?: string
+  downloadProgress?: number
+  releaseName?: string
+  releaseDate?: string
   error?: string
   checkedAt?: number
+  canCheck?: boolean
+  canDownload?: boolean
+  canInstall?: boolean
+  devMode?: boolean
 }
 
 type ReleaseCheckStatus = 'pass' | 'fail' | 'warn' | 'skip'
@@ -1631,6 +1676,20 @@ interface BudgetCheckResult {
   allowed: boolean
   reason?: string
   warning?: string
+}
+
+interface BudgetEstimate {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  estimatedRequests: number
+  estimatedCostUsd: number | null
+  hasUnpriced: boolean
+  dailySpentUsd: number
+  monthlySpentUsd: number
+  projectedDailyUsd: number | null
+  projectedMonthlyUsd: number | null
+  check: BudgetCheckResult
 }
 
 interface InlineEditRange {
