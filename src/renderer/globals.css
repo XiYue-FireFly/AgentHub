@@ -611,6 +611,33 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-nav button { padding: 8px 9px; }
 .wb-nav button.active, .wb-nav button:hover { background: rgba(255,255,255,0.68); }
 
+.wb-feature-entrypoints {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+.wb-feature-entrypoints button {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--wb-line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--wb-panel) 86%, transparent);
+  color: var(--wb-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.wb-feature-entrypoints button:hover {
+  background: var(--wb-line-soft);
+  color: var(--wb-text);
+}
+
 .wb-sidebar-search {
   height: 32px;
   display: grid;
@@ -3337,6 +3364,8 @@ button, input, textarea, select { letter-spacing: 0; }
 .wb-project-modal input:focus { border-color: #9ab9ff; box-shadow: 0 0 0 3px rgba(47,111,235,0.08); }
 
 .wb-announcement-backdrop {
+  top: var(--wb-titlebar-height, 40px);
+  z-index: 5100;
   align-items: center;
   justify-content: center;
   padding: 24px;
@@ -11753,6 +11782,36 @@ html[data-motion="off"] .wb-processing-dots i {
   backdrop-filter: blur(24px) saturate(1.5);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
   border-bottom: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.wb-titlebar {
+  flex: 0 0 var(--wb-titlebar-height, 40px);
+  min-height: var(--wb-titlebar-height, 40px);
+  z-index: 5200;
+}
+.wb-titlebar.platform-win32 .wb-menu-wrap,
+.wb-titlebar.platform-win32 .wb-window-actions,
+.wb-titlebar.platform-win32 .wb-hub-state,
+.wb-titlebar.platform-win32 .wb-search {
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+.wb-titlebar.platform-win32 .wb-menu-wrap {
+  display: block !important;
+}
+.wb-titlebar.platform-win32 .wb-window-actions,
+.wb-titlebar.platform-win32 .wb-hub-state {
+  display: flex !important;
+}
+.wb-titlebar.platform-win32 .wb-menu,
+.wb-titlebar.platform-win32 .wb-window-actions button {
+  color: var(--wb-text) !important;
+}
+.wb-titlebar.platform-win32 .wb-window-actions button svg {
+  stroke: currentColor;
+}
+.wb-shell {
+  z-index: 1;
 }
 [data-ui-style="mac"] .glass,
 [data-ui-style="mac"] .wb-card,

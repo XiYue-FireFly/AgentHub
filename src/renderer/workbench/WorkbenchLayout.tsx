@@ -1269,6 +1269,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           selectThread={selectThread}
           createThread={createThread}
           createThreadInWorkspace={createThreadInWorkspace}
+          openSetup={openSetup}
           renameThread={renameThread}
           deleteThread={deleteThread}
           search={search}

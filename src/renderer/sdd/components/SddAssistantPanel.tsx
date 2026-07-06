@@ -16,6 +16,7 @@ import {
   type SddPmFramework
 } from '../pm-skill-frameworks'
 import { parseVerifyResponse } from '../sdd-verify-prompt'
+import { getAssistantHistory, saveAssistantHistory } from '../sdd-assistant-history'
 
 // ============================================================
 // Types
@@ -176,7 +177,7 @@ function AssistantIcon({ name, size = 18 }: { name: AssistantIconName; size?: nu
 // ============================================================
 
 export function SddAssistantPanel({
-  draftId: _draftId,
+  draftId,
   workspaceRoot,
   onSendMessage,
   onApplyFramework,
@@ -189,7 +190,9 @@ export function SddAssistantPanel({
   onApplyVerification,
   onApplyRequirementResponse
 }: SddAssistantPanelProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const assistantHistoryScope = `${workspaceRoot || ''}::${draftId}`
+  const [messages, setMessages] = useState<ChatMessage[]>(() => getAssistantHistory(draftId, workspaceRoot))
+  const [loadedHistoryScope, setLoadedHistoryScope] = useState(assistantHistoryScope)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [syncingMessageId, setSyncingMessageId] = useState<string | null>(null)
@@ -216,6 +219,22 @@ export function SddAssistantPanel({
       mountedRef.current = false
     }
   }, [])
+
+  useEffect(() => {
+    const restoredMessages = getAssistantHistory(draftId, workspaceRoot)
+    setMessages(restoredMessages)
+    setLoadedHistoryScope(assistantHistoryScope)
+    setSyncStatusByMessageId({})
+    setVerifyStatusByMessageId({})
+    setRequirementStatusByMessageId({})
+    setPreviewRequirementMessageId(null)
+    setDiscardedRequirementMessageIds(new Set())
+  }, [assistantHistoryScope, draftId, workspaceRoot])
+
+  useEffect(() => {
+    if (loadedHistoryScope !== assistantHistoryScope) return
+    saveAssistantHistory(draftId, workspaceRoot, messages)
+  }, [assistantHistoryScope, draftId, loadedHistoryScope, messages, workspaceRoot])
 
   // Auto scroll to bottom
   useEffect(() => {

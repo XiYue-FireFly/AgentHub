@@ -83,3 +83,9 @@ export {
   recordAiHistory
 } from './sdd-draft-history'
 export type { DraftHistoryEntry, DraftHistoryState } from './sdd-draft-history'
+
+export {
+  getAssistantHistory,
+  saveAssistantHistory
+} from './sdd-assistant-history'
+export type { SddAssistantHistoryMessage } from './sdd-assistant-history'

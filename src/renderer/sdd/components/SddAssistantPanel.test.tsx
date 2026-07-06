@@ -8,7 +8,10 @@ vi.mock('../../workbench/MarkdownBlock', () => ({
   MarkdownBlock: ({ content }: { content: string }) => <div>{content}</div>
 }))
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  localStorage.clear()
+})
 
 function ParentRerenderHarness({ onSendMessage }: {
   onSendMessage: (message: string, history: Array<{ role: 'user' | 'assistant'; content: string }>, mode?: 'chat' | 'plan' | 'verify') => Promise<string>
@@ -137,5 +140,75 @@ describe('SddAssistantPanel', () => {
     await view.findByText('Discarded')
     expect((await view.findByRole('button', { name: /Apply to document/ }) as HTMLButtonElement).disabled).toBe(true)
     expect(onApplyRequirementResponse).not.toHaveBeenCalled()
+  })
+
+  it('restores assistant chat history for the same workspace draft', async () => {
+    const onSendMessage = vi.fn(async () => 'First answer')
+    const view = render(
+      <SddAssistantPanel
+        draftId="draft-restore"
+        workspaceRoot="E:\\workspace"
+        onSendMessage={onSendMessage}
+      />
+    )
+
+    fireEvent.change(view.container.querySelector('.sdd-composer-textarea') as HTMLTextAreaElement, {
+      target: { value: 'First question' }
+    })
+    fireEvent.click(view.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+
+    await view.findByText('First answer')
+    view.unmount()
+
+    const restored = render(
+      <SddAssistantPanel
+        draftId="draft-restore"
+        workspaceRoot="E:\\workspace"
+        onSendMessage={onSendMessage}
+      />
+    )
+
+    expect(await restored.findByText('First question')).toBeTruthy()
+    expect(await restored.findByText('First answer')).toBeTruthy()
+  })
+
+  it('sends restored assistant history with follow-up messages', async () => {
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValueOnce('First answer')
+      .mockResolvedValueOnce('Second answer')
+    const first = render(
+      <SddAssistantPanel
+        draftId="draft-follow-up"
+        workspaceRoot="E:\\workspace"
+        onSendMessage={onSendMessage}
+      />
+    )
+
+    fireEvent.change(first.container.querySelector('.sdd-composer-textarea') as HTMLTextAreaElement, {
+      target: { value: 'First question' }
+    })
+    fireEvent.click(first.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+
+    await first.findByText('First answer')
+    first.unmount()
+
+    const second = render(
+      <SddAssistantPanel
+        draftId="draft-follow-up"
+        workspaceRoot="E:\\workspace"
+        onSendMessage={onSendMessage}
+      />
+    )
+    fireEvent.change(second.container.querySelector('.sdd-composer-textarea') as HTMLTextAreaElement, {
+      target: { value: 'Follow up' }
+    })
+    fireEvent.click(second.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+
+    await second.findByText('Second answer')
+    expect(onSendMessage).toHaveBeenLastCalledWith('Follow up', [
+      { role: 'user', content: 'First question' },
+      { role: 'assistant', content: 'First answer' }
+    ], 'chat')
   })
 })

@@ -87,6 +87,7 @@ export function NativeTitlebar({
         setOpenMenu={setOpenMenu}
         items={[
           { label: tr('新建对话', 'New chat'), shortcut: shortcutDisplay(shortcuts['new-chat']), action: run(createThread) },
+          { label: tr('新建工作台窗口', 'New workbench window'), shortcut: 'Ctrl+Shift+N', action: run(() => window.electronAPI.windows.openWorkbench()) },
           { label: tr('添加工作目录', 'Add working folder'), shortcut: shortcutDisplay(shortcuts['choose-workspace']), action: run(openCreateProject) },
           { label: tr('打开 Git 面板', 'Open Git panel'), shortcut: shortcutDisplay(shortcuts['panel-git']), action: run(() => setRightPanel('git')) },
           { label: tr('打开浏览器', 'Open browser'), shortcut: shortcutDisplay(shortcuts['panel-browser']), action: run(() => setRightPanel('browser')) }
@@ -102,6 +103,7 @@ export function NativeTitlebar({
           { label: tr('写作', 'Write'), shortcut: shortcutDisplay(shortcuts['view-write']), checked: view === 'write', action: run(() => setView('write')) },
           { label: tr('任务历史', 'Tasks'), shortcut: shortcutDisplay(shortcuts['view-tasks']), checked: view === 'tasks', action: run(() => setView('tasks')) },
           { label: tr('需求', 'Requirements'), shortcut: shortcutDisplay(shortcuts['view-requirements']), checked: view === 'requirements', action: run(() => setView('requirements')) },
+          { label: tr('工作流', 'Workflows'), shortcut: shortcutDisplay(shortcuts['open-workflows']), checked: view === 'workflows', action: run(() => setView('workflows')) },
           { label: tr('设置', 'Settings'), shortcut: shortcutDisplay(shortcuts['view-settings']), checked: view === 'settings', action: run(() => setView('settings')) },
           { label: tr('运行面板', 'Runs panel'), shortcut: shortcutDisplay(shortcuts['panel-runs']), action: run(() => setRightPanel('runs')) },
           { label: tr('工作树面板', 'Worktrees panel'), action: run(() => setRightPanel('worktrees')) }
@@ -115,6 +117,12 @@ export function NativeTitlebar({
         items={[
           { label: tr('快捷键设置', 'Keyboard shortcuts'), shortcut: shortcutDisplay(shortcuts['settings-shortcuts']), action: run(() => openSetup('shortcuts')) },
           { label: tr('MCP 配置', 'MCP settings'), shortcut: shortcutDisplay(shortcuts['settings-mcp']), action: run(() => openSetup('mcp')) },
+          { label: tr('插件管理', 'Plugin manager'), action: run(() => openSetup('plugins')) },
+          { label: tr('模型列表', 'Models'), action: run(() => openSetup('models')) },
+          { label: tr('用量统计', 'Usage stats'), action: run(() => openSetup('usage')) },
+          { label: tr('运行诊断', 'Diagnostics'), action: run(() => openSetup('diagnostics')) },
+          { label: tr('Agent Loop', 'Agent Loop'), action: run(() => openSetup('agentLoop')) },
+          { label: tr('版本与更新', 'Version & Updates'), action: run(() => openSetup('updates')) },
           { label: tr('打开项目主页', 'Open homepage'), action: run(() => window.electronAPI.app.openExternal('https://agenthub.dev')) }
         ]}
       />
