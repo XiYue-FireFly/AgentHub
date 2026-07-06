@@ -48,7 +48,7 @@ describe("missing IPC task handlers", () => {
     expect(dispatcher.deleteTask).toHaveBeenCalledWith("turn-1")
   })
 
-  it("clears completed task history from runtimeStore and legacy dispatcher", async () => {
+  it("clears completed task cards for the requested workspace from runtimeStore and legacy dispatcher", async () => {
     const runtimeStore = { clearCompletedTasks: vi.fn(() => ["turn-1"]) }
     const dispatcher = { clearCompleted: vi.fn() }
     const { registerMissingIpc } = await import("../missing-ipc")
@@ -65,8 +65,8 @@ describe("missing IPC task handlers", () => {
 
     const handler = electronMock.handlers.get("tasks:clearCompleted")
     expect(handler).toBeTruthy()
-    await expect(handler?.({})).resolves.toBe(true)
-    expect(runtimeStore.clearCompletedTasks).toHaveBeenCalled()
+    await expect(handler?.({}, "ws-1")).resolves.toBe(true)
+    expect(runtimeStore.clearCompletedTasks).toHaveBeenCalledWith("ws-1")
     expect(dispatcher.clearCompleted).toHaveBeenCalled()
   })
 })

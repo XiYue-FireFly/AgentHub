@@ -5,12 +5,18 @@ type RuntimeTaskEvent = Pick<RuntimeEvent, 'id' | 'threadId' | 'turnId' | 'seq' 
 
 export type RuntimeTaskEventsByThread = Record<string, RuntimeTaskEvent[] | undefined>
 
+const INTERNAL_AGENT_IDS = new Set(['prompt-optimizer', 'budget-guard', 'dispatch-planner', 'router'])
+
 export function deriveTaskItems(snapshot: WorkbenchSnapshot, eventsByThread: RuntimeTaskEventsByThread): TaskItem[] {
   const runsByTurn = groupRunsByTurn(snapshot.runs)
+  const threadsById = new Map(snapshot.threads.map(thread => [thread.id, thread]))
+  const hidden = new Set(snapshot.hiddenTaskTurnIds ?? [])
 
   return [...snapshot.turns]
+    .filter(turn => !hidden.has(turn.id))
     .sort((a, b) => b.createdAt - a.createdAt)
     .map(turn => {
+      const thread = threadsById.get(turn.threadId)
       const turnEvents = (eventsByThread[turn.threadId] || [])
         .filter(event => event.turnId === turn.id)
         .sort((a, b) => a.seq - b.seq)
@@ -20,6 +26,9 @@ export function deriveTaskItems(snapshot: WorkbenchSnapshot, eventsByThread: Run
 
       return {
         id: turn.id,
+        threadId: turn.threadId,
+        threadTitle: thread?.title,
+        workspaceId: thread?.workspaceId ?? null,
         text: turn.prompt,
         mode: turn.mode as TaskItem['mode'],
         status: taskStatus(turn.status),
@@ -51,8 +60,14 @@ function orderedAgents(turn: WorkbenchTurn, runs: AgentRunNode[], events: Runtim
     const id = value?.trim()
     if (id && !ids.includes(id)) ids.push(id)
   }
-  for (const run of runs) add(run.agentId)
-  for (const event of events) add(event.agentId || event.payload?.agentId)
+  for (const run of runs) {
+    if (!INTERNAL_AGENT_IDS.has(run.agentId)) add(run.agentId)
+  }
+  for (const event of events) {
+    const agentId = event.agentId || event.payload?.agentId
+    if (!agentId || INTERNAL_AGENT_IDS.has(agentId) || event.payload?.visibility === 'run' || event.kind === 'turn:summary') continue
+    add(agentId)
+  }
   add(turn.targetAgent)
   add(turn.modelSelection?.agentId)
   return ids
@@ -71,6 +86,7 @@ function summarizeTaskEvents(events: RuntimeTaskEvent[]): {
 
   for (const event of events) {
     const agentId = event.agentId || event.payload?.agentId || 'orchestrate'
+    if (INTERNAL_AGENT_IDS.has(agentId) || event.kind === 'turn:summary' || event.payload?.visibility === 'run') continue
     if (event.kind === 'agent:done') {
       const content = stringValue(event.payload?.content)
       if (content) results[agentId] = content

@@ -146,11 +146,6 @@ export function appendSyntheticChatRelease(input: {
     synthetic: true,
     usageExcluded: true
   }
-  runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:delta", input.step.agentId, {
-    ...payload,
-    channel: "content",
-    text: content
-  })
   runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:done", input.step.agentId, payload)
 }
 

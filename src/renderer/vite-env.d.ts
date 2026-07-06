@@ -224,7 +224,7 @@ interface ElectronAPI {
   }
   tasks: {
     delete: (taskId: string) => Promise<boolean>
-    clearCompleted: () => Promise<boolean>
+    clearCompleted: (workspaceId?: string | null) => Promise<boolean>
   }
   git: {
     status: (workspaceId?: string | null) => Promise<GitStatus>
@@ -857,6 +857,7 @@ interface WorkbenchSnapshot {
   threads: WorkbenchThread[]
   turns: WorkbenchTurn[]
   runs: AgentRunNode[]
+  hiddenTaskTurnIds?: string[]
   activeThreadId: string | null
 }
 
@@ -2020,6 +2021,7 @@ interface QuickCompleteInputLike {
   providerId?: string
   modelId?: string
   timeoutMs?: number
+  workspaceRoot?: string
 }
 
 interface QuickCompleteResultLike {

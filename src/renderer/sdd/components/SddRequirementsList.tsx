@@ -9,7 +9,7 @@ import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
 import type { ProviderDef } from '../../glass/meta'
 import { styledConfirm } from '../../lib/confirm'
-import { useSddDraftStore } from '../sdd-draft-store'
+import { useSddDraftStore, type SddRequirementBlock } from '../sdd-draft-store'
 import { listDrafts, createNewDraft, deleteDraft, loadDraft, saveDraftToDisk, parseRequirementBlocks, persistPlanTrace, applyVerifyVerdicts } from '../sdd-draft-actions'
 import { buildAssistantPrompt } from '../sdd-assistant-prompt'
 import { previewAssistantRequirementResponse } from '../sdd-assistant-apply'
@@ -40,6 +40,12 @@ const ASSISTANT_DEFAULT_WIDTH = 420
 const ASSISTANT_MIN_WIDTH = 360
 const ASSISTANT_MAX_WIDTH = 780
 type AssistantRequestMode = 'chat' | 'plan' | 'verify'
+type ToolbarStatusTone = 'muted' | 'success' | 'warning' | 'error'
+
+interface ToolbarStatus {
+  tone: ToolbarStatusTone
+  text: string
+}
 
 interface AssistantRequirementApplyContext {
   kind: 'requirement-apply'
@@ -84,6 +90,57 @@ function readAssistantPanelWidth(): number {
   }
 }
 
+function buildRequirementTodoMarkdown(blocks: SddRequirementBlock[]): string {
+  const lines: string[] = []
+  for (const block of blocks) {
+    for (const criterion of block.acceptanceCriteria) {
+      const text = criterion.text.trim()
+      if (!text) continue
+      const marker = criterion.checked ? 'x' : ' '
+      lines.push(`- [${marker}] ${block.id}: ${text} (covers: ${block.id})`)
+    }
+  }
+  return lines.join('\n')
+}
+
+function parseRequirementTodoBlocksFromMarkdown(markdown: string): SddRequirementBlock[] {
+  const blocks: SddRequirementBlock[] = []
+  let current: SddRequirementBlock | null = null
+  const lines = markdown.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim()
+    const blockMatch = trimmed.match(/^###\s+(R-\d+):\s+(.+?)(?:\s+\{(\w+)\})?\s*$/i)
+    if (blockMatch) {
+      current = {
+        id: blockMatch[1].toUpperCase(),
+        title: blockMatch[2].trim(),
+        status: 'draft',
+        description: '',
+        acceptanceCriteria: [],
+        lineNumber: index + 1
+      }
+      blocks.push(current)
+      continue
+    }
+    if (!current) continue
+    const criterionMatch = trimmed.match(/^[-*]\s+\[([ xX])\]\s+(.+)$/)
+    if (!criterionMatch) continue
+    current.acceptanceCriteria.push({
+      checked: criterionMatch[1].toLowerCase() === 'x',
+      text: criterionMatch[2].trim()
+    })
+  }
+  return blocks.filter(block => block.acceptanceCriteria.length > 0)
+}
+
+function selectRequirementTodoBlocks(parsedBlocks: SddRequirementBlock[], fallbackBlocks: SddRequirementBlock[], markdown: string): SddRequirementBlock[] {
+  if (parsedBlocks.length > 0) return parsedBlocks
+  const markdownBlocks = parseRequirementTodoBlocksFromMarkdown(markdown)
+  if (markdownBlocks.length > 0) return markdownBlocks
+  const hasChecklistMarkers = /^\s*[-*]\s+\[[ xX]\]\s+.+$/m.test(markdown)
+  return hasChecklistMarkers ? fallbackBlocks : []
+}
+
 export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodos = [], events = [], providers = [], modelSelection = null, onModelSelectionChange, onThreadTodosChanged, onSendRequirementToChat, onRequirementSentToChat }: SddRequirementsListProps) {
   const [drafts, setDrafts] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -97,6 +154,7 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   const [assistantWidth, setAssistantWidth] = useState(readAssistantPanelWidth)
   const [assistantResizing, setAssistantResizing] = useState(false)
   const [syncingDocumentTodo, setSyncingDocumentTodo] = useState(false)
+  const [syncDocumentTodoStatus, setSyncDocumentTodoStatus] = useState<ToolbarStatus | null>(null)
   const assistantResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const autoVerifyTriggeredRef = useRef<Set<string>>(new Set())
   const autoVerifySeenEventKeysRef = useRef<Set<string>>(new Set())
@@ -184,13 +242,19 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   }, [modelSelection, onRequirementSentToChat, onSendRequirementToChat])
 
   const handleSyncDocumentTodos = useCallback(async () => {
-    if (!threadId || syncingDocumentTodo) return
+    if (syncingDocumentTodo) return
+    if (!threadId) {
+      setSyncDocumentTodoStatus({ tone: 'warning', text: tr('需要先打开一个会话。', 'Open a thread first.') })
+      return
+    }
     const draft = useSddDraftStore.getState().activeDraft
     if (!draft) return
     setSyncingDocumentTodo(true)
+    setSyncDocumentTodoStatus({ tone: 'muted', text: tr('同步中...', 'Syncing...') })
     try {
       const saved = await saveDraftToDisk()
       if (!saved) throw new Error('Failed to save draft before syncing todos')
+      const previousBlocks = useSddDraftStore.getState().requirementBlocks
       await parseRequirementBlocks()
       const latest = useSddDraftStore.getState()
       const latestDraft = latest.activeDraft ?? draft
@@ -199,8 +263,22 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
         draftId: latestDraft.id,
         relativePath: latestDraft.relativePath
       }
-      await window.electronAPI.todos.syncFromMarkdown(threadId, latest.content, source)
+      const requirementBlocks = selectRequirementTodoBlocks(latest.requirementBlocks, previousBlocks, latest.content)
+      const todoMarkdown = buildRequirementTodoMarkdown(requirementBlocks)
+      const todoCount = todoMarkdown ? todoMarkdown.split('\n').filter(Boolean).length : 0
+      await window.electronAPI.todos.syncFromMarkdown(threadId, todoMarkdown, source)
       await onThreadTodosChanged?.(threadId)
+      setSyncDocumentTodoStatus({
+        tone: todoCount > 0 ? 'success' : 'warning',
+        text: todoCount > 0
+          ? tr(`已同步 ${todoCount} 个 Todo`, `Synced ${todoCount} todos`)
+          : tr('没有解析到 Todo，请检查文档是否包含 - [ ] 清单', 'No todos parsed. Use - [ ] checklist items in the document.')
+      })
+    } catch (error: any) {
+      setSyncDocumentTodoStatus({
+        tone: 'error',
+        text: error?.message || tr('同步 Todo 失败', 'Sync Todo failed')
+      })
     } finally {
       setSyncingDocumentTodo(false)
     }
@@ -390,7 +468,8 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
       prompt: userPrompt,
       systemPrompt,
       providerId: modelSelection?.source === 'provider' ? modelSelection.providerId : undefined,
-      modelId: modelSelection?.source === 'provider' ? modelSelection.modelId : undefined
+      modelId: modelSelection?.source === 'provider' ? modelSelection.modelId : undefined,
+      workspaceRoot: requestDraft.workspaceRoot
     })
     if (!result?.ok) throw new Error(result?.error || 'AI request failed')
     const content = result.content || ''
@@ -436,6 +515,7 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
       throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
     }
 
+    const previousBlocks = latest.requirementBlocks
     recordAiHistory(latestDraft, latest.content, 'assistant requirement writeback')
     latest.setContent(applyContext.nextContent)
     const saved = await saveDraftToDisk()
@@ -443,7 +523,9 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
     await parseRequirementBlocks()
     if (threadId) {
       const afterApply = useSddDraftStore.getState()
-      await window.electronAPI.todos.syncFromMarkdown(threadId, afterApply.content, {
+      const requirementBlocks = selectRequirementTodoBlocks(afterApply.requirementBlocks, previousBlocks, afterApply.content)
+      const todoMarkdown = buildRequirementTodoMarkdown(requirementBlocks)
+      await window.electronAPI.todos.syncFromMarkdown(threadId, todoMarkdown, {
         workspaceRoot: latestDraft.workspaceRoot,
         draftId: latestDraft.id,
         relativePath: latestDraft.relativePath
@@ -511,7 +593,7 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
           onClose={handleBack}
           onOpenAssistant={() => setAssistantOpen(!assistantOpen)}
           onSendToChat={onSendRequirementToChat ? handleSendRequirementToChat : undefined}
-          onSyncToTodo={threadId ? handleSyncDocumentTodos : undefined}
+          onSyncToTodo={handleSyncDocumentTodos}
           onNext={() => {
             // 触发计划生成：切换到计划模式并打开 AI 助手面板
             if (!draftContent) return
@@ -525,8 +607,9 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
           nextDisabled={!draftContent}
           verifyDisabled={!draftContent}
           sendToChatDisabled={!draftContent}
-          syncToTodoDisabled={!draftContent || !threadId}
+          syncToTodoDisabled={!draftContent}
           syncingTodo={syncingDocumentTodo}
+          syncTodoStatus={syncDocumentTodoStatus}
         />
         {assistantOpen && (
           <div

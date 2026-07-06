@@ -57,7 +57,6 @@ const noArgChannels = [
   'github:currentBranchPr',
   'release:checks',
   'terminal:history',
-  'tasks:clearCompleted',
   'shortcuts:resetAll',
   'shortcuts:conflicts',
   'slashCommands:list',
@@ -128,6 +127,7 @@ describe('query IPC runtime validation', () => {
     const logsHandler = vi.fn(() => recentLogsResult)
     const routeHandler = vi.fn(() => [])
     const githubHandler = vi.fn(() => [])
+    const clearCompletedHandler = vi.fn(() => true)
     const agentLoopHandler = vi.fn(() => routeInfoResult)
     const parseBlocksHandler = vi.fn(() => [])
     const parsePlanHandler = vi.fn(() => [])
@@ -138,6 +138,7 @@ describe('query IPC runtime validation', () => {
     typedHandle('routes:explain', routeHandler)
     typedHandle('github:listPrs', githubHandler)
     typedHandle('github:listIssues', githubHandler)
+    typedHandle('tasks:clearCompleted', clearCompletedHandler)
     typedHandle('agentLoop:getRouteInfo', agentLoopHandler)
     typedHandle('sdd:parseBlocks', parseBlocksHandler)
     typedHandle('sdd:parsePlanCovers', parsePlanHandler)
@@ -160,6 +161,9 @@ describe('query IPC runtime validation', () => {
     expect(() => electronMock.handlers.get('github:listIssues')?.({}, 'open', 0)).toThrow(
       new IpcPayloadValidationError('github:listIssues', 'limit must be at least 1')
     )
+    expect(() => electronMock.handlers.get('tasks:clearCompleted')?.({}, 123)).toThrow(
+      new IpcPayloadValidationError('tasks:clearCompleted', 'workspaceId must be a string')
+    )
     expect(() => electronMock.handlers.get('agentLoop:getRouteInfo')?.({}, 42)).toThrow(
       new IpcPayloadValidationError('agentLoop:getRouteInfo', 'prompt must be a string')
     )
@@ -175,6 +179,7 @@ describe('query IPC runtime validation', () => {
     expect(logsHandler).not.toHaveBeenCalled()
     expect(routeHandler).not.toHaveBeenCalled()
     expect(githubHandler).not.toHaveBeenCalled()
+    expect(clearCompletedHandler).not.toHaveBeenCalled()
     expect(agentLoopHandler).not.toHaveBeenCalled()
     expect(parseBlocksHandler).not.toHaveBeenCalled()
     expect(parsePlanHandler).not.toHaveBeenCalled()
@@ -187,6 +192,7 @@ describe('query IPC runtime validation', () => {
     const logsHandler = vi.fn(() => recentLogsResult)
     const routeHandler = vi.fn(() => [])
     const githubHandler = vi.fn(() => [])
+    const clearCompletedHandler = vi.fn(() => true)
     const agentLoopHandler = vi.fn(() => routeInfoResult)
     const parseBlocksHandler = vi.fn(() => [])
     const parsePlanHandler = vi.fn(() => [])
@@ -196,6 +202,7 @@ describe('query IPC runtime validation', () => {
     typedHandle('routes:explain', routeHandler)
     typedHandle('github:listPrs', githubHandler)
     typedHandle('github:listIssues', githubHandler)
+    typedHandle('tasks:clearCompleted', clearCompletedHandler)
     typedHandle('agentLoop:getRouteInfo', agentLoopHandler)
     typedHandle('sdd:parseBlocks', parseBlocksHandler)
     typedHandle('sdd:parsePlanCovers', parsePlanHandler)
@@ -207,6 +214,9 @@ describe('query IPC runtime validation', () => {
     expect(electronMock.handlers.get('routes:explain')?.({}, 'turn-1')).toEqual([])
     expect(electronMock.handlers.get('github:listPrs')?.({}, 'open', 25)).toEqual([])
     expect(electronMock.handlers.get('github:listIssues')?.({}, undefined, undefined)).toEqual([])
+    expect(electronMock.handlers.get('tasks:clearCompleted')?.({})).toBe(true)
+    expect(electronMock.handlers.get('tasks:clearCompleted')?.({}, null)).toBe(true)
+    expect(electronMock.handlers.get('tasks:clearCompleted')?.({}, 'ws-1')).toBe(true)
     expect(electronMock.handlers.get('agentLoop:getRouteInfo')?.({}, '')).toEqual(routeInfoResult)
     expect(electronMock.handlers.get('sdd:parseBlocks')?.({}, '')).toEqual([])
     expect(electronMock.handlers.get('sdd:parsePlanCovers')?.({}, '')).toEqual([])
@@ -218,6 +228,9 @@ describe('query IPC runtime validation', () => {
     expect(routeHandler).toHaveBeenCalledWith({}, 'turn-1')
     expect(githubHandler).toHaveBeenCalledWith({}, 'open', 25)
     expect(githubHandler).toHaveBeenCalledWith({}, undefined, undefined)
+    expect(clearCompletedHandler).toHaveBeenCalledWith({})
+    expect(clearCompletedHandler).toHaveBeenCalledWith({}, null)
+    expect(clearCompletedHandler).toHaveBeenCalledWith({}, 'ws-1')
     expect(agentLoopHandler).toHaveBeenCalledWith({}, '')
     expect(parseBlocksHandler).toHaveBeenCalledWith({}, '')
     expect(parsePlanHandler).toHaveBeenCalledWith({}, '')

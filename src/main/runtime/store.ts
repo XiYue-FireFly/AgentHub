@@ -24,12 +24,13 @@ interface PersistedRuntime {
   turns: WorkbenchTurn[]
   runs: AgentRunNode[]
   events: RuntimeEvent[]
+  hiddenTaskTurnIds: string[]
   activeThreadId: string | null
   nextSeqByThread: Record<string, number>
 }
 
 function emptyState(): PersistedRuntime {
-  return { version: 1, threads: [], turns: [], runs: [], events: [], activeThreadId: null, nextSeqByThread: {} }
+  return { version: 1, threads: [], turns: [], runs: [], events: [], hiddenTaskTurnIds: [], activeThreadId: null, nextSeqByThread: {} }
 }
 
 function shortTitle(prompt: string): string {
@@ -57,6 +58,7 @@ export class WorkbenchRuntimeStore extends EventEmitter {
         turns: Array.isArray((raw as any).turns) ? (raw as any).turns : [],
         runs: Array.isArray((raw as any).runs) ? (raw as any).runs : [],
         events: Array.isArray((raw as any).events) ? (raw as any).events : [],
+        hiddenTaskTurnIds: Array.isArray((raw as any).hiddenTaskTurnIds) ? (raw as any).hiddenTaskTurnIds : [],
         nextSeqByThread: typeof (raw as any).nextSeqByThread === "object" ? (raw as any).nextSeqByThread : {}
       }
     } else {
@@ -101,6 +103,7 @@ export class WorkbenchRuntimeStore extends EventEmitter {
       threads: [...threads].sort((a, b) => b.updatedAt - a.updatedAt),
       turns: state.turns.filter(t => ids.has(t.threadId)).sort((a, b) => a.createdAt - b.createdAt),
       runs: state.runs.filter(r => state.turns.some(t => ids.has(t.threadId) && t.id === r.turnId)),
+      hiddenTaskTurnIds: state.hiddenTaskTurnIds.filter(turnId => state.turns.some(t => ids.has(t.threadId) && t.id === turnId)),
       activeThreadId
     }
   }
@@ -219,53 +222,34 @@ export class WorkbenchRuntimeStore extends EventEmitter {
 
   deleteTask(taskId: string): boolean {
     const state = this.load()
-    let changed = false
     const directTurn = state.turns.find(turn => turn.id === taskId)
     if (directTurn) {
-      state.turns = state.turns.filter(turn => turn.id !== directTurn.id)
-      state.runs = state.runs.filter(run => run.turnId !== directTurn.id)
-      state.events = state.events.filter(event => event.turnId !== directTurn.id)
-      const thread = state.threads.find(item => item.id === directTurn.threadId)
-      if (thread) {
-        const latest = [...state.turns].reverse().find(turn => turn.threadId === thread.id)
-        thread.lastTurnStatus = latest?.status
-        thread.updatedAt = latest?.createdAt ?? thread.updatedAt
-      }
-      this.save()
-      return true
+      return this.hideTaskTurn(directTurn.id)
     }
-    const affectedTurnIds = new Set<string>()
-    const affectedThreadIds = new Set<string>()
-    state.turns = state.turns.flatMap(turn => {
-      if (!turn.taskIds.includes(taskId)) return [turn]
-      changed = true
-      const remainingTaskIds = turn.taskIds.filter(id => id !== taskId)
-      if (remainingTaskIds.length > 0) return [{ ...turn, taskIds: remainingTaskIds }]
-      affectedTurnIds.add(turn.id)
-      affectedThreadIds.add(turn.threadId)
-      return []
-    })
-    if (affectedTurnIds.size > 0) {
-      state.runs = state.runs.filter(run => !affectedTurnIds.has(run.turnId))
-      state.events = state.events.filter(event => !affectedTurnIds.has(event.turnId))
-      for (const thread of state.threads) {
-        if (!affectedThreadIds.has(thread.id)) continue
-        const latest = [...state.turns].reverse().find(turn => turn.threadId === thread.id)
-        thread.lastTurnStatus = latest?.status
-        thread.updatedAt = latest?.createdAt ?? thread.updatedAt
-      }
+    const matchedTurn = state.turns.find(turn => turn.taskIds.includes(taskId))
+    if (matchedTurn) {
+      return this.hideTaskTurn(matchedTurn.id)
     }
-    if (changed) this.save()
-    return changed
+    return false
   }
 
-  clearCompletedTasks(): string[] {
+  clearCompletedTasks(workspaceId?: string | null): string[] {
     const state = this.load()
     const removableTurnIds = state.turns
       .filter(turn => turn.status === "completed" || turn.status === "failed" || turn.status === "cancelled")
+      .filter(turn => workspaceId === undefined || state.threads.find(thread => thread.id === turn.threadId)?.workspaceId === workspaceId)
       .map(turn => turn.id)
-    for (const turnId of removableTurnIds) this.deleteTask(turnId)
+    for (const turnId of removableTurnIds) this.hideTaskTurn(turnId)
     return removableTurnIds
+  }
+
+  private hideTaskTurn(turnId: string): boolean {
+    const state = this.load()
+    if (!state.turns.some(turn => turn.id === turnId)) return false
+    if (state.hiddenTaskTurnIds.includes(turnId)) return false
+    state.hiddenTaskTurnIds.push(turnId)
+    this.save()
+    return true
   }
 
   appendSystemEvent(threadId: string, turnId: string, kind: RuntimeEvent["kind"], agentId: string | undefined, payload: any): RuntimeEvent {

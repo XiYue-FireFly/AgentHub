@@ -63,7 +63,7 @@ interface WorkbenchMainContentProps {
   runtimeTasks: TaskItem[]
   cancelRuntimeTask: (id: string) => Promise<void>
   deleteRuntimeTask: (id: string) => Promise<void>
-  clearCompletedRuntimeTasks: () => Promise<void>
+  clearCompletedRuntimeTasks: (workspaceId?: string | null) => Promise<void>
   providers: ProviderDef[]
   bindings: BindingDef[]
   fallbackChain: string[]
@@ -293,6 +293,7 @@ export function WorkbenchMainContent({
         <div className="wb-scroll-surface">
           <TasksScreen
             tasks={runtimeTasks}
+            workspaces={workspaces}
             search={search}
             onCancelTask={cancelRuntimeTask}
             onDeleteTask={deleteRuntimeTask}
@@ -305,7 +306,7 @@ export function WorkbenchMainContent({
 
       {view === 'requirements' && (
         <ErrorBoundary label="Requirements">
-        <div className="wb-scroll-surface">
+        <div className="wb-scroll-surface wb-requirements-surface">
           <SddRequirementsList
             workspaceRoot={activeWorkspace?.rootPath ?? null}
             threadId={activeThreadId}

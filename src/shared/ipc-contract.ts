@@ -309,6 +309,7 @@ export interface QuickCompleteInputLike {
   providerId?: string
   modelId?: string
   timeoutMs?: number
+  workspaceRoot?: string
 }
 
 export interface QuickCompleteResultLike {
@@ -577,6 +578,7 @@ export interface WorkbenchSnapshotLike {
   threads: WorkbenchThreadLike[]
   turns: WorkbenchTurnLike[]
   runs: AgentRunNodeLike[]
+  hiddenTaskTurnIds?: string[]
   activeThreadId: string | null
 }
 
@@ -2849,7 +2851,7 @@ export interface IpcContract {
     result: boolean
   }
   'tasks:clearCompleted': {
-    args: []
+    args: [workspaceId?: string | null]
     result: boolean
   }
   'skills:list': {
@@ -4375,6 +4377,7 @@ function validateQuickCompleteInput(args: readonly unknown[]): string | null {
     validateBoundedString(record.systemPrompt, 'input.systemPrompt', { optional: true, allowEmpty: true, max: MAX_QUICK_COMPLETE_PROMPT_CHARS }) ||
     validateBoundedString(record.providerId, 'input.providerId', { optional: true, max: 256 }) ||
     validateBoundedString(record.modelId, 'input.modelId', { optional: true, max: 512 }) ||
+    validateBoundedString(record.workspaceRoot, 'input.workspaceRoot', { optional: true, max: MAX_PROJECT_PATH_CHARS }) ||
     validateNumber(record.timeoutMs, 'input.timeoutMs', { optional: true, integer: true, min: 1000, max: 300000 })
   )
 }
@@ -6191,7 +6194,7 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
     validate: validateNoArgs
   },
   'tasks:clearCompleted': {
-    validate: validateNoArgs
+    validate: args => validateWorkspaceId(args[0], 'workspaceId', { optional: true })
   },
   'shortcuts:resetAll': {
     validate: validateNoArgs

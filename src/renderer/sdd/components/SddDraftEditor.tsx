@@ -308,9 +308,10 @@ interface SddDraftEditorProps {
   sendToChatDisabled?: boolean
   syncToTodoDisabled?: boolean
   syncingTodo?: boolean
+  syncTodoStatus?: { tone: 'muted' | 'success' | 'warning' | 'error'; text: string } | null
 }
 
-export function SddDraftEditor({ providers, modelSelection, onModelSelectionChange, onOpenAssistant, onNext, onVerify, onSendToChat, onSyncToTodo, onClose, nextDisabled, verifyDisabled, sendToChatDisabled, syncToTodoDisabled, syncingTodo }: SddDraftEditorProps) {
+export function SddDraftEditor({ providers, modelSelection, onModelSelectionChange, onOpenAssistant, onNext, onVerify, onSendToChat, onSyncToTodo, onClose, nextDisabled, verifyDisabled, sendToChatDisabled, syncToTodoDisabled, syncingTodo, syncTodoStatus }: SddDraftEditorProps) {
   const {
     activeDraft,
     content,
@@ -406,7 +407,7 @@ export function SddDraftEditor({ providers, modelSelection, onModelSelectionChan
               title={tr('把完整需求文档发送到当前对话，让 Agent 按文档开发', 'Send the full requirement document to the current chat for agent implementation')}
             >
               <Icon d={IC.chat} size={14} />
-              <span>{tr('按文档开发', 'Develop from doc')}</span>
+              <span>{tr('加入对话开发', 'Send doc to chat')}</span>
             </button>
           )}
           {onSyncToTodo && (
@@ -419,6 +420,11 @@ export function SddDraftEditor({ providers, modelSelection, onModelSelectionChan
               <Icon d={IC.check} size={14} />
               <span>{syncingTodo ? tr('同步中', 'Syncing') : tr('同步 Todo', 'Sync Todo')}</span>
             </button>
+          )}
+          {onSyncToTodo && syncTodoStatus && (
+            <span className={`sdd-toolbar-status ${syncTodoStatus.tone}`} role="status" aria-live="polite">
+              {syncTodoStatus.text}
+            </span>
           )}
           {onVerify && (
             <button

@@ -74,4 +74,16 @@ describe('SddRequirementsList assistant resize', () => {
     await waitFor(() => expect(layout.style.getPropertyValue('--sdd-assistant-width')).toBe('560px'))
     expect(localStorage.getItem('sdd.assistantPanelWidth')).toBe('560')
   })
+
+  it('keeps the requirements surface and assistant width rules compatible', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const css = readFileSync(join(process.cwd(), 'src/renderer/globals.css'), 'utf8')
+    const assistantPanelRule = css.match(/\.sdd-assistant-panel\s*\{[^}]+\}/)?.[0] ?? ''
+
+    expect(css).toContain('.wb-requirements-surface')
+    expect(css).toContain('minmax(360px, var(--sdd-assistant-width, 420px))')
+    expect(assistantPanelRule).toContain('min-width: 0;')
+    expect(assistantPanelRule).not.toContain('min-width: 420px;')
+  })
 })

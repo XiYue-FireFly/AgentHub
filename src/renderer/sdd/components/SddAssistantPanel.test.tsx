@@ -70,6 +70,28 @@ describe('SddAssistantPanel', () => {
     await waitFor(() => expect(onSyncPlanTodos).toHaveBeenCalledWith('- [ ] Implement checkout (covers: R-1)'))
     await view.findByText('已同步 1 个 Todo')
   })
+  it('keeps plan todo sync clickable and shows feedback when no thread is open', async () => {
+    const onSendMessage = vi.fn(async () => '- [ ] Implement checkout (covers: R-1)')
+    const onSyncPlanTodos = vi.fn(async () => [])
+    const view = render(
+      <SddAssistantPanel
+        draftId="draft-1"
+        workspaceRoot="E:\\workspace"
+        initialMessage="Generate an implementation plan"
+        initialMode="plan"
+        threadId={null}
+        onSendMessage={onSendMessage}
+        onSyncPlanTodos={onSyncPlanTodos}
+      />
+    )
+
+    const syncButton = await view.findByText(/Todo/)
+    fireEvent.click(syncButton)
+
+    expect(onSyncPlanTodos).not.toHaveBeenCalled()
+    await view.findByText(/Open a thread first|需要先打开一个会话/)
+  })
+
   it('requires manual apply for normal requirement update candidates', async () => {
     const onSendMessage = vi.fn(async () => ({
       content: 'Add shipping address collection.',

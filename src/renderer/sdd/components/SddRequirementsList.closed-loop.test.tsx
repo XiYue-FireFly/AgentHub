@@ -7,7 +7,7 @@ import { SddRequirementsList } from './SddRequirementsList'
 import { useSddDraftStore, type SddDraft, type SddTrace } from '../sdd-draft-store'
 import { clearDraftHistory, getDraftHistory } from '../sdd-draft-history'
 
-type QuickCompleteInput = { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string }
+type QuickCompleteInput = { prompt: string; systemPrompt?: string; providerId?: string; modelId?: string; workspaceRoot?: string }
 
 vi.mock('../../workbench/MarkdownBlock', () => ({
   MarkdownBlock: ({ content }: { content: string }) => <div>{content}</div>
@@ -57,9 +57,11 @@ const providers = [{
 }]
 
 function installElectronApi(planMarkdown: string, options: {
+  draftOverride?: SddDraft
   parseBlocks?: SddTrace['requirementBlocks']
   computeTrace?: () => Promise<SddTrace>
 } = {}) {
+  const activeDraft = options.draftOverride ?? draft
   const syncTodos = [{
     id: 'todo-1',
     threadId: 'thread-1',
@@ -78,9 +80,9 @@ function installElectronApi(planMarkdown: string, options: {
       quickComplete
     },
     sdd: {
-      listDrafts: vi.fn(async () => [draft]),
+      listDrafts: vi.fn(async () => [activeDraft]),
       createDraft: vi.fn(),
-      getDraft: vi.fn(async () => draft),
+      getDraft: vi.fn(async () => activeDraft),
       getTrace: vi.fn(async () => null),
       updateDraft: vi.fn(async () => { calls.push('updateDraft') }),
       updateDesignContext: vi.fn(),
@@ -173,12 +175,22 @@ describe('SddRequirementsList closed loop', () => {
     await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
     expect(api.ai.quickComplete.mock.calls[0][0]).toMatchObject({
       providerId: 'deepseek',
-      modelId: 'deepseek-chat'
+      modelId: 'deepseek-chat',
+      workspaceRoot: 'E:\\workspace'
     })
   })
 
   it('syncs the current requirement document checklist to the active thread from the editor toolbar', async () => {
-    const { api } = installElectronApi('- [ ] ignored plan')
+    const { api } = installElectronApi('- [ ] ignored plan', {
+      parseBlocks: [{
+        id: 'R-1',
+        title: 'Cart checkout',
+        status: 'draft',
+        description: 'Users can buy items.',
+        acceptanceCriteria: [{ text: 'submit payment', checked: false }],
+        lineNumber: 3
+      }]
+    })
     const onThreadTodosChanged = vi.fn(async () => undefined)
     const view = render(
       <SddRequirementsList
@@ -191,12 +203,69 @@ describe('SddRequirementsList closed loop', () => {
     fireEvent.click(await view.findByText('Checkout flow'))
     fireEvent.click(await view.findByRole('button', { name: /Sync Todo/ }))
 
-    await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith('thread-1', draft.content, {
+    await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith('thread-1', '- [ ] R-1: submit payment (covers: R-1)', {
       workspaceRoot: 'E:\\workspace',
       draftId: 'draft-1',
       relativePath: '.agenthub/requirements/draft-1/requirement.md'
     }))
     expect(onThreadTodosChanged).toHaveBeenCalledWith('thread-1')
+    await view.findByText('Synced 1 todos')
+  })
+
+  it('shows explicit feedback when the requirement document has no todo checklist items', async () => {
+    const noChecklistDraft = {
+      ...draft,
+      content: [
+        '# Checkout flow',
+        '',
+        '### R-1: Cart checkout {draft}',
+        'Users can buy items.'
+      ].join('\n')
+    }
+    const { api } = installElectronApi('- [ ] ignored plan', {
+      draftOverride: noChecklistDraft
+    })
+    useSddDraftStore.getState().setActiveDraft(noChecklistDraft)
+    useSddDraftStore.getState().setRequirementBlocks([{
+      id: 'R-1',
+      title: 'Cart checkout',
+      status: 'draft',
+      description: 'Users can buy items.',
+      acceptanceCriteria: [],
+      lineNumber: 3
+    }])
+    const view = render(
+      <SddRequirementsList
+        workspaceRoot="E:\\workspace"
+        threadId="thread-1"
+      />
+    )
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: /Sync Todo/ }))
+
+    await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith('thread-1', '', {
+      workspaceRoot: 'E:\\workspace',
+      draftId: 'draft-1',
+      relativePath: '.agenthub/requirements/draft-1/requirement.md'
+    }))
+    await view.findByText('No todos parsed. Use - [ ] checklist items in the document.')
+  })
+
+  it('keeps document todo sync visible and explains when no thread is open', async () => {
+    const { api } = installElectronApi('- [ ] ignored plan')
+    const view = render(
+      <SddRequirementsList
+        workspaceRoot="E:\\workspace"
+        threadId={null}
+      />
+    )
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: /Sync Todo/ }))
+
+    expect(api.todos.syncFromMarkdown).not.toHaveBeenCalled()
+    await view.findByText('Open a thread first.')
   })
 
   it('saves dirty draft content before generating a plan and sends the latest content to AI', async () => {
@@ -518,7 +587,7 @@ describe('SddRequirementsList closed loop', () => {
     ))
     await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith(
       'thread-1',
-      expect.stringContaining(assistantResponse),
+      '- [ ] R-1: submit payment (covers: R-1)',
       {
         workspaceRoot: 'E:\\workspace',
         draftId: 'draft-1',

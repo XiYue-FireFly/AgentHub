@@ -34,6 +34,7 @@ import { optimizePromptForDispatch } from "./runtime/prompt-optimizer"
 import { applyRouteDecisionToPlan, planDispatch } from "./runtime/dispatch-planner"
 import { estimateDispatchBudget } from "./runtime/budget-center"
 import { resolvePluginPreDispatchHooks } from "./runtime/plugin-contributions"
+import { workspaceContextPrompt } from "./runtime/workspace-context"
 import { runPreDispatchHooks } from "./hooks/hook-engine"
 // keyboard-shortcuts imports moved to src/main/ipc/workflow-ipc.ts
 // diagnostics, backup imports moved to src/main/ipc/workflow-ipc.ts
@@ -170,7 +171,8 @@ function finalAssistantContentForTurn(turn: WorkbenchTurn): string {
   const events = runtimeStore.eventsSince(turn.threadId, 0).filter(event => event.turnId === turn.id)
   const orchestrated = [...events].reverse().find(event => event.kind === "orchestrate" && event.payload?.kind === "orchestrate:final")
   if (orchestrated?.payload?.content) return String(orchestrated.payload.content).trim()
-  const done = events.filter(event => event.kind === "agent:done" && event.payload?.content && event.payload?.visibility !== "run")
+  const internalAgents = new Set(["prompt-optimizer", "budget-guard", "dispatch-planner", "router"])
+  const done = events.filter(event => event.kind === "agent:done" && event.payload?.content && event.payload?.visibility !== "run" && !internalAgents.has(event.agentId || ""))
   if (done.length === 0) return ""
   if (done.length === 1) return String(done[0].payload.content).trim()
   return done.map(event => {
@@ -618,7 +620,8 @@ typedHandle("turns:create", async (_event, payload) => {
   const pluginContext = preDispatchOutcome.additionalContext.length
     ? ["[Plugin PreDispatch Context]", ...preDispatchOutcome.additionalContext].join("\n\n")
     : ""
-  const optimizedDispatchUserPrompt = [promptOptimization.optimizedPrompt, pluginContext].filter(Boolean).join("\n\n")
+  const workspaceContext = workspaceContextPrompt(workspaceId)
+  const optimizedDispatchUserPrompt = [promptOptimization.optimizedPrompt, workspaceContext, pluginContext].filter(Boolean).join("\n\n")
   const previewMessages = existingThread
     ? modelMessagesForTurn(existingThread.id, optimizedDispatchUserPrompt, attachments)
     : [{ role: "user" as const, content: promptWithAttachments(optimizedDispatchUserPrompt, attachments) }]
@@ -828,7 +831,8 @@ typedHandle("turns:retry", async (_event, turnId) => {
   const retryPluginContext = retryPreDispatchOutcome.additionalContext.length
     ? ["[Plugin PreDispatch Context]", ...retryPreDispatchOutcome.additionalContext].join("\n\n")
     : ""
-  const retryOptimizedPrompt = [retryOptimization.optimizedPrompt, retryPluginContext].filter(Boolean).join("\n\n")
+  const retryWorkspaceContext = workspaceContextPrompt(thread.workspaceId)
+  const retryOptimizedPrompt = [retryOptimization.optimizedPrompt, retryWorkspaceContext, retryPluginContext].filter(Boolean).join("\n\n")
   const retryPreviewMessages = modelMessagesForTurn(thread.id, retryOptimizedPrompt, turn.attachments, turn.id)
   const retryPreviewPrompt = retryPreviewMessages[retryPreviewMessages.length - 1]?.content || promptWithAttachments(retryOptimizedPrompt, turn.attachments)
   const retryBudgetEstimate = estimateDispatchBudget({

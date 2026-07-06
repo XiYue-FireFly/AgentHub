@@ -155,7 +155,7 @@ function findManagedSectionStart(content: string): number {
 function isPlainRequirementTitle(line: string): boolean {
   const normalized = line.trim()
   if (!normalized || normalized.length > 100) return false
-  if (/^[#>\-\[\]`]|^\d+[.、]/.test(normalized)) return false
+  if (/^[#>[\]`-]|^\d+[.、]/.test(normalized)) return false
   if (/[。！？.!?：:]$/.test(normalized)) return false
   if (/建议|问题|分析|总结|说明|如下|基于以上/.test(normalized)) return false
   return /需求|系统|平台|应用|产品|项目|V\d|v\d|PRD|文档/.test(normalized)

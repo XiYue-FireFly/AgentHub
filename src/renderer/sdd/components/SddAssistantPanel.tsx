@@ -466,7 +466,21 @@ export function SddAssistantPanel({
   }
 
   const handleSyncPlanTodos = async (message: ChatMessage) => {
-    if (!onSyncPlanTodos || !threadId || message.mode !== 'plan') return
+    if (message.mode !== 'plan') return
+    if (!threadId) {
+      setSyncStatusByMessageId(prev => ({
+        ...prev,
+        [message.id]: tr('需要先打开一个会话。', 'Open a thread first.')
+      }))
+      return
+    }
+    if (!onSyncPlanTodos) {
+      setSyncStatusByMessageId(prev => ({
+        ...prev,
+        [message.id]: tr('当前页面没有连接 Todo 同步能力。', 'Todo sync is not connected on this page.')
+      }))
+      return
+    }
     setSyncingMessageId(message.id)
     setSyncStatusByMessageId(prev => ({ ...prev, [message.id]: tr('同步中...', 'Syncing...') }))
     try {
@@ -646,7 +660,7 @@ export function SddAssistantPanel({
                       type="button"
                       className="sdd-message-action"
                       onClick={() => handleSyncPlanTodos(msg)}
-                      disabled={!threadId || !onSyncPlanTodos || syncingMessageId === msg.id}
+                      disabled={syncingMessageId === msg.id}
                       title={threadId ? tr('同步计划清单到当前会话 Todo', 'Sync plan checklist to current thread todos') : tr('需要先打开一个会话', 'Open a thread first')}
                     >
                       <Icon d={IC.check} size={14} />

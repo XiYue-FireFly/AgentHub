@@ -19,6 +19,7 @@ import { takeoverStatus, takeoverApply, takeoverRestore } from '../routing/takeo
 import { getCachedLocalAgentStatuses } from '../runtime/local-agents'
 import { ProviderClient } from '../providers/client'
 import type { AgentRouteBinding, ThinkingConfig } from '../providers/types'
+import { workspaceContextPromptForRoot } from '../runtime/workspace-context'
 import { resolvePathWithinAllowedBases } from './path-guards'
 import { assertRegisteredWorkspaceRoot } from './workspace-root-guard'
 import { isSensitiveTextFilePath } from './sensitive-files'
@@ -47,8 +48,8 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
     return true
   })
 
-  typedHandle('tasks:clearCompleted', async () => {
-    runtimeStore?.clearCompletedTasks?.()
+  typedHandle('tasks:clearCompleted', async (_event, workspaceId) => {
+    runtimeStore?.clearCompletedTasks?.(workspaceId)
     if (dispatcher) dispatcher.clearCompleted?.()
     return true
   })
@@ -244,8 +245,10 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       timeout = setTimeout(() => controller.abort(), input.timeoutMs || 30000)
       let content = ''
       let errorMessage = ''
+      const workspaceContext = workspaceContextPromptForRoot(input.workspaceRoot)
+      const prompt = [workspaceContext, input.prompt].filter(Boolean).join('\n\n')
       await client.stream({
-        messages: [{ role: 'user', content: input.prompt }],
+        messages: [{ role: 'user', content: prompt }],
         systemPrompt: input.systemPrompt,
         signal: controller.signal
       }, {

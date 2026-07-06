@@ -103,6 +103,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const commandPaletteOpen = useWorkbenchUiStore(state => state.commandPaletteOpen)
   const setCommandPaletteOpen = useWorkbenchUiStore(state => state.setCommandPaletteOpen)
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot>({ threads: [], turns: [], runs: [], activeThreadId: null })
+  const [allSnapshot, setAllSnapshot] = useState<WorkbenchSnapshot>({ threads: [], turns: [], runs: [], activeThreadId: null })
   const [selectedThreadId, setSelectedThreadIdState] = useState<string | null>(null)
   const [allThreads, setAllThreads] = useState<WorkbenchThread[]>([])
   const [events, setEvents] = useState<RuntimeEvent[]>([])
@@ -349,6 +350,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         ? persistedThreadId
         : snap.threads[0]?.id ?? null
     setSnapshot({ ...snap, activeThreadId: nextVisibleThreadId })
+    setAllSnapshot(allSnap)
     setAllThreads(allSnap.threads)
     setWorkspaces(wsList)
     setWorkspaceId(resolvedWorkspaceId)
@@ -488,7 +490,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
             setSnapshot(prev => preserveSelectedSnapshot(next, prev))
           }).catch(() => {})
         }
-        window.electronAPI.runtime.snapshot(undefined).then(snap => setAllThreads(snap.threads)).catch(() => {})
+        window.electronAPI.runtime.snapshot(undefined).then(snap => {
+          setAllSnapshot(snap)
+          setAllThreads(snap.threads)
+        }).catch(() => {})
         snapshotRefreshTimer.current = null
       }, immediate ? 0 : 400)
     })
@@ -533,8 +538,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     [events, visibleThreadId, activeThreadId]
   )
   const runtimeTasks = useMemo(
-    () => deriveTaskItems(snapshot, taskEventsByThread),
-    [snapshot, taskEventsByThread]
+    () => deriveTaskItems(allSnapshot, taskEventsByThread),
+    [allSnapshot, taskEventsByThread]
   )
 
   const connectionSummary = useMemo(
@@ -602,7 +607,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [setView])
 
   const ensureTaskEventsLoaded = useCallback(() => {
-    const unloadedThreadIds = snapshot.threads
+    const unloadedThreadIds = allSnapshot.threads
       .map(thread => thread.id)
       .filter(threadId => !fullyLoadedTaskThreadIds.current.has(threadId))
     if (unloadedThreadIds.length === 0) return
@@ -619,7 +624,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         return next
       })
     }).catch(() => {})
-  }, [snapshot.threads])
+  }, [allSnapshot.threads])
 
   useEffect(() => {
     if (view === 'tasks') ensureTaskEventsLoaded()
@@ -631,7 +636,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [loadWorkbench, workspaceId])
 
   const deleteRuntimeTask = useCallback(async (id: string) => {
-    const ok = await styledConfirm({ message: tr('删除这条任务历史？对应的运行详情也会从当前会话记录中移除。', 'Delete this task history? Its run details will also be removed from the current conversation.'), danger: true })
+    const ok = await styledConfirm({ message: tr('从任务页隐藏这条任务卡片？对话内容和运行详情会保留。', 'Hide this task card from the task page? Conversation content and run details will be kept.'), danger: true })
     if (!ok) return
     await window.electronAPI.tasks.delete(id).catch(() => false)
     fullyLoadedTaskThreadIds.current.clear()
@@ -639,10 +644,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     loadWorkbench(workspaceId).catch(() => {})
   }, [loadWorkbench, workspaceId])
 
-  const clearCompletedRuntimeTasks = useCallback(async () => {
-    const ok = await styledConfirm({ message: tr('清理所有已结束的任务历史？对应的运行详情也会从当前会话记录中移除。', 'Clear all finished task history? Matching run details will also be removed from the current conversation.'), danger: true })
+  const clearCompletedRuntimeTasks = useCallback(async (targetWorkspaceId: string | null = workspaceId) => {
+    const ok = await styledConfirm({ message: tr('清理当前工作目录已结束的任务卡片？对话内容和运行详情会保留。', 'Hide finished task cards for the current workspace? Conversation content and run details will be kept.'), danger: true })
     if (!ok) return
-    await window.electronAPI.tasks.clearCompleted().catch(() => false)
+    await window.electronAPI.tasks.clearCompleted(targetWorkspaceId).catch(() => false)
     fullyLoadedTaskThreadIds.current.clear()
     setTaskEventsByThread({})
     loadWorkbench(workspaceId).catch(() => {})
@@ -691,6 +696,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       clearRuntimeEventBuffer()
       if (selectThreadGenRef.current !== gen) return // stale — newer call before final writes
       setSnapshot({ ...snap, activeThreadId: selected })
+      setAllSnapshot(allSnap)
       setAllThreads(allSnap.threads)
       if (selected) fullyLoadedTaskThreadIds.current.add(selected)
       if (selected) {
@@ -979,6 +985,9 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     await window.electronAPI.turns.cancelAgent(turnId, agentId).catch(() => false)
     const next = await window.electronAPI.runtime.snapshot(workspaceId).catch(() => snapshot)
     setSnapshot(prev => preserveSelectedSnapshot(next, prev))
+    const allNext = await window.electronAPI.runtime.snapshot(undefined).catch(() => allSnapshot)
+    setAllSnapshot(allNext)
+    setAllThreads(allNext.threads)
   }
 
   const resolveGuard = async (requestId: string, approved: boolean) => {

@@ -26,7 +26,10 @@ describe("ThreadView agent output status", () => {
   it("keeps run-only custom schedule output out of chat answer text", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
-    expect(source).toContain("event.payload?.visibility !== 'run'")
+    expect(source).toContain("function isChatVisibleRuntimeEvent(event: RuntimeEvent): boolean")
+    expect(source).toContain("event.kind === 'turn:summary'")
+    expect(source).toContain("INTERNAL_TIMELINE_AGENT_IDS.has(event.agentId)")
+    expect(source).toContain("event.payload?.visibility === 'run'")
     expect(source).toContain("summary.done?.payload?.visibility === 'run' ? ''")
   })
 
@@ -42,7 +45,7 @@ describe("ThreadView agent output status", () => {
   it("uses raw event duration and counts failed agent runs in completion reports", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
-    expect(source).toContain("event.kind !== 'turn:created' && event.kind !== 'turn:status'")
+    expect(source).toContain("const visibleEvents = events.filter(isChatVisibleRuntimeEvent)")
     expect(source).not.toContain("event.kind !== 'run:created' && event.kind !== 'run:status'")
     expect(source).toContain("const failedRunCount = status === 'failed' ? 1 : 0")
     expect(source).toContain("totalTools: toolCalls.length + failedRunCount + successfulRunCount")
@@ -92,8 +95,9 @@ describe("ThreadView agent output status", () => {
   it("does not render empty 0ms completion reports without reportable work", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
-    expect(source).toContain("const hasReportableWork = toolCalls.length > 0")
+    expect(source).toContain("const hasReportableWork = toolCalls.length > 0 || failedRunCount > 0 || stats.files.length > 0")
     expect(source).toContain("if (!hasReportableWork) return null")
+    expect(source).not.toContain("wb-completion-final-preview")
   })
 
   it("finalizes running tool rows and filters noisy URL fragments from modified files", () => {

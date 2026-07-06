@@ -216,7 +216,7 @@ const api = {
   },
   tasks: {
     delete: (taskId: string) => typedInvoke('tasks:delete', taskId),
-    clearCompleted: () => typedInvoke('tasks:clearCompleted')
+    clearCompleted: (workspaceId?: string | null) => typedInvoke('tasks:clearCompleted', workspaceId)
   },
   git: {
     status: (workspaceId?: string | null) => typedInvoke('git:status', workspaceId),
