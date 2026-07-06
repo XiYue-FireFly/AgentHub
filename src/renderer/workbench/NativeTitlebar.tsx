@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
-import { readAppearanceLocal } from '../appearance'
 import { resolveKeyboardShortcutBindings, shortcutDisplay } from '../keyboard-shortcuts'
 import type { ViewMode } from './viewModes'
 
@@ -52,18 +51,8 @@ export function NativeTitlebar({
   shortcuts
 }: NativeTitlebarProps) {
   const win = window.electronAPI?.win
+  const platformClass = window.electronAPI?.platform === 'darwin' ? 'platform-darwin' : 'platform-win32'
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'help' | null>(null)
-  const [uiStyle, setUiStyle] = useState<'mac' | 'win'>(() => readAppearanceLocal().uiStyle)
-  const isMacStyle = uiStyle === 'mac'
-
-  useEffect(() => {
-    const handler = (event: Event) => {
-      const next = (event as CustomEvent).detail
-      if (next?.uiStyle) setUiStyle(next.uiStyle)
-    }
-    window.addEventListener('agenthub:appearance-change', handler)
-    return () => window.removeEventListener('agenthub:appearance-change', handler)
-  }, [])
 
   useEffect(() => {
     if (!openMenu) return
@@ -83,12 +72,12 @@ export function NativeTitlebar({
   }
 
   return (
-    <div className="wb-titlebar app-drag" onDoubleClick={() => win?.maximizeToggle()}>
-      {isMacStyle && (
-        <div className="wb-traffic-lights app-no-drag">
-          <span className="tl-dot tl-close" onClick={() => win?.close()} />
-          <span className="tl-dot tl-min" onClick={() => win?.minimize()} />
-          <span className="tl-dot tl-max" onClick={() => win?.maximizeToggle()} />
+    <div className={`wb-titlebar ${platformClass} app-drag`} onDoubleClick={() => win?.maximizeToggle()}>
+      {platformClass === 'platform-darwin' && (
+        <div className="wb-traffic-lights app-no-drag" aria-label="Window controls">
+          <button type="button" className="tl-dot tl-close" onClick={() => win?.close()} title="Close" aria-label="Close" />
+          <button type="button" className="tl-dot tl-min" onClick={() => win?.minimize()} title="Minimize" aria-label="Minimize" />
+          <button type="button" className="tl-dot tl-max" onClick={() => win?.maximizeToggle()} title="Maximize" aria-label="Maximize" />
         </div>
       )}
       <TitlebarMenu
@@ -139,9 +128,9 @@ export function NativeTitlebar({
         {hubRunning ? tr('Hub 运行中', 'Hub running') : tr('Hub 离线', 'Hub offline')}
       </div>
       <div className="wb-window-actions app-no-drag">
-        <button onClick={() => win?.minimize()}><Icon d={IC.min} size={13} /></button>
-        <button onClick={() => win?.maximizeToggle()}><Icon d={IC.max} size={13} /></button>
-        <button onClick={() => win?.close()}><Icon d={IC.x} size={13} /></button>
+        <button onClick={() => win?.minimize()} title="Minimize" aria-label="Minimize"><Icon d={IC.min} size={13} /></button>
+        <button onClick={() => win?.maximizeToggle()} title="Maximize" aria-label="Maximize"><Icon d={IC.max} size={13} /></button>
+        <button onClick={() => win?.close()} title="Close" aria-label="Close"><Icon d={IC.x} size={13} /></button>
       </div>
     </div>
   )

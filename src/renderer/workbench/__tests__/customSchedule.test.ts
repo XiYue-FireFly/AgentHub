@@ -21,6 +21,23 @@ const baseSchedule: SchedulePreview = {
 }
 
 describe("custom schedule helpers", () => {
+  function findUndefinedPath(value: unknown, path = "value"): string | null {
+    if (value === undefined) return path
+    if (value === null || typeof value !== "object") return null
+    if (Array.isArray(value)) {
+      for (const [index, item] of value.entries()) {
+        const issue = findUndefinedPath(item, `${path}[${index}]`)
+        if (issue) return issue
+      }
+      return null
+    }
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const issue = findUndefinedPath(item, `${path}.${key}`)
+      if (issue) return issue
+    }
+    return null
+  }
+
   it("does not build template steps when no local agents are usable", () => {
     expect(buildCustomScheduleTemplate("five", baseSchedule, [])).toBeNull()
     expect(buildCustomScheduleTemplate("parallel", baseSchedule, [])).toBeNull()
@@ -97,6 +114,20 @@ describe("custom schedule helpers", () => {
       ["c", ["b"]]
     ])
     expect(normalized.graph?.edges[0].artifactMode).toBe("full")
+  })
+
+  it("omits undefined optional fields before saving schedules through IPC store", () => {
+    const normalized = normalizeScheduleForStorage({
+      ...baseSchedule,
+      steps: [
+        { id: "a", label: "A", agentId: "codex", role: "worker", mode: "auto" },
+        { id: "b", label: "B", agentId: "claude", role: "reviewer", mode: "auto", dependsOn: [] }
+      ]
+    })
+
+    expect(Object.prototype.hasOwnProperty.call(normalized.steps[0], "dependsOn")).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(normalized.steps[1], "dependsOn")).toBe(false)
+    expect(findUndefinedPath(normalized)).toBeNull()
   })
 
   it("rejects duplicate nodes, orphan edges, and cycles", () => {

@@ -558,6 +558,9 @@ button, input, textarea, select { letter-spacing: 0; }
   border-radius: var(--radius-sm);
 }
 .wb-window-actions button:hover { background: var(--wb-line-soft); }
+.wb-traffic-lights {
+  display: none;
+}
 
 .wb-shell {
   flex: 1;
@@ -11652,32 +11655,37 @@ html[data-motion="off"] .wb-processing-dots i {
 }
 
 /* ── Mac: Native macOS titlebar — traffic lights, hide menus & win buttons ── */
-[data-ui-style="mac"] .wb-titlebar .wb-menu-wrap,
-[data-ui-style="mac"] .wb-titlebar .wb-window-actions {
+[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-menu-wrap,
+[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-window-actions {
   display: none !important;
 }
-[data-ui-style="mac"] .wb-traffic-lights {
+[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-traffic-lights {
   display: flex;
   gap: 8px;
   align-items: center;
   padding: 0 14px 0 16px;
   flex-shrink: 0;
 }
-[data-ui-style="mac"] .wb-traffic-lights .tl-dot {
+[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-traffic-lights .tl-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 12px;
   height: 12px;
   border-radius: 999px;
+  padding: 0;
+  border: 0;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
   cursor: pointer;
   transition: opacity 0.15s;
 }
-[data-ui-style="mac"] .wb-traffic-lights .tl-dot:hover {
+[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-traffic-lights .tl-dot:hover {
   opacity: 0.8;
 }
-[data-ui-style="mac"] .wb-traffic-lights .tl-close { background: #ec6a5e; }
-[data-ui-style="mac"] .wb-traffic-lights .tl-min { background: #f4bf4f; }
-[data-ui-style="mac"] .wb-traffic-lights .tl-max { background: #61c554; }
-:root[data-theme="dark"][data-ui-style="mac"] .wb-traffic-lights .tl-dot {
+[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-traffic-lights .tl-close { background: #ec6a5e; }
+[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-traffic-lights .tl-min { background: #f4bf4f; }
+[data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-traffic-lights .tl-max { background: #61c554; }
+:root[data-theme="dark"][data-ui-style="mac"] .wb-titlebar.platform-darwin .wb-traffic-lights .tl-dot {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
 }
 
@@ -14275,13 +14283,47 @@ html[data-motion="off"] .wb-processing-dots i {
 }
 
 .sdd-requirements-full.sdd-with-assistant {
-  grid-template-columns: 1fr 380px;
+  grid-template-columns: minmax(0, 1fr) 12px minmax(360px, var(--sdd-assistant-width, 420px));
 }
 
 .sdd-requirements-full > .sdd-editor-container,
 .sdd-requirements-full > .sdd-assistant-panel {
   min-height: 0;
   height: 100%;
+}
+
+.sdd-assistant-resize-handle {
+  position: relative;
+  z-index: 2;
+  width: 12px;
+  min-height: 0;
+  cursor: col-resize;
+  background: color-mix(in srgb, var(--wb-line) 28%, transparent);
+  outline: none;
+  transition: background 0.15s ease;
+}
+
+.sdd-assistant-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 56px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  background: color-mix(in srgb, var(--wb-muted) 45%, transparent);
+}
+
+.sdd-assistant-resize-handle:hover,
+.sdd-assistant-resize-handle:focus-visible,
+.sdd-assistant-resizing .sdd-assistant-resize-handle {
+  background: color-mix(in srgb, var(--wb-accent) 14%, transparent);
+}
+
+.sdd-assistant-resizing,
+.sdd-assistant-resizing * {
+  user-select: none;
 }
 
 .wb-settings-content:has(.sdd-requirements-full) {

@@ -41,15 +41,17 @@ function isScheduleMode(value: unknown): value is ScheduleStep['mode'] {
 }
 
 function normalizeStep(step: ScheduleStep): ScheduleStep {
-  return {
+  const dependsOn = step.dependsOn?.filter(Boolean)
+  const next: ScheduleStep = {
     ...step,
     id: String(step.id || `step-${Date.now().toString(36)}`),
     label: String(step.label || step.id || 'Step'),
     agentId: String(step.agentId || 'auto'),
     role: isScheduleRole(step.role) ? step.role : 'worker',
-    mode: isScheduleMode(step.mode) ? step.mode : 'auto',
-    dependsOn: step.dependsOn?.filter(Boolean)
+    mode: isScheduleMode(step.mode) ? step.mode : 'auto'
   }
+  if (dependsOn?.length) next.dependsOn = dependsOn
+  return next
 }
 
 function edgeId(from: string, to: string): string {
@@ -66,15 +68,16 @@ export function scheduleGraphFromSteps(schedule: SchedulePreview): ScheduleGraph
   const stepIds = new Set(steps.map(step => step.id))
   const nodes = steps.map(step => {
     const graphNode = schedule.graph?.nodes.find(node => node.id === step.id)
-    return {
+    const node: ScheduleGraphNode = {
       id: step.id,
       label: step.label || step.labelEn || step.labelZh || step.id,
       agentId: step.agentId,
       role: step.role,
       mode: step.mode,
-      promptTemplate: graphNode?.promptTemplate,
       approvalPolicy: graphNode?.approvalPolicy || 'inherit'
     }
+    if (graphNode?.promptTemplate) node.promptTemplate = graphNode.promptTemplate
+    return node
   })
   const edges = steps.flatMap(step => (step.dependsOn || [])
     .filter(dep => dep && dep !== step.id && stepIds.has(dep))
@@ -194,14 +197,18 @@ export function compileScheduleGraph(schedule: SchedulePreview): SchedulePreview
   for (const edge of graph.edges) {
     depsByNode.set(edge.to, [...(depsByNode.get(edge.to) || []), edge.from])
   }
-  const steps: ScheduleStep[] = topologicalNodes(graph).map(node => ({
-    id: node.id,
-    label: node.label,
-    agentId: node.agentId,
-    role: node.role,
-    mode: node.mode,
-    dependsOn: depsByNode.get(node.id)?.length ? depsByNode.get(node.id) : undefined
-  }))
+  const steps: ScheduleStep[] = topologicalNodes(graph).map(node => {
+    const step: ScheduleStep = {
+      id: node.id,
+      label: node.label,
+      agentId: node.agentId,
+      role: node.role,
+      mode: node.mode
+    }
+    const dependsOn = depsByNode.get(node.id)
+    if (dependsOn?.length) step.dependsOn = dependsOn
+    return step
+  })
   return { ...schedule, steps, graph }
 }
 

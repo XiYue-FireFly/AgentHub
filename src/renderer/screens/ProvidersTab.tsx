@@ -34,6 +34,25 @@ export function buildClaudeProviderReorderIds(
   return nextFull.map(provider => provider.id)
 }
 
+export function isMaskedProviderApiKey(value: string): boolean {
+  const trimmed = value.trim()
+  return /^[•*]+$/.test(trimmed) || trimmed.includes('\u9225\u2469\u20ac')
+}
+
+export function buildProviderFetchModelsOverride(input: {
+  baseUrl: string
+  apiKey?: string
+  kind?: string
+}): { baseUrl: string; apiKey?: string; kind?: string } {
+  const override: { baseUrl: string; apiKey?: string; kind?: string } = {
+    baseUrl: input.baseUrl
+  }
+  const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : ''
+  if (apiKey && !isMaskedProviderApiKey(apiKey)) override.apiKey = apiKey
+  if (typeof input.kind === 'string' && input.kind.trim()) override.kind = input.kind
+  return override
+}
+
 export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onReload, onUpsert, onDelete, onReorderForClaude }: {
   providers: ProviderDef[]
   bindings: BindingDef[]
@@ -90,7 +109,11 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
     }
     setChecking(current => ({ ...current, [providerId]: true }))
     try {
-      const result = await window.electronAPI.providers.fetchModels(providerId, { baseUrl, apiKey: providerRequestApiKey(provider), kind: provider.kind })
+      const result = await window.electronAPI.providers.fetchModels(providerId, buildProviderFetchModelsOverride({
+        baseUrl,
+        apiKey: providerRequestApiKey(provider),
+        kind: provider.kind
+      }))
       const nextProviders: ProviderDef[] = result.config?.providers || []
       const nextProvider = nextProviders.find(provider => provider.id === providerId)
       if (nextProvider?.models?.length) {
@@ -115,11 +138,6 @@ export function ProvidersTab({ providers, bindings, onSetEnabled, onSetKey, onRe
 
   const providerInputApiKey = (provider: ProviderDef): string => {
     return (keys[provider.id] ?? provider.apiKey ?? '').trim()
-  }
-
-  const isMaskedProviderApiKey = (value: string): boolean => {
-    const trimmed = value.trim()
-    return /^[•*]+$/.test(trimmed) || trimmed.includes('\u9225\u2469\u20ac')
   }
 
   const providerRequestApiKey = (provider: ProviderDef): string | undefined => {

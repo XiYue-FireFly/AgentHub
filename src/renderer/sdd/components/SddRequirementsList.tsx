@@ -28,6 +28,10 @@ interface SddRequirementsListProps {
 
 const PLAN_GENERATION_TRIGGER_MESSAGE = 'Generate an implementation plan from the current requirement document.'
 const VERIFY_TRIGGER_MESSAGE = 'Review completed implementation evidence and verify acceptance criteria for this requirement document.'
+const ASSISTANT_WIDTH_KEY = 'sdd.assistantPanelWidth'
+const ASSISTANT_DEFAULT_WIDTH = 420
+const ASSISTANT_MIN_WIDTH = 360
+const ASSISTANT_MAX_WIDTH = 780
 type AssistantRequestMode = 'chat' | 'plan' | 'verify'
 
 interface AssistantRequirementApplyContext {
@@ -60,6 +64,19 @@ function isAssistantRequirementApplyContext(value: unknown): value is AssistantR
     typeof context.nextContent === 'string'
 }
 
+function clampAssistantWidth(width: number): number {
+  if (!Number.isFinite(width)) return ASSISTANT_DEFAULT_WIDTH
+  return Math.min(ASSISTANT_MAX_WIDTH, Math.max(ASSISTANT_MIN_WIDTH, Math.round(width)))
+}
+
+function readAssistantPanelWidth(): number {
+  try {
+    return clampAssistantWidth(Number(localStorage.getItem(ASSISTANT_WIDTH_KEY)) || ASSISTANT_DEFAULT_WIDTH)
+  } catch {
+    return ASSISTANT_DEFAULT_WIDTH
+  }
+}
+
 export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodos = [], events = [], onThreadTodosChanged }: SddRequirementsListProps) {
   const [drafts, setDrafts] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -70,12 +87,67 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [assistantMode, setAssistantMode] = useState<AssistantRequestMode>('chat')
   const [assistantTriggerNonce, setAssistantTriggerNonce] = useState(0)
+  const [assistantWidth, setAssistantWidth] = useState(readAssistantPanelWidth)
+  const [assistantResizing, setAssistantResizing] = useState(false)
+  const assistantResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const autoVerifyTriggeredRef = useRef<Set<string>>(new Set())
   const autoVerifySeenEventKeysRef = useRef<Set<string>>(new Set())
   const autoVerifyBaselineKeyRef = useRef<string | null>(null)
 
   const activeDraft = useSddDraftStore((s) => s.activeDraft)
   const draftContent = useSddDraftStore((s) => s.content)
+
+  const saveAssistantWidth = useCallback((nextWidth: number) => {
+    const clamped = clampAssistantWidth(nextWidth)
+    setAssistantWidth(clamped)
+    try { localStorage.setItem(ASSISTANT_WIDTH_KEY, String(clamped)) } catch { /* noop */ }
+  }, [])
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const active = assistantResizeRef.current
+      if (!active) return
+      event.preventDefault()
+      saveAssistantWidth(active.startWidth + active.startX - event.clientX)
+    }
+    const handlePointerUp = () => {
+      if (!assistantResizeRef.current) return
+      assistantResizeRef.current = null
+      setAssistantResizing(false)
+    }
+    window.addEventListener('pointermove', handlePointerMove, { passive: false })
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [saveAssistantWidth])
+
+  const startAssistantResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    assistantResizeRef.current = {
+      startX: event.clientX,
+      startWidth: assistantWidth
+    }
+    setAssistantResizing(true)
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }, [assistantWidth])
+
+  const handleAssistantResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return
+    event.preventDefault()
+    if (event.key === 'Home') {
+      saveAssistantWidth(ASSISTANT_MIN_WIDTH)
+      return
+    }
+    if (event.key === 'End') {
+      saveAssistantWidth(ASSISTANT_MAX_WIDTH)
+      return
+    }
+    saveAssistantWidth(assistantWidth + (event.key === 'ArrowLeft' ? 24 : -24))
+  }, [assistantWidth, saveAssistantWidth])
 
   const triggerVerification = useCallback(() => {
     if (!draftContent) return
@@ -363,8 +435,15 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
 
   // 如果正在编辑，显示编辑器
   if (view === 'editor' && activeDraft) {
+    const requirementsLayoutStyle = assistantOpen
+      ? ({ '--sdd-assistant-width': `${assistantWidth}px` } as React.CSSProperties)
+      : undefined
+
     return (
-      <div className={`sdd-requirements-full ${assistantOpen ? 'sdd-with-assistant' : ''}`}>
+      <div
+        className={`sdd-requirements-full ${assistantOpen ? 'sdd-with-assistant' : ''} ${assistantResizing ? 'sdd-assistant-resizing' : ''}`}
+        style={requirementsLayoutStyle}
+      >
         <SddDraftEditor
           onClose={handleBack}
           onOpenAssistant={() => setAssistantOpen(!assistantOpen)}
@@ -381,6 +460,21 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
           nextDisabled={!draftContent}
           verifyDisabled={!draftContent}
         />
+        {assistantOpen && (
+          <div
+            className="sdd-assistant-resize-handle"
+            role="separator"
+            aria-label={tr('Resize requirements AI panel', 'Resize requirements AI panel')}
+            aria-orientation="vertical"
+            aria-valuemin={ASSISTANT_MIN_WIDTH}
+            aria-valuemax={ASSISTANT_MAX_WIDTH}
+            aria-valuenow={assistantWidth}
+            tabIndex={0}
+            title={tr('拖拽调整需求 AI 面板宽度', 'Drag to resize Requirements AI panel')}
+            onPointerDown={startAssistantResize}
+            onKeyDown={handleAssistantResizeKeyDown}
+          />
+        )}
         {assistantOpen && (
           <SddAssistantPanel
             draftId={activeDraft.id}
