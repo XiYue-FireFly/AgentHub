@@ -16,6 +16,7 @@ import { listSlashCommands, getSlashCommand, saveSlashCommand, deleteSlashComman
 import { buildProjectMap, searchProjectFiles } from '../runtime/project-map'
 import { listMcpServers } from '../runtime/mcp'
 import { listPullRequests, listIssues, getCurrentBranchPr, checkGhCli } from '../runtime/github-integration'
+import { resolveRegisteredWorkspaceRoot } from './workspace-root-guard'
 import { typedHandle } from './typed-ipc'
 
 interface WorkflowIpcDeps {
@@ -111,7 +112,11 @@ export function registerWorkflowIpc(deps: WorkflowIpcDeps): void {
   typedHandle("slashCommands:conflict", (_e, shortcut) => checkConflict(shortcut))
 
   // Project Map
-  typedHandle("projectMap:build", (_e, rootPath, maxDepth) => buildProjectMap(rootPath, maxDepth))
+  typedHandle("projectMap:build", (_e, rootPath, maxDepth) => {
+    const root = resolveRegisteredWorkspaceRoot(rootPath)
+    if (!root) return { nodes: [], stats: { totalFiles: 0, totalDirectories: 0, totalSize: 0, languages: {} } }
+    return buildProjectMap(root, maxDepth)
+  })
   typedHandle("projectMap:search", (_e, map, query) => searchProjectFiles(map, query))
 
   // GitHub
