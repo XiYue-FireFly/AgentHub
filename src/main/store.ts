@@ -86,14 +86,12 @@ class AppStore {
 
   private save(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer)
-    this.saveTimer = setTimeout(() => {
+    this.saveTimer = setTimeout(async () => {
       try {
         const tmp = this.filePath + '.tmp'
-        // WARNING: writeFileSync blocks the main thread. Switching to fs.promises
-        // requires changing set() and all downstream callers to be asynchronous,
-        // which risks race conditions and breaks the synchronous get/set API contract.
-        fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2))
-        fs.renameSync(tmp, this.filePath)
+        // Use async fs operations to avoid blocking the main thread
+        await fs.promises.writeFile(tmp, JSON.stringify(this.data, null, 2))
+        await fs.promises.rename(tmp, this.filePath)
       } catch (e: any) {
         log.error(`[Store] Save failed (${this.filePath}):`, e?.message || String(e))
       }
@@ -101,15 +99,15 @@ class AppStore {
     }, 200)
   }
 
-  flush(): void {
+  async flush(): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
       try {
         const tmp = this.filePath + '.tmp'
-        // WARNING: writeFileSync blocks the main thread.
-        fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2))
-        fs.renameSync(tmp, this.filePath)
+        // Use async fs operations to avoid blocking the main thread
+        await fs.promises.writeFile(tmp, JSON.stringify(this.data, null, 2))
+        await fs.promises.rename(tmp, this.filePath)
       } catch (e: any) {
         log.error(`[Store] Flush failed (${this.filePath}):`, e?.message || String(e))
       }

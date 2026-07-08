@@ -18,7 +18,19 @@ const fsMock = vi.hoisted(() => ({
       fsMock.files.set(to, content)
       fsMock.files.delete(from)
     }
-  })
+  }),
+  promises: {
+    writeFile: vi.fn(async (path: string, content: string) => {
+      fsMock.files.set(path, content)
+    }),
+    rename: vi.fn(async (from: string, to: string) => {
+      const content = fsMock.files.get(from)
+      if (content !== undefined) {
+        fsMock.files.set(to, content)
+        fsMock.files.delete(from)
+      }
+    })
+  }
 }))
 
 vi.mock('electron', () => ({
@@ -41,6 +53,8 @@ describe('main store local token', () => {
     fsMock.readFileSync.mockClear()
     fsMock.writeFileSync.mockClear()
     fsMock.renameSync.mockClear()
+    fsMock.promises.writeFile.mockClear()
+    fsMock.promises.rename.mockClear()
     vi.resetModules()
   })
 
@@ -50,9 +64,11 @@ describe('main store local token', () => {
     const token = getLocalToken()
 
     expect(token).toMatch(/^[a-f0-9]{48}$/)
-    expect(fsMock.writeFileSync).toHaveBeenCalledTimes(1)
-    expect(fsMock.renameSync).toHaveBeenCalledTimes(1)
-    const targetPath = fsMock.renameSync.mock.calls[0]?.[1]
+    // Wait for async flush to complete
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect(fsMock.promises.writeFile).toHaveBeenCalledTimes(1)
+    expect(fsMock.promises.rename).toHaveBeenCalledTimes(1)
+    const targetPath = fsMock.promises.rename.mock.calls[0]?.[1]
     const saved = JSON.parse(fsMock.files.get(targetPath) || '{}')
     expect(saved['local.token']).toBe(token)
   })
@@ -63,7 +79,7 @@ describe('main store local token', () => {
     const { getLocalToken } = await import('../store')
 
     expect(getLocalToken()).toBe('existing-token')
-    expect(fsMock.writeFileSync).not.toHaveBeenCalled()
-    expect(fsMock.renameSync).not.toHaveBeenCalled()
+    expect(fsMock.promises.writeFile).not.toHaveBeenCalled()
+    expect(fsMock.promises.rename).not.toHaveBeenCalled()
   })
 })
