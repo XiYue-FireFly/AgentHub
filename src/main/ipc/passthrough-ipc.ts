@@ -30,6 +30,7 @@ import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from '../r
 import { appEventLogPath, readRecentAppEventLogs } from '../runtime/app-event-log'
 import { runReleaseChecks } from '../runtime/release-workspace'
 import { listMcpServers } from '../runtime/mcp'
+import { resolveRegisteredWorkspaceRoot } from './workspace-root-guard'
 import { typedHandle } from './typed-ipc'
 
 interface PassthroughDeps {
@@ -138,8 +139,16 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
   typedHandle("teams:delete", (_e, id) => deleteTeamPreset(id))
   typedHandle("teams:defaultFirefly", (_e, agentIds) => getDefaultFireflyTeam(agentIds))
 
-  typedHandle("knowledge:detectTechStack", (_e, rootPath) => detectTechStack(rootPath))
-  typedHandle("knowledge:generateSummary", (_e, rootPath, entries) => generateWorkspaceSummary(rootPath, entries))
+  typedHandle("knowledge:detectTechStack", (_e, rootPath) => {
+    const root = resolveRegisteredWorkspaceRoot(rootPath)
+    if (!root) return {}
+    return detectTechStack(root)
+  })
+  typedHandle("knowledge:generateSummary", (_e, rootPath, entries) => {
+    const root = resolveRegisteredWorkspaceRoot(rootPath)
+    if (!root) return ''
+    return generateWorkspaceSummary(root, entries)
+  })
 
   typedHandle("firefly:createState", () => createFireflyState())
   typedHandle("firefly:completeRole", (_e, state, role, output) => completeRole(state, role, output))
