@@ -476,6 +476,7 @@ export class LocalProxy extends EventEmitter {
             emitter.thinking(delta)
           },
           onToolCallDelta: (tc) => {
+            if (settled) return
             arm(IDLE_MS)
             if (noStream) return
             if (!started) { started = true; emitter.begin() }
