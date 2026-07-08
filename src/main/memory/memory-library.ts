@@ -117,14 +117,10 @@ export class MemoryLibrary {
       includeDisabled: false
     })
 
-    // User scope entries: unconditional injection (identity facts)
-    const userEntries = allEntries.filter(e => e.scope === 'user')
-
-    // Workspace/Project entries: scored selection
-    const workspaceEntries = allEntries
-      .filter(e => e.scope !== 'user')
+    // Score all entries globally
+    const scoredEntries = allEntries
       .map(entry => ({ entry, score: scoreMemoryEntry(entry, terms) }))
-      .filter(({ entry, score }) => score > 0 || entry.pinned)
+      .filter(({ entry, score }) => score > 0 || entry.pinned || entry.scope === 'user')
       .sort((a, b) => {
         // Pinned first, then by score
         if (a.entry.pinned !== b.entry.pinned) return a.entry.pinned ? -1 : 1
@@ -132,8 +128,8 @@ export class MemoryLibrary {
       })
       .map(({ entry }) => entry)
 
-    // Merge: user entries first, then workspace entries
-    const merged = [...userEntries, ...workspaceEntries]
+    // Merge: all entries sorted by relevance
+    const merged = scoredEntries
 
     // Apply token budget
     const result: MemoryEntry[] = []
