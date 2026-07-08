@@ -60,16 +60,19 @@ export function checkBudget(
 ): { allowed: boolean; reason?: string; warning?: string } {
   // Per-request token limit
   if (config.perRequestMaxTokens && requestTokens > config.perRequestMaxTokens) {
-    return { allowed: !config.blockWhenExceeded, reason: `Request exceeds ${config.perRequestMaxTokens} token limit` }
+    const message = `Request exceeds ${config.perRequestMaxTokens} token limit`
+    return config.blockWhenExceeded ? { allowed: false, reason: message } : { allowed: true, warning: message }
   }
   if (config.perRequestMaxCostUsd && requestCostUsd != null && requestCostUsd > config.perRequestMaxCostUsd) {
-    return { allowed: !config.blockWhenExceeded, reason: `Request exceeds $${config.perRequestMaxCostUsd.toFixed(2)} cost limit` }
+    const message = `Request exceeds $${config.perRequestMaxCostUsd.toFixed(2)} cost limit`
+    return config.blockWhenExceeded ? { allowed: false, reason: message } : { allowed: true, warning: message }
   }
   // Daily budget
   if (config.dailyLimitUsd) {
     const projectedDaily = dailySpentUsd + (requestCostUsd ?? 0)
     if (projectedDaily >= config.dailyLimitUsd) {
-      return { allowed: !config.blockWhenExceeded, reason: `Daily budget ($${config.dailyLimitUsd}) exceeded` }
+      const message = `Daily budget ($${config.dailyLimitUsd}) exceeded`
+      return config.blockWhenExceeded ? { allowed: false, reason: message } : { allowed: true, warning: message }
     }
     if (projectedDaily >= config.dailyLimitUsd * (config.notifyAtPercent / 100)) {
       return { allowed: true, warning: `Approaching daily budget: $${projectedDaily.toFixed(2)} / $${config.dailyLimitUsd}` }
