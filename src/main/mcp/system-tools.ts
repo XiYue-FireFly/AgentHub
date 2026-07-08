@@ -18,7 +18,7 @@ import {
   copyFileSync
 } from 'node:fs'
 import { resolve, relative, isAbsolute, dirname, basename, join } from 'node:path'
-import { homedir, platform, arch, release, totalmem, freemem, cpus } from 'node:os'
+import { homedir, platform, arch, release, totalmem, freemem, cpus, hostname } from 'node:os'
 import { decodeProcessChunk } from '../runtime/process-decoder'
 
 // ============================================================
@@ -392,7 +392,7 @@ function getSystemInfo(detailed = false): SystemToolResult {
       platform: platform(),
       arch: arch(),
       release: release(),
-      hostname: import('node:os').then(os => os.hostname()),
+      hostname: hostname(),
       homedir: homedir(),
       cwd: process.cwd(),
       nodeVersion: process.version,

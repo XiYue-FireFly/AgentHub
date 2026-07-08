@@ -69,6 +69,15 @@ describe('MCP System Tools', () => {
       expect(info.arch).toBeDefined()
     })
 
+    it('should return hostname as string, not Promise', async () => {
+      const result = await executeSystemTool('system_info', { detailed: false }, ctx)
+      expect(result.ok).toBe(true)
+      const info = JSON.parse(result.output)
+      expect(typeof info.hostname).toBe('string')
+      expect(info.hostname).not.toBe('{}')
+      expect(info.hostname.length).toBeGreaterThan(0)
+    })
+
     it('should list directory', async () => {
       const result = await executeSystemTool('fs_list', { path: '.' }, ctx)
       expect(result.ok).toBe(true)
