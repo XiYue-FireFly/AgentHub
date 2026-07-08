@@ -1147,6 +1147,8 @@ app.on("will-quit", (event) => {
       registry.stopAll().catch(() => {}),
       new Promise<void>(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))
     ])
+    // Force kill any remaining processes after timeout
+    try { registry.forceKillAll() } catch { /* noop */ }
     try { hub?.stop() } catch { /* noop */ }
     try { proxy.stop() } catch { /* noop */ }
   }
