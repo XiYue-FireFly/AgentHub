@@ -17,7 +17,13 @@ export function registerMemoryIpc(memory: MemoryAccessor): void {
   typedHandle("memory:updateSettings", async (_event, patch) => memory().updateSettings(patch || {}))
   typedHandle("memory:list", async (_event, category) => memory().listEntries(category))
   typedHandle("memory:search", (_event, query, category) => memory().searchEntries(query, category))
-  typedHandle("memory:addEntry", async (_event, entry) => memory().upsertEntry(entry))
+  typedHandle("memory:addEntry", async (_event, entry) => {
+    // Basic validation for required fields
+    if (!entry || typeof entry !== 'object') throw new Error('Invalid entry: must be an object')
+    if (!entry.category || typeof entry.category !== 'string') throw new Error('Invalid entry: category is required and must be a string')
+    if (!entry.title || typeof entry.title !== 'string') throw new Error('Invalid entry: title is required and must be a string')
+    return memory().upsertEntry(entry)
+  })
   typedHandle("memory:importConversation", async (_event, source, content) => {
     return memory().importConversation(source, content)
   })
