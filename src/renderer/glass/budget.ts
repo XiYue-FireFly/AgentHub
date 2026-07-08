@@ -41,10 +41,10 @@ export function setBudget(n: number): void {
 
 /** 当前口径下的上限（基元快照，避免对象快照导致的重渲染循环） */
 export function useBudget(): number {
-  return useSyncExternalStore(subscribe, getBudget)
+  return useSyncExternalStore(subscribe, getBudget, () => 0)
 }
 export function useBudgetMode(): BudgetMode {
-  return useSyncExternalStore(subscribe, getBudgetMode)
+  return useSyncExternalStore(subscribe, getBudgetMode, () => 'none')
 }
 
 /** 告警阈值：用量达预算的此比例即进入 warn */
