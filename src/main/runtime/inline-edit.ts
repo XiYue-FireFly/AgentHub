@@ -124,6 +124,6 @@ export function applyInlineEdit(
   // so callers can update selections/cursors after the edit.
   const replacementLineCount = normalizedReplacement === '' ? 0 : normalizedReplacement.split(eol).length
   const newStartLine = startLine
-  const newEndLine = replacementLineCount === 0 ? startLine - 1 : startLine + replacementLineCount - 1
+  const newEndLine = replacementLineCount === 0 ? startLine : startLine + replacementLineCount - 1
   return { ok: true, content: newContent, newStartLine, newEndLine }
 }
