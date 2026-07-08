@@ -36,6 +36,9 @@ vi.mock('electron', () => ({
 
 vi.mock('../../runtime/project-knowledge-enhanced', () => projectKnowledgeMock)
 vi.mock('../../ipc/workspace-root-guard', () => workspaceRootGuardMock)
+vi.mock('../../ipc/agent-loop-ipc', () => ({
+  invalidateAgentCache: vi.fn()
+}))
 
 describe('knowledge IPC path validation', () => {
   beforeEach(() => {
