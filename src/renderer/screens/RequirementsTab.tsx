@@ -20,10 +20,12 @@ export function RequirementsTab({ workspaceId }: RequirementsTabProps) {
       setWorkspaceRoot(null)
       return () => { alive = false }
     }
+    // Don't set to null immediately to prevent flash - keep previous value
     window.electronAPI.workspaces.list()
       .then(workspaces => {
         if (!alive) return
-        setWorkspaceRoot(workspaces.find(workspace => workspace.id === workspaceId)?.rootPath ?? null)
+        const root = workspaces.find(workspace => workspace.id === workspaceId)?.rootPath ?? null
+        setWorkspaceRoot(root)
       })
       .catch(() => { if (alive) setWorkspaceRoot(null) })
     return () => { alive = false }
