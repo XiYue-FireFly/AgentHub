@@ -424,7 +424,7 @@ async function ensureGitRepo(rootPath: string): Promise<void> {
 function normalizeBranchName(branch: string): string {
   const name = branch.trim()
   if (!name) throw new Error("分支名称不能为空。")
-  if (/[\s~^:?*[\\\]]/.test(name) || name.includes("..") || name.endsWith(".") || name.startsWith("-") || name.includes("@{")) {
+  if (/[\s~^:?*[\\\]\x00-\x1f]/.test(name) || name.includes("..") || name.endsWith(".") || name.startsWith("-") || name.includes("@{")) {
     throw new Error("分支名称包含 Git 不支持的字符。")
   }
   return name
