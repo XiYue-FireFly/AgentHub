@@ -59,6 +59,7 @@ export class HealthMonitor {
   private status: RuntimeStatus = 'stopped'
   private consecutiveFailures = 0
   private checkTimer: ReturnType<typeof setInterval> | null = null
+  private backoffTimer: ReturnType<typeof setTimeout> | null = null
   private restartAttempts: number[] = []
   private readonly maxRestarts: number
   private readonly restartWindowMs: number
@@ -108,6 +109,10 @@ export class HealthMonitor {
     if (this.checkTimer) {
       clearInterval(this.checkTimer)
       this.checkTimer = null
+    }
+    if (this.backoffTimer) {
+      clearTimeout(this.backoffTimer)
+      this.backoffTimer = null
     }
     this.setStatus('stopped')
   }
@@ -179,8 +184,16 @@ export class HealthMonitor {
 
     this.restartAttempts.push(Date.now())
 
-    // Wait for backoff delay
-    await new Promise(resolve => setTimeout(resolve, verdict.delayMs))
+    // Wait for backoff delay (cancellable via stop())
+    await new Promise<void>(resolve => {
+      this.backoffTimer = setTimeout(() => {
+        this.backoffTimer = null
+        resolve()
+      }, verdict.delayMs)
+    })
+
+    // Check if stopped during backoff
+    if (this.status === 'stopped') return
 
     try {
       await this.restart()
