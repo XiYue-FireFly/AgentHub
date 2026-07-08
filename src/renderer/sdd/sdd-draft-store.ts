@@ -190,15 +190,15 @@ export const useSddDraftStore = create<SddDraftState>()(
         name: 'sdd-draft-store',
         version: 1,
         partialize: (state) => ({
-          // 只持久化必要的状态
+          // 只持久化必要的状态（content 已通过 saveDraftToDisk 单独保存）
           activeDraft: state.activeDraft,
-          content: state.content,
           lastSavedContent: state.lastSavedContent,
           saveStatus: state.saveStatus,
         }),
         onRehydrateStorage: () => (state) => {
-          // After rehydration, check if content differs from lastSavedContent
-          if (state && state.content !== state.lastSavedContent) {
+          // After rehydration, content will be loaded from draft file
+          // Set saveStatus to dirty if we have an active draft
+          if (state && state.activeDraft) {
             state.saveStatus = 'dirty'
           }
         },
