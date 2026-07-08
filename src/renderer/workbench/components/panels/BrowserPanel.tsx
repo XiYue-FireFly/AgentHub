@@ -43,9 +43,12 @@ export function BrowserPanel({
     onInitialUrlConsumed?.()
   }, [initialUrl, onInitialUrlConsumed, open])
 
+  const sessionRef = useRef(session)
+  sessionRef.current = session
+
   useEffect(() => {
     const webview = webviewRef.current
-    if (!webview || !session) return
+    if (!webview) return
     const syncNav = () => {
       try {
         setNavState({
