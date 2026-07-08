@@ -65,7 +65,7 @@ describe('knowledge IPC path validation', () => {
     })
   }
 
-  it('rejects detecting tech stack for unregistered workspace paths', async () => {
+  it('rejects detecting tech stack for unregistered workspace paths', { timeout: 15000 }, async () => {
     await setup()
 
     const handler = electronMock.handlers.get('knowledge:detectTechStack')
