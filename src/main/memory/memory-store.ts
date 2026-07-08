@@ -186,9 +186,14 @@ export class FileMemoryStore {
     const entry = await this.get(id, { includeDeleted: true })
     if (!entry) throw new Error(`Memory not found: ${id}`)
 
+    // Filter out undefined values to prevent overwriting existing values
+    const cleanPatch = Object.fromEntries(
+      Object.entries(patch).filter(([, v]) => v !== undefined)
+    )
+
     const updated: MemoryEntry = {
       ...entry,
-      ...patch,
+      ...cleanPatch,
       id: entry.id, // Prevent ID change
       updatedAt: new Date().toISOString()
     }
