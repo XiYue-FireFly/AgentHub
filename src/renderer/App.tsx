@@ -204,6 +204,7 @@ function AppInner() {
 
   useEffect(() => {
     const off = window.electronAPI?.app?.onDeepLink?.((link) => {
+      if (!link) return
       if (link.action || link.params?.agent) refreshStatus()
     })
     return off
