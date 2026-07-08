@@ -7,7 +7,7 @@
  * Phase 4.3: Responsive layout.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 
 export type LayoutMode = 'desktop' | 'tablet' | 'phone'
 
@@ -60,7 +60,7 @@ export function useResponsiveLayout(): ResponsiveLayout {
     : width < BREAKPOINTS.tablet ? 'tablet'
     : 'desktop'
 
-  return {
+  return useMemo(() => ({
     mode,
     sidebarVisible: mode !== 'phone',
     rightPanelVisible: mode === 'desktop',
@@ -68,7 +68,7 @@ export function useResponsiveLayout(): ResponsiveLayout {
     composerCompact: mode === 'phone',
     width,
     height
-  }
+  }), [mode, width, height])
 }
 
 /**
