@@ -92,7 +92,7 @@ export function GitBranchControl({ workspaceId, onOpenGit, compact = false }: {
     )
   }
 
-  const dirty = status.files.length > 0
+  const dirty = (status?.files?.length ?? 0) > 0
   const syncLabel = status.ahead || status.behind ? `↑${status.ahead} ↓${status.behind}` : tr('同步', 'synced')
 
   const checkout = async (branch: string) => {
