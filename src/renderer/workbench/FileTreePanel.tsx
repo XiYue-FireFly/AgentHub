@@ -128,20 +128,25 @@ export function FileTreePanel({ workspaceRoot, workspaceId, onClose, onFileSelec
 
   const toggleExpand = useCallback((path: string) => {
     const key = pathKey(path)
+    let shouldLoad = false
     setExpanded(prev => {
       const next = new Set(prev)
       if (next.has(key)) {
         next.delete(key)
       } else {
         next.add(key)
-        // Load directory if not yet loaded
+        // Check if directory needs loading (will load after state update)
         const state = directories[key]
         if (!state?.loaded && !state?.loading) {
-          loadDirectory(path)
+          shouldLoad = true
         }
       }
       return next
     })
+    // Load directory outside updater to avoid side effects in Strict Mode
+    if (shouldLoad) {
+      loadDirectory(path)
+    }
   }, [directories, loadDirectory])
 
   const handleEntryClick = useCallback((entry: FileEntry) => {
