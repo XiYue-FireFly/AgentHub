@@ -257,13 +257,16 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
 
   useEffect(() => {
     aliveRef.current = true
+    const sessionId = terminalSessionId(workspaceRoot, activeTabId)
     if (xtermLoaded) attachTerminal(activeTabId)
     return () => {
       aliveRef.current = false
       attachTokenRef.current++
       disposeRenderer()
+      // Dispose PTY process to prevent zombie processes
+      try { (window as any).electronAPI?.terminalPty?.dispose?.(sessionId) } catch { /* ignore */ }
     }
-  }, [activeTabId, xtermLoaded, attachTerminal, disposeRenderer])
+  }, [activeTabId, xtermLoaded, attachTerminal, disposeRenderer, workspaceRoot])
 
   // Follow theme changes
   useEffect(() => {
