@@ -979,15 +979,8 @@ export class Dispatcher extends EventEmitter {
       task.errors.set(agentId, e.message)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: e.message, code: e?.code, durationMs: Date.now() - start })
       return { content: "", error: e.message }
-    } finally {
-      const remaining = (this.busyCount.get(agentId) || 1) - 1
-      if (remaining <= 0) {
-        this.busyCount.delete(agentId)
-        this.registry.setStatus(agentId, "idle")
-      } else {
-        this.busyCount.set(agentId, remaining)
-      }
     }
+    // Note: busyCount is managed by sendToAgent, not here
   }
   // --- /AgentHub native agentic ---
 
