@@ -194,7 +194,14 @@ export const useSddDraftStore = create<SddDraftState>()(
           activeDraft: state.activeDraft,
           content: state.content,
           lastSavedContent: state.lastSavedContent,
+          saveStatus: state.saveStatus,
         }),
+        onRehydrateStorage: () => (state) => {
+          // After rehydration, check if content differs from lastSavedContent
+          if (state && state.content !== state.lastSavedContent) {
+            state.saveStatus = 'dirty'
+          }
+        },
       }
     ),
     { name: 'sdd-draft-store' }
