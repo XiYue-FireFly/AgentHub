@@ -18,6 +18,14 @@ interface ConfirmDialogProps {
 
 export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel, danger, onConfirm, onCancel }: ConfirmDialogProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const onConfirmRef = useRef(onConfirm)
+  const onCancelRef = useRef(onCancel)
+
+  // Update refs on every render to always have latest callbacks
+  useEffect(() => {
+    onConfirmRef.current = onConfirm
+    onCancelRef.current = onCancel
+  })
 
   useEffect(() => {
     if (!open || !containerRef.current) return
@@ -26,18 +34,18 @@ export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel,
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        onCancel()
+        onCancelRef.current()
       }
       if (e.key === 'Enter') {
         e.preventDefault()
         e.stopPropagation()
-        onConfirm()
+        onConfirmRef.current()
       }
     }
     el.addEventListener('keydown', onKeyDown)
     el.focus()
     return () => el.removeEventListener('keydown', onKeyDown)
-  }, [open, onConfirm, onCancel])
+  }, [open])
 
   if (!open) return null
 
