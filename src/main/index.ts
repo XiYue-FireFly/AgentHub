@@ -780,14 +780,20 @@ typedHandle("turns:create", async (_event, payload) => {
   void runner
     .then((task: any) => {
       if (runtimeStore.getTurn(turn.id)?.status === "cancelled") return
+      // Sanitize error messages to prevent leaking sensitive paths
+      const sanitizeError = (err: unknown): string | undefined => {
+        if (!err) return undefined
+        const msg = err instanceof Error ? err.message : String(err)
+        return msg.replace(/[A-Z]:\\[^\s]+/gi, '<path>').replace(/\/home\/[^\s]+/g, '<path>')
+      }
       if (scheduleForTurn && !("id" in task)) {
-        runtimeStore.setTurnStatus(turn.id, task.status, { error: task.error })
+        runtimeStore.setTurnStatus(turn.id, task.status, { error: sanitizeError(task.error) })
         return
       }
       taskToTurn.set(task.id, turn.id)
       runtimeStore.attachTask(turn.id, task.id)
       const status = task.status === "cancelled" ? "cancelled" : task.status === "failed" ? "failed" : "completed"
-      runtimeStore.setTurnStatus(turn.id, status, { taskId: task.id, error: task.error })
+      runtimeStore.setTurnStatus(turn.id, status, { taskId: task.id, error: sanitizeError(task.error) })
       if (status === "completed") {
         const content = Array.from(task.results.values()).join("\n\n")
         emitMemoryCandidates(thread.id, turn.id, payload.prompt, content)
