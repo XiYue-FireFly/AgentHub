@@ -6,6 +6,7 @@ import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from '../ru
 import { getWorkspaceManager, WorkspaceNotFoundError, WorkspacePathInvalidError } from '../hub/workspace'
 import { isPathInsideBase, resolveWorkspaceRelativePath } from './path-guards'
 import { resolvePathInRegisteredWorkspace, resolveRegisteredWorkspaceRoot } from './workspace-root-guard'
+import { isSensitiveTextFilePath } from './sensitive-files'
 import { typedHandle } from './typed-ipc'
 
 /** Validate that a relative path stays within the workspace root. */
@@ -50,6 +51,9 @@ export function registerWorkspaceIpc(): void {
     if (!inWorkspace && !inHome) {
       return { ok: false, error: 'Access denied: path outside allowed directories' }
     }
+    if (isSensitiveTextFilePath(resolved)) {
+      return { ok: false, error: 'Access denied: sensitive file' }
+    }
     return readFilePreview(resolved, maxLines)
   })
 
@@ -57,6 +61,9 @@ export function registerWorkspaceIpc(): void {
   typedHandle("workspaceFiles:read", async (_e, workspaceRoot, relPath) => {
     const absPath = validateWorkspacePath(workspaceRoot, relPath)
     if (!absPath) return { ok: false, content: '', path: '', error: 'Invalid path' }
+    if (isSensitiveTextFilePath(absPath)) {
+      return { ok: false, content: '', path: '', error: 'Access denied: sensitive file' }
+    }
     try {
       const content = await fs.readFile(absPath, 'utf-8')
       return { ok: true, content, path: absPath }

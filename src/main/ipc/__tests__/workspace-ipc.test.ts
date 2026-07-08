@@ -249,6 +249,55 @@ describe('workspace IPC file path trust', () => {
     })
   })
 
+  it('rejects reading sensitive files like .env in workspace', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    await setup()
+
+    const read = electronMock.handlers.get('workspaceFiles:read')
+    const result = await read?.({}, root, '.env')
+
+    expect(result).toEqual({ ok: false, content: '', path: '', error: 'Access denied: sensitive file' })
+    expect(fsMock.readFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects reading sensitive files like id_rsa in workspace', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    await setup()
+
+    const read = electronMock.handlers.get('workspaceFiles:read')
+    const result = await read?.({}, root, '.ssh/id_rsa')
+
+    expect(result).toEqual({ ok: false, content: '', path: '', error: 'Access denied: sensitive file' })
+    expect(fsMock.readFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects previewing sensitive files like .env', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    workspaceMock.activeId = 'ws-1'
+    await setup()
+
+    const preview = electronMock.handlers.get('workspaceFiles:preview')
+    const result = await preview?.({}, resolve(root, '.env'), 50)
+
+    expect(result).toEqual({ ok: false, error: 'Access denied: sensitive file' })
+    expect(workspaceFilesMock.readFilePreview).not.toHaveBeenCalled()
+  })
+
+  it('allows reading non-sensitive files in workspace', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    await setup()
+
+    const read = electronMock.handlers.get('workspaceFiles:read')
+    const result = await read?.({}, root, 'README.md')
+
+    expect(result).toEqual({ ok: true, content: 'file content', path: resolve(root, 'README.md') })
+    expect(fsMock.readFile).toHaveBeenCalled()
+  })
+
   it('delegates worktree operations with arguments intact', async () => {
     await setup()
     const input = { parentWorkspaceId: 'ws-1', branch: 'feature', path: resolve(process.cwd(), 'registered-workspace-feature') }
