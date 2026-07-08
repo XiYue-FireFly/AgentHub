@@ -73,13 +73,19 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
     }
   }, [workspaceId])
 
-  useEffect(() => { refresh().catch(() => {}) }, [refresh])
+  useEffect(() => {
+    let alive = true
+    refresh().catch(() => {})
+    return () => { alive = false }
+  }, [refresh])
 
   // 加载 MCP 系统配置
   useEffect(() => {
+    let alive = true
     window.electronAPI.mcp.getSystemConfig().then(config => {
-      setSystemConfig(config)
+      if (alive) setSystemConfig(config)
     }).catch(() => {})
+    return () => { alive = false }
   }, [])
 
   const toggleSystemEnabled = async () => {

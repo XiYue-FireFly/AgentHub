@@ -28,7 +28,13 @@ export function RoutingTab({ providers, bindings, fallbackChain, onSetBinding, o
   onTab: (tab: string) => void
 }) {
   const [located, setLocated] = useState<LocalAgentStatus[]>([])
-  useEffect(() => { window.electronAPI.agents.locate().then(setLocated).catch(() => {}) }, [])
+  useEffect(() => {
+    let alive = true
+    window.electronAPI.agents.locate().then(result => {
+      if (alive) setLocated(result)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
 
   const configuredProviders = providers.filter(provider =>
     provider.enabled &&
