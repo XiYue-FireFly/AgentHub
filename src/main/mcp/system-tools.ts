@@ -15,7 +15,8 @@ import {
   existsSync,
   unlinkSync,
   renameSync,
-  copyFileSync
+  copyFileSync,
+  rmdirSync
 } from 'node:fs'
 import { resolve, relative, isAbsolute, dirname, basename, join } from 'node:path'
 import { homedir, platform, arch, release, totalmem, freemem, cpus, hostname } from 'node:os'
@@ -263,7 +264,7 @@ function safeDelete(targetPath: string): SystemToolResult {
         const fullPath = join(targetPath, entry)
         safeDelete(fullPath)
       }
-      import('node:fs').then(fs => fs.rmdirSync(targetPath))
+      rmdirSync(targetPath)
     } else {
       unlinkSync(targetPath)
     }

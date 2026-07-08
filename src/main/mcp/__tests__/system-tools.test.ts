@@ -109,5 +109,19 @@ describe('MCP System Tools', () => {
       expect(result.ok).toBe(true)
       expect(result.output.trim()).toBe('hello')
     })
+
+    it('should delete directory synchronously before returning success', async () => {
+      const { mkdirSync, existsSync, writeFileSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      const testDir = join(process.cwd(), 'test-tmp-delete-sync')
+
+      // Create test directory with file
+      mkdirSync(testDir, { recursive: true })
+      writeFileSync(join(testDir, 'file.txt'), 'test')
+
+      const result = await executeSystemTool('fs_delete', { path: testDir }, ctx)
+      expect(result.ok).toBe(true)
+      expect(existsSync(testDir)).toBe(false)  // Directory should be deleted immediately
+    })
   })
 })
