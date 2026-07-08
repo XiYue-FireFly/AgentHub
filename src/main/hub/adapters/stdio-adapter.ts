@@ -221,6 +221,8 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
       if (!viaArg) this.proc.stdin?.write(prompt)
       this.proc.stdin?.end()
     } catch (e: any) {
+      // Kill process on stdin write failure to prevent hanging
+      try { this.proc?.kill() } catch { /* ignore */ }
       this.handleError(e)
     }
   }
