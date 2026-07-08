@@ -1,9 +1,14 @@
 import { scanPlugins, validateManifest, getPluginContributions, listPluginRepositories, importPluginRepository } from '../runtime/plugin-manager'
 import { installPlugin, uninstallPlugin, togglePlugin, listInstalledPlugins, getEnabledContributions } from '../runtime/plugin-manager-enhanced'
+import { resolveRegisteredWorkspaceRoot } from './workspace-root-guard'
 import { typedHandle } from './typed-ipc'
 
 export function registerPluginsIpc(): void {
-  typedHandle("plugins:scan", (_e, workspaceRoot) => scanPlugins(workspaceRoot))
+  typedHandle("plugins:scan", (_e, workspaceRoot) => {
+    const root = resolveRegisteredWorkspaceRoot(workspaceRoot)
+    if (!root) return []
+    return scanPlugins(root)
+  })
   typedHandle("plugins:validate", (_e, manifest) => validateManifest(manifest))
   typedHandle("plugins:contributions", (_e, plugins) => getPluginContributions(plugins))
   typedHandle("plugins:repositories", () => listPluginRepositories())

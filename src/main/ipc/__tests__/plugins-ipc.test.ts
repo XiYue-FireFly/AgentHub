@@ -43,6 +43,16 @@ vi.mock('electron', () => ({
 vi.mock('../../runtime/plugin-manager', () => pluginManagerMock)
 vi.mock('../../runtime/plugin-manager-enhanced', () => pluginLifecycleMock)
 
+const workspaceRootGuardMock = vi.hoisted(() => ({
+  resolveRegisteredWorkspaceRoot: vi.fn((root: string) => {
+    // 只有注册过的 workspace 才返回有效路径
+    if (root === 'C:/registered-workspace' || root === 'C:/workspace') return root
+    return null
+  })
+}))
+
+vi.mock('../../ipc/workspace-root-guard', () => workspaceRootGuardMock)
+
 describe('plugins IPC', () => {
   beforeEach(() => {
     electronMock.handlers.clear()
@@ -207,5 +217,27 @@ describe('plugins IPC', () => {
 
     expect(pluginLifecycleMock.uninstallPlugin).not.toHaveBeenCalled()
     expect(pluginLifecycleMock.togglePlugin).not.toHaveBeenCalled()
+  })
+
+  it('rejects scanning plugins for unregistered workspace paths', async () => {
+    await setup()
+
+    const handler = electronMock.handlers.get('plugins:scan')
+    expect(handler).toBeTruthy()
+
+    const result = handler?.({}, 'C:/unregistered-path')
+    expect(result).toEqual([])
+    expect(pluginManagerMock.scanPlugins).not.toHaveBeenCalled()
+  })
+
+  it('allows scanning plugins for registered workspace paths', async () => {
+    await setup()
+
+    const handler = electronMock.handlers.get('plugins:scan')
+    expect(handler).toBeTruthy()
+
+    const result = handler?.({}, 'C:/registered-workspace')
+    expect(result).toEqual([])
+    expect(pluginManagerMock.scanPlugins).toHaveBeenCalledWith('C:/registered-workspace')
   })
 })
