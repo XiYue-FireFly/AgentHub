@@ -139,10 +139,15 @@ export async function updateDesignContext(
  * 解析需求块
  */
 export async function parseRequirementBlocks(): Promise<void> {
-  const { content } = useSddDraftStore.getState()
+  const { content, activeDraft } = useSddDraftStore.getState()
+  const draftId = activeDraft?.id
   try {
     const blocks = await window.electronAPI.sdd.parseBlocks(content)
-    useSddDraftStore.getState().setRequirementBlocks(blocks)
+    // Only apply if content and draft haven't changed during async operation
+    const current = useSddDraftStore.getState()
+    if (current.content === content && current.activeDraft?.id === draftId) {
+      current.setRequirementBlocks(blocks)
+    }
   } catch (error: any) {
     console.error('Failed to parse requirement blocks:', error)
   }
