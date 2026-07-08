@@ -147,4 +147,28 @@ describe('conversation IPC', () => {
     const handler = electronMock.handlers.get('conversation:exportFile')
     expect(() => handler?.({}, {}, 'markdown', resolve(electronMock.home, '..', 'secret.md'))).toThrow('Access denied')
   })
+
+  it('rejects importing files outside the user home', async () => {
+    const { registerConversationIpc } = await import('../conversation-ipc')
+    registerConversationIpc()
+
+    const handler = electronMock.handlers.get('conversation:importFile')
+    expect(handler).toBeTruthy()
+
+    const outsidePath = resolve(electronMock.home, '..', '..', 'Windows', 'System32', 'config.json')
+    expect(() => handler?.({}, outsidePath)).toThrow('Access denied')
+    expect(importMock.importConversationFromFile).not.toHaveBeenCalled()
+  })
+
+  it('allows importing files inside the user home', async () => {
+    const { registerConversationIpc } = await import('../conversation-ipc')
+    registerConversationIpc()
+
+    const handler = electronMock.handlers.get('conversation:importFile')
+    expect(handler).toBeTruthy()
+
+    const insidePath = resolve(electronMock.home, 'exports', 'session.json')
+    handler?.({}, insidePath)
+    expect(importMock.importConversationFromFile).toHaveBeenCalledWith(insidePath)
+  })
 })
