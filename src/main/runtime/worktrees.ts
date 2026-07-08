@@ -110,5 +110,10 @@ function isInside(targetPath: string, rootPath: string): boolean {
   const root = resolve(rootPath)
   const target = resolve(targetPath)
   const sep = process.platform === 'win32' ? '\\' : '/'
-  return target === root || target.startsWith(root.endsWith(sep) ? root : root + sep)
+  const rootPrefix = root.endsWith(sep) ? root : root + sep
+  // On Windows, paths are case-insensitive
+  if (process.platform === 'win32') {
+    return target.toLowerCase() === root.toLowerCase() || target.toLowerCase().startsWith(rootPrefix.toLowerCase())
+  }
+  return target === root || target.startsWith(rootPrefix)
 }
