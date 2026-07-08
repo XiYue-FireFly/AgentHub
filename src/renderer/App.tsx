@@ -43,7 +43,13 @@ function AppInner() {
   const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([])
   const [appearance, setAppearance] = useState(readAppearanceLocal)
   const [motion, setMotion] = useState<MotionLevel>(() => {
-    try { return readAppearanceLocal().motion || (localStorage.getItem('ah-motion') as MotionLevel) || 'rich' } catch { return 'rich' }
+    try {
+      const appearanceMotion = readAppearanceLocal().motion
+      if (appearanceMotion && ['off', 'subtle', 'rich'].includes(appearanceMotion)) return appearanceMotion
+      const stored = localStorage.getItem('ah-motion')
+      if (stored && ['off', 'subtle', 'rich'].includes(stored)) return stored as MotionLevel
+      return 'rich'
+    } catch { return 'rich' }
   })
 
   const configRequestId = useRef(0)
