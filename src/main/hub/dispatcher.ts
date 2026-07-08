@@ -1150,12 +1150,18 @@ export class Dispatcher extends EventEmitter {
   /** P2-1: Prune completed/cancelled/failed tasks when the map exceeds the cap. */
   private pruneTasks(maxTasks = 100): void {
     if (this.tasks.size <= maxTasks) return
+    const now = Date.now()
+    const ONE_HOUR = 60 * 60 * 1000
     const entries = Array.from(this.tasks.entries())
       .sort((a, b) => a[1].createdAt.getTime() - b[1].createdAt.getTime())
-    // Remove oldest terminal tasks first
+    // Remove oldest terminal tasks first, then very old running tasks
     for (const [id, task] of entries) {
       if (this.tasks.size <= maxTasks) break
       if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+        this.tasks.delete(id)
+      } else if (task.status === 'running' && now - task.createdAt.getTime() > ONE_HOUR) {
+        // Force mark very old running tasks as failed and remove
+        task.status = 'failed'
         this.tasks.delete(id)
       }
     }
