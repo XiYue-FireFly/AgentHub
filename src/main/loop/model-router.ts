@@ -285,27 +285,6 @@ Respond with JSON: {"agent": "agent-id", "reason": "brief explanation"}`
 }
 
 /**
- * 解析路由器响应
- */
-function parseRouteResponse(response: string, agents: AgentConfig[]): RouteDecision | null {
-  try {
-    const parsed = JSON.parse(response)
-    const selected = agents.find(a => a.id === parsed.agent)
-
-    if (selected) {
-      return {
-        selectedAgent: selected,
-        reasoning: parsed.reason || 'LLM router decision',
-        confidence: 0.8
-      }
-    }
-  } catch {
-    // 解析失败
-  }
-  return null
-}
-
-/**
  * 为并行执行选择多个 Agent
  */
 export function selectAgentsForParallel(
