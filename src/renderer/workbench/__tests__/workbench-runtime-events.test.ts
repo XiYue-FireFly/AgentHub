@@ -40,9 +40,9 @@ describe("Workbench runtime event loading", () => {
 
     expect(source).toContain("loadingThreadIdRef")
     expect(source).toContain("loadingThreadIdRef.current = threadId")
-    expect(source).toContain("const isPendingThreadEvent = pendingActiveThreadId !== null && event.threadId === loadingThreadIdRef.current")
+    expect(source).toContain("const isPendingThreadEvent = pendingActiveThreadIdRef.current !== null && event.threadId === loadingThreadIdRef.current")
     expect(source).toContain("const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current")
-    expect(source).toContain("if (pendingActiveThreadId) {")
+    expect(source).toContain("if (pendingActiveThreadIdRef.current) {")
     expect(source).toContain("if (selectThreadGenRef.current === gen) {")
   })
 
@@ -138,7 +138,7 @@ describe("Workbench runtime event loading", () => {
   it("keeps task history events for non-visible threads", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
     const taskHistoryCacheIndex = source.indexOf("if (!isVisibleThreadEvent && isTaskHistoryEvent(event))")
-    const pendingReturnIndex = source.indexOf("if (pendingActiveThreadId) {")
+    const pendingReturnIndex = source.indexOf("if (pendingActiveThreadIdRef.current) {")
 
     expect(isTaskHistoryEvent({ kind: "agent:activity", threadId: "t2", turnId: "turn", seq: 1 })).toBe(true)
     expect(isTaskHistoryEvent({ kind: "orchestrate", threadId: "t2", turnId: "turn", seq: 1 })).toBe(true)

@@ -111,7 +111,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [approvals, setApprovals] = useState<ApprovalItem[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([])
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const workspaceIdRef = useRef<string | null>(null)
   const [pendingActiveThreadId, setPendingActiveThreadId] = useState<string | null>(null)
+  const pendingActiveThreadIdRef = useRef<string | null>(null)
+
+  // Sync refs with state
+  useEffect(() => { workspaceIdRef.current = workspaceId }, [workspaceId])
+  useEffect(() => { pendingActiveThreadIdRef.current = pendingActiveThreadId }, [pendingActiveThreadId])
   const emptyWorkspaceRetryRef = useRef(0)
   const [mode, setMode] = useState<DispatchPreset>('lead-workers')
   const [targetAgent, setTargetAgent] = useState<string | null>(null)
@@ -438,7 +444,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.runtime.onEvent(event => {
-      const isPendingThreadEvent = pendingActiveThreadId !== null && event.threadId === loadingThreadIdRef.current
+      const isPendingThreadEvent = pendingActiveThreadIdRef.current !== null && event.threadId === loadingThreadIdRef.current
       const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current
       appendApprovalFromRuntimeEvent(event)
       const runtimeAgentStatus = runtimeAgentStatusFromEvent(event)
@@ -470,7 +476,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         appendTaskRuntimeEvents(event.threadId, [event])
       }
 
-      if (pendingActiveThreadId) {
+      if (pendingActiveThreadIdRef.current) {
         if (snapshotRefreshTimer.current) {
           clearTimeout(snapshotRefreshTimer.current)
           snapshotRefreshTimer.current = null
@@ -482,11 +488,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       snapshotRefreshTimer.current = setTimeout(() => {
         if (event.threadId === selectedThreadIdRef.current) {
-          window.electronAPI.runtime.snapshot(workspaceId).then(next => {
+          window.electronAPI.runtime.snapshot(workspaceIdRef.current).then(next => {
             setSnapshot(prev => preserveSelectedSnapshot(next, prev))
           }).catch(() => {})
         } else {
-          window.electronAPI.runtime.snapshot(workspaceId).then(next => {
+          window.electronAPI.runtime.snapshot(workspaceIdRef.current).then(next => {
             setSnapshot(prev => preserveSelectedSnapshot(next, prev))
           }).catch(() => {})
         }
@@ -502,7 +508,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       clearRuntimeEventBuffer()
     }
-  }, [activeThreadId, pendingActiveThreadId, workspaceId, props.onRuntimeAgentStatus, syncSddPlanTodoForRuntimeEvent, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+  }, [props.onRuntimeAgentStatus, syncSddPlanTodoForRuntimeEvent, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
 
   const onApprovalDecide = useCallback((item: ApprovalItem, approved: boolean, remember: boolean) => {
     if (remember) {
