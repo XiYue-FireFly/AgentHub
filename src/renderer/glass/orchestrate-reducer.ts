@@ -32,6 +32,7 @@ export function applyOrchestrateEvent(prev: OrchestrateState | undefined, ev: an
     }
 
     case 'orchestrate:subtask': {
+      if (!ev.subtaskId) return state
       const subtasks = state.subtasks.slice()
       let idx = subtasks.findIndex(s => s.id === String(ev.subtaskId))
       if (idx < 0) {
