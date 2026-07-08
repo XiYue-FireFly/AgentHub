@@ -281,7 +281,7 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
 
   const handleNewTab = useCallback(() => {
     if (tabs.length >= MAX_TABS) return
-    const nextIndex = tabs.length + 1
+    const nextIndex = Math.max(...tabs.map(t => t.index), 0) + 1
     const tab: TerminalTab = {
       id: `tab-${Date.now().toString(36)}-${nextIndex}`,
       index: nextIndex
