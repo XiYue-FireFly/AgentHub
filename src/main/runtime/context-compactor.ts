@@ -116,7 +116,7 @@ export class ContextCompactor {
     const mode = options?.mode ?? plan.mode
 
     // Ensure we keep at least some recent messages
-    const effectiveKeepRecent = Math.min(keepRecent, messages.length - 1)
+    const effectiveKeepRecent = Math.max(1, Math.min(keepRecent, messages.length - 1))
     const replaceEnd = messages.length - effectiveKeepRecent
 
     // Split into messages to replace and messages to keep
