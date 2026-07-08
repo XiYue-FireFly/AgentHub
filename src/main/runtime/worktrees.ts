@@ -57,8 +57,11 @@ export async function removeWorktree(id: string, force = false): Promise<boolean
     try { await runGit(parent.rootPath, ["worktree", "remove", force ? "--force" : "", item.path].filter(Boolean)) } catch { /* remove manually below */ }
   }
   if (existsSync(item.path) && force) rmSync(item.path, { recursive: true, force: true })
-  state.items = state.items.filter(wt => wt.id !== id)
-  write(state)
+  // Only remove from state if worktree directory no longer exists or force is true
+  if (!existsSync(item.path) || force) {
+    state.items = state.items.filter(wt => wt.id !== id)
+    write(state)
+  }
   return true
 }
 
