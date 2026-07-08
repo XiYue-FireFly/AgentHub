@@ -7,7 +7,7 @@
  * P2-2: Settings.tsx splitting.
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr, getLang } from '../glass/i18n'
 import {
@@ -56,11 +56,19 @@ export function ShortcutsSettingsTab() {
     return () => { alive = false }
   }, [])
 
+  const persistInProgress = useRef(false)
+
   const persist = useCallback(async (next: KeyboardShortcutsConfigV1) => {
-    const normalized = normalizeKeyboardShortcuts(next)
-    setSettings(normalized)
-    await window.electronAPI.store.set(KEYBOARD_SHORTCUT_STORE_KEY, normalized)
-    window.dispatchEvent(new CustomEvent(KEYBOARD_SHORTCUTS_CHANGED))
+    if (persistInProgress.current) return
+    persistInProgress.current = true
+    try {
+      const normalized = normalizeKeyboardShortcuts(next)
+      setSettings(normalized)
+      await window.electronAPI.store.set(KEYBOARD_SHORTCUT_STORE_KEY, normalized)
+      window.dispatchEvent(new CustomEvent(KEYBOARD_SHORTCUTS_CHANGED))
+    } finally {
+      persistInProgress.current = false
+    }
   }, [])
 
   const setCommandShortcut = async (commandId: KeyboardShortcutCommandId, shortcut: string) => {
