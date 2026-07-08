@@ -24,6 +24,12 @@ let cachedAgents: DetectedAgent[] | null = null
 let lastDetectionTime = 0
 const CACHE_DURATION_MS = 60_000
 
+/** Invalidate the agent cache (call when agents are installed/uninstalled) */
+export function invalidateAgentCache(): void {
+  cachedAgents = null
+  lastDetectionTime = 0
+}
+
 function toAgentLoopAgents(agents: DetectedAgent[]) {
   return agents
     .filter(agent => agent.found)

@@ -1,5 +1,6 @@
 import { BrowserWindow, app, type IpcMainInvokeEvent } from 'electron'
 import { configureLocalAgent, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from '../runtime/local-agents'
+import { invalidateAgentCache } from './agent-loop-ipc'
 import { readLocalModelConfig, scanLocalModels } from '../runtime/local-models'
 import { getRunTimeoutMs, setRunTimeoutMs, RUN_TIMEOUT_DEFAULTS } from '../runtime/run-preferences'
 import { buildAgentOptions } from '../runtime/agent-options'
@@ -73,6 +74,7 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
   typedHandle("localAgents:options", () => buildAgentOptions(getCachedLocalAgentStatuses()))
   typedHandle("localAgents:configure", async (_event, agentId, patch) => {
     const result = await configureLocalAgent(agentId, patch)
+    invalidateAgentCache()
     registerAgentsFromBindings()
     return result
   })
