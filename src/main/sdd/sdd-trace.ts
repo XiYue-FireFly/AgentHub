@@ -82,12 +82,9 @@ export function parseRequirementBlocks(markdown: string): SddRequirementBlock[] 
         acceptanceCriteria.push({ text, checked })
       } else if (trimmed === '' && descriptionLines.length > 0) {
         // 空行分隔描述和验收标准
-        // 如果已经有验收标准，后续的非验收标准行忽略
-        if (acceptanceCriteria.length === 0) {
-          descriptionLines.push('')
-        }
-      } else if (acceptanceCriteria.length === 0) {
-        // 描述行
+        descriptionLines.push('')
+      } else {
+        // 描述行（包括验收标准后的补充说明）
         descriptionLines.push(line)
       }
     }
