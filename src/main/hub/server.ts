@@ -66,7 +66,7 @@ export class HubServer extends EventEmitter {
   }
 
   private handleConnection(ws: any): void {
-    const clientId = 'client-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
+    const clientId = 'client-' + crypto.randomUUID()
     const client: ClientInfo = { ws, id: clientId, connectedAt: new Date() }
     this.clients.set(clientId, client)
 
