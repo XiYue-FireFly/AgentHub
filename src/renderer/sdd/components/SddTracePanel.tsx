@@ -78,8 +78,17 @@ export function SddTracePanel({ trace, blocks = [] }: SddTracePanelProps) {
   const displayBlocks = blocks.length > 0 ? blocks : trace.requirementBlocks
   if (displayBlocks.length === 0 && trace.planItems.length === 0) return null
 
+  // Pre-compute plan items map to avoid O(blocks × planItems) on each render
+  const planItemsMap = React.useMemo(() => {
+    const map = new Map<string, PlanItem[]>()
+    for (const block of displayBlocks) {
+      map.set(block.id, findPlanItemsForBlock(trace, block.id))
+    }
+    return map
+  }, [trace, displayBlocks])
+
   const coveredCount = displayBlocks.filter(block =>
-    findPlanItemsForBlock(trace, block.id).length > 0
+    (planItemsMap.get(block.id)?.length ?? 0) > 0
   ).length
   const dispatchedCount = trace.planItems.filter(item => Boolean(item.turnId)).length
   const updatedAt = new Date(trace.timestamp)
