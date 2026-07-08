@@ -161,9 +161,9 @@ function normalizeState(value: unknown): SddAssistantHistoryState {
 
 function persistState(draftId: string, workspaceRoot: string | undefined, state: SddAssistantHistoryState): void {
   try {
-    const normalized = normalizeState(state)
-    localStorage.setItem(historyKey(draftId, workspaceRoot), JSON.stringify(normalized))
-    const activeSession = normalized.sessions.find(session => session.id === normalized.activeSessionId)
+    // Save state as-is without re-normalizing to preserve session ID associations
+    localStorage.setItem(historyKey(draftId, workspaceRoot), JSON.stringify(state))
+    const activeSession = state.sessions.find(session => session.id === state.activeSessionId)
     localStorage.setItem(legacyHistoryKey(draftId, workspaceRoot), JSON.stringify(activeSession?.messages ?? []))
   } catch {
     // localStorage can fail in private mode or when quota is exceeded. Chat should still work in memory.
