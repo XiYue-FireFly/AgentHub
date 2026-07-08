@@ -144,6 +144,18 @@ export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose 
     return () => { cancelled = true }
   }, [workspaceId, diffMode, selectedPath, workingDiffCache])
 
+  // W-L6: When switching to working diff mode, validate selectedPath is in working files
+  useEffect(() => {
+    if (diffMode !== 'working' || !selectedPath) return
+    const allWorkingFiles = [...changedFiles, ...stagedFiles, ...unstagedFiles]
+    const isInWorkingFiles = allWorkingFiles.some(f => f.path === selectedPath)
+    if (!isInWorkingFiles && workingDiffCache[selectedPath] === undefined) {
+      // selectedPath only exists in commit, reset to first working file
+      const firstWorkingFile = allWorkingFiles[0]?.path || null
+      if (firstWorkingFile) setSelectedPath(firstWorkingFile)
+    }
+  }, [diffMode, selectedPath, changedFiles, stagedFiles, unstagedFiles, workingDiffCache])
+
   const runAction = async (label: string, action: () => Promise<any>, after?: () => void) => {
     setActionLoading(label)
     try {

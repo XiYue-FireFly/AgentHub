@@ -55,6 +55,12 @@ export function SessionSidebar({
   const [renaming, setRenaming] = useState<WorkbenchThread | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [renamingBusy, setRenamingBusy] = useState(false)
+  // W-L4: Tick state to refresh relativeTime labels periodically
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 60_000)
+    return () => clearInterval(timer)
+  }, [])
   const grouped = useMemo(() => groupThreadsByWorkspace(threads), [threads])
   const resizeHandlersRef = useRef<{ move: ((e: PointerEvent) => void) | null; up: ((e: PointerEvent) => void) | null }>({ move: null, up: null })
   const query = search.trim().toLowerCase()

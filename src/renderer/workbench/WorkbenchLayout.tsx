@@ -87,6 +87,19 @@ interface WorkbenchLayoutProps {
   setMotion: (m: MotionLevel) => void
 }
 
+// W-L3: Shallow equality check to avoid expensive JSON.stringify for schedule comparison
+function isShallowEqual<T>(a: T, b: T): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false
+  const keysA = Object.keys(a as Record<string, unknown>)
+  const keysB = Object.keys(b as Record<string, unknown>)
+  if (keysA.length !== keysB.length) return false
+  for (const key of keysA) {
+    if ((a as Record<string, unknown>)[key] !== (b as Record<string, unknown>)[key]) return false
+  }
+  return true
+}
+
 export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const view = useWorkbenchUiStore(state => state.view)
   const setView = useWorkbenchUiStore(state => state.setView)
@@ -590,7 +603,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     if (usable.length === 0 || customScheduleHasRunnableSteps(smartSchedule)) return
     const next = defaultSmartFiveRoleSchedule(usable)
     // MED-28: Stricter termination — skip if generated schedule is identical to current
-    if (JSON.stringify(next) === JSON.stringify(smartSchedule)) return
+    if (isShallowEqual(next, smartSchedule)) return
     setSmartScheduleState(next)
     window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [localAgents, smartSchedule])
