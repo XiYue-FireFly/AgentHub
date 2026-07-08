@@ -161,6 +161,12 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   const autoVerifyBaselineKeyRef = useRef<string | null>(null)
 
   const activeDraft = useSddDraftStore((s) => s.activeDraft)
+
+  // Clear seen event keys when draft changes to prevent memory leak
+  useEffect(() => {
+    autoVerifySeenEventKeysRef.current.clear()
+    autoVerifyTriggeredRef.current.clear()
+  }, [activeDraft?.id])
   const draftContent = useSddDraftStore((s) => s.content)
 
   const saveAssistantWidth = useCallback((nextWidth: number) => {
