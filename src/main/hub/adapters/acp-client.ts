@@ -409,7 +409,9 @@ export class AcpClient {
     // MED-11: Cap buffer at 1MB to prevent unbounded memory growth from malformed servers
     const MAX_BUF = 1024 * 1024
     if (this.buf.length > MAX_BUF) {
-      this.buf = this.buf.slice(-MAX_BUF)
+      // Find last newline before truncation point to avoid splitting JSON lines
+      const lastNl = this.buf.lastIndexOf('\n', this.buf.length - MAX_BUF)
+      this.buf = this.buf.slice(lastNl >= 0 ? lastNl + 1 : this.buf.length - MAX_BUF)
     }
     let nl: number
     while ((nl = this.buf.indexOf('\n')) >= 0) {
