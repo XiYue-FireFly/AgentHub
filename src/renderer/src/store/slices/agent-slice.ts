@@ -17,9 +17,29 @@ export interface ModelSelection {
 
 export interface LocalAgentStatus {
   agentId: string
+  label: string
+  installed: boolean
   configured: boolean
-  path?: string
+  protocol?: string
+  binary?: string
+  args?: string
   version?: string
+  manualOnly?: boolean
+  candidateKind?: 'cli' | 'desktop'
+  requiresPromptArg?: boolean
+  note?: string
+  loginState: 'unknown' | 'ready' | 'needs-login' | 'not-installed'
+  candidates: Array<{
+    source: 'desktop' | 'terminal'
+    label: string
+    path: string
+    verification?: 'version' | 'manual'
+    note?: string
+    kind?: 'path-detected' | 'desktop-candidate' | 'stdio-headless' | 'acp' | 'needs-login' | 'needs-args'
+  }>
+  workspaceSession: 'per-dispatch' | 'persistent'
+  diagnostic?: { code: string; message: string; action?: string }
+  error?: string
 }
 
 export interface SchedulePreview {
