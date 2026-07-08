@@ -321,7 +321,6 @@ export function ComposerBar({
   useEffect(() => {
     if (sending || queue.length === 0) return
     const next = queue[0]
-    setQueue(prev => prev.slice(1))
     setText(next.text)
     setAttachments(next.attachments)
     // Defer to next tick so state updates propagate
@@ -329,9 +328,11 @@ export function ComposerBar({
       if (next.text.trim()) {
         onSend(next.text.trim(), next.attachments, next.overrides)
       }
+      // Remove from queue after sending to avoid triggering effect re-run
+      setQueue(prev => prev.slice(1))
     }, 50)
     return () => clearTimeout(timer)
-  }, [sending, queue, onSend])
+  }, [sending, onSend])  // Removed queue from dependencies to prevent re-run
 
   const send = async () => {
     const prompt = text.trim() || (attachments.length ? tr('请分析我附加的内容。', 'Please analyze the attached content.') : '')
