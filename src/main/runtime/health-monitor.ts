@@ -93,11 +93,11 @@ export class HealthMonitor {
     this.consecutiveFailures = 0
 
     // Initial health check
-    this.performHealthCheck()
+    this.performHealthCheck().catch(() => {})
 
     // Periodic health checks
     this.checkTimer = setInterval(() => {
-      this.performHealthCheck()
+      this.performHealthCheck().catch(() => {})
     }, this.checkIntervalMs)
   }
 
