@@ -34,6 +34,10 @@ export class LruCache<K, V> {
     return value
   }
 
+  peek(key: K): V | undefined {
+    return this.entries.get(key)
+  }
+
   set(key: K, value: V): V | undefined {
     let evicted: V | undefined
     if (this.entries.has(key)) {

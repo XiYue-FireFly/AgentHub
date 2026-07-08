@@ -71,7 +71,7 @@ export class TtlLruCache<K, V> {
     const now = Date.now()
     let removed = 0
     for (const key of this.cache.keys()) {
-      const entry = this.cache.get(key)
+      const entry = this.cache.peek(key)
       if (entry && now > entry.expiresAt) {
         this.cache.delete(key)
         removed++
