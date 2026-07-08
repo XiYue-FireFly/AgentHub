@@ -190,16 +190,17 @@ export function ComposerBar({
   }, [providers.length, onRefreshProviders])
 
   useEffect(() => {
+    let alive = true
     const prompt = text.trim()
     if (!prompt && attachments.length === 0) {
       setBudgetEstimate(null)
       setBudgetEstimateLoading(false)
-      return
+      return () => { alive = false }
     }
     const timer = window.setTimeout(() => {
       const quickSchedule = quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds) || undefined
       const selectedSchedule = quickSchedule || (!targetAgent && !(modelSelection?.source === 'provider') ? scheduleForMode?.(mode) : undefined)
-      setBudgetEstimateLoading(true)
+      if (alive) setBudgetEstimateLoading(true)
       window.electronAPI.budget.estimateDispatch({
         workspaceId,
         prompt: prompt || 'Please analyze the attached content.',
@@ -208,11 +209,14 @@ export function ComposerBar({
         modelSelection: modelSelection || undefined,
         attachments,
         customSchedule: selectedSchedule
-      }).then(setBudgetEstimate)
-        .catch(() => setBudgetEstimate(null))
-        .finally(() => setBudgetEstimateLoading(false))
+      }).then(result => { if (alive) setBudgetEstimate(result) })
+        .catch(() => { if (alive) setBudgetEstimate(null) })
+        .finally(() => { if (alive) setBudgetEstimateLoading(false) })
     }, 450)
-    return () => window.clearTimeout(timer)
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
   }, [text, attachments, quickRole, readyAgentIds, targetAgent, modelSelection, scheduleForMode, mode, workspaceId])
 
   useEffect(() => {
