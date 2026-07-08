@@ -31,7 +31,9 @@ export class Aggregator {
 
   private calculateConfidence(content: string): number {
     if (!content || content.length < 10) return 0
-    if (content.includes('error') || content.includes('Error')) return 0.3
+    // Check for error keywords in English and Chinese
+    if (content.includes('error') || content.includes('Error') ||
+        content.includes('错误') || content.includes('失败')) return 0.3
     if (content.includes('```') || content.includes('---')) return 0.8
     return 0.6
   }
