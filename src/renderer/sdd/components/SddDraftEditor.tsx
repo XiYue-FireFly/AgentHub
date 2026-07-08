@@ -190,7 +190,7 @@ function SddHistoryPanel({ draftId, workspaceRoot }: { draftId: string; workspac
   useEffect(() => {
     refresh()
     setStatus(null)
-  }, [draftId, workspaceRoot, content])
+  }, [draftId, workspaceRoot])
 
   const selectedEntry = selectedVersion ? entries.find(entry => entry.version === selectedVersion) : undefined
   const latestVersion = entries.at(-1)?.version
