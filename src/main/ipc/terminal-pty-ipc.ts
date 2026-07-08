@@ -119,6 +119,10 @@ export function registerTerminalPtyIpc(_getMainWindow: () => BrowserWindow | nul
         exited: false
       }
 
+      // Attach sender before registering onData to prevent race condition
+      sessions.set(sessionId, session)
+      attachSenderToSession(sessionId, session, sender)
+
       pty.onData((data: string) => {
         session.ringBuffer = appendRingBuffer(session.ringBuffer, data)
         if (!session.sender.isDestroyed()) {
@@ -136,9 +140,6 @@ export function registerTerminalPtyIpc(_getMainWindow: () => BrowserWindow | nul
         }
         sessions.delete(sessionId)
       })
-
-      sessions.set(sessionId, session)
-      attachSenderToSession(sessionId, session, sender)
 
       return { ok: true }
     } catch (error: any) {
