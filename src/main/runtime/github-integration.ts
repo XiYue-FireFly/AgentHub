@@ -89,7 +89,13 @@ export async function listIssues(state: 'open' | 'closed' | 'all' = 'open', limi
  */
 export async function getCurrentBranchPr(): Promise<{ branch: string; pr?: GitHubPr }> {
   try {
-    const branch = (await execGh(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+    // Use git directly instead of gh (gh doesn't have a 'git' subcommand)
+    const branch = await new Promise<string>((resolve, reject) => {
+      execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 10000, encoding: 'utf-8', windowsHide: true }, (err, stdout) => {
+        if (err) reject(err)
+        else resolve(stdout.trim())
+      })
+    })
     try {
       const output = await execGh(['pr', 'view', '--json', 'number,title,state,author,url,headRefName,createdAt,labels'])
       const pr = JSON.parse(output)

@@ -62,8 +62,8 @@ describe('github-integration', () => {
   })
 
   it('returns branch and optional PR for current branch', async () => {
-    childProcessMock.execFile.mockImplementation((_file: string, args: string[], _options: unknown, callback: ExecCallback) => {
-      if (args[0] === 'git') {
+    childProcessMock.execFile.mockImplementation((file: string, args: string[], _options: unknown, callback: ExecCallback) => {
+      if (file === 'git') {
         callback(null, 'new\n', '')
         return {} as never
       }
