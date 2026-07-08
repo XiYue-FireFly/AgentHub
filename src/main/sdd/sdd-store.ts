@@ -249,24 +249,13 @@ export class SddStore {
       const stat = await fs.stat(filePath)
       const meta = await readDraftMetaFile(this.workspaceRoot, draftId)
 
-      // 读取设计上下文（保存在 meta.json 中）
-      let designContext: SddDraft['designContext']
-      try {
-        const metaPath = path.join(buildDraftDirPath(this.workspaceRoot, draftId), 'meta.json')
-        const metaContent = await fs.readFile(metaPath, 'utf-8')
-        const meta = JSON.parse(metaContent)
-        designContext = meta.designContext
-      } catch {
-        // meta.json 不存在或解析失败时使用 undefined
-      }
-
       return {
         id: draftId,
         workspaceRoot: this.workspaceRoot,
         relativePath: buildDraftRelativePath(draftId),
         title: normalizeTitle(meta.title || extractTitleFromContent(content)),
         content,
-        designContext: meta.designContext ?? designContext,
+        designContext: meta.designContext,
         createdAt: meta.createdAt || stat.birthtime.toISOString(),
         updatedAt: meta.updatedAt || stat.mtime.toISOString()
       }
