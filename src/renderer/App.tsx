@@ -89,12 +89,19 @@ function AppInner() {
     return () => window.removeEventListener('agenthub:appearance-change', handler)
   }, [])
 
+  const appearanceRef = useRef({ appearance, motion })
+  appearanceRef.current = { appearance, motion }
+
   useEffect(() => {
     const next = { ...appearance, motion }
     applyAppearance(next)
     try { localStorage.setItem('ah-motion', motion) } catch { /* noop */ }
-    return subscribeSystemTheme(next, () => applyAppearance(next))
-  }, [appearance, motion])
+    // Subscribe once, use ref for latest values in callback
+    return subscribeSystemTheme(next, () => {
+      const { appearance: currentAppearance, motion: currentMotion } = appearanceRef.current
+      applyAppearance({ ...currentAppearance, motion: currentMotion })
+    })
+  }, [])
 
   /* ---------- 数据加载 ---------- */
   const clearConfigRetryTimer = useCallback(() => {
