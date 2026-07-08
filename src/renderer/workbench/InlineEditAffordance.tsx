@@ -10,10 +10,8 @@
  * Phase 1.3 of AGENTHUB_ITERATION_GOAL.
  */
 
-import { tr } from '../glass/i18n'
- */
-
 import React, { useState, useCallback } from 'react'
+import { tr } from '../glass/i18n'
 
 interface InlineEditAffordanceProps {
   code: string

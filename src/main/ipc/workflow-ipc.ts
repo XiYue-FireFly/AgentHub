@@ -114,7 +114,7 @@ export function registerWorkflowIpc(deps: WorkflowIpcDeps): void {
   // Project Map
   typedHandle("projectMap:build", (_e, rootPath, maxDepth) => {
     const root = resolveRegisteredWorkspaceRoot(rootPath)
-    if (!root) return { nodes: [], stats: { totalFiles: 0, totalDirectories: 0, totalSize: 0, languages: {} } }
+    if (!root) return null
     return buildProjectMap(root, maxDepth)
   })
   typedHandle("projectMap:search", (_e, map, query) => searchProjectFiles(map, query))

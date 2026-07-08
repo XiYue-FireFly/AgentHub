@@ -72,7 +72,7 @@ describe('knowledge IPC path validation', () => {
     expect(handler).toBeTruthy()
 
     const result = handler?.({}, 'C:/unregistered-path')
-    expect(result).toEqual({})
+    expect(result).toEqual({ language: '' })
     expect(projectKnowledgeMock.detectTechStack).not.toHaveBeenCalled()
   })
 

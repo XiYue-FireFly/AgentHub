@@ -44,7 +44,7 @@ export function useBudget(): number {
   return useSyncExternalStore(subscribe, getBudget, () => 0)
 }
 export function useBudgetMode(): BudgetMode {
-  return useSyncExternalStore(subscribe, getBudgetMode, () => 'none')
+  return useSyncExternalStore(subscribe, getBudgetMode, () => 'tokens' as BudgetMode)
 }
 
 /** 告警阈值：用量达预算的此比例即进入 warn */

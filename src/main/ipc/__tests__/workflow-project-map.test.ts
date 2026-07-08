@@ -65,7 +65,7 @@ describe('projectMap IPC path validation', () => {
     expect(handler).toBeTruthy()
 
     const result = handler?.({}, 'C:/unregistered-path', 3)
-    expect(result).toEqual({ nodes: [], stats: { totalFiles: 0, totalDirectories: 0, totalSize: 0, languages: {} } })
+    expect(result).toBeNull()
     expect(projectMapMock.buildProjectMap).not.toHaveBeenCalled()
   })
 

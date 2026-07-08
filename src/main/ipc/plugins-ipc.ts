@@ -5,6 +5,7 @@ import { typedHandle } from './typed-ipc'
 
 export function registerPluginsIpc(): void {
   typedHandle("plugins:scan", (_e, workspaceRoot) => {
+    if (!workspaceRoot) return []
     const root = resolveRegisteredWorkspaceRoot(workspaceRoot)
     if (!root) return []
     return scanPlugins(root)

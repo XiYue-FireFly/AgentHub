@@ -146,7 +146,7 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
 
   typedHandle("knowledge:detectTechStack", (_e, rootPath) => {
     const root = resolveRegisteredWorkspaceRoot(rootPath)
-    if (!root) return {}
+    if (!root) return { language: '' }
     return detectTechStack(root)
   })
   typedHandle("knowledge:generateSummary", (_e, rootPath, entries) => {
