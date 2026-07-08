@@ -122,8 +122,8 @@ export function ExecutionReport({ stats, className = '' }: ExecutionReportProps)
             {tr(`修改文件 (${stats.filesModified.length}):`, `Modified files (${stats.filesModified.length}):`)}
           </strong>
           <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {stats.filesModified.map((file, index) => (
-              <li key={index} style={{ padding: '4px 0', fontSize: 13 }}>
+            {stats.filesModified.map((file) => (
+              <li key={file} style={{ padding: '4px 0', fontSize: 13 }}>
                 <code style={{ background: 'var(--bg-code-block, rgba(0,0,0,0.22))', padding: '2px 8px', borderRadius: 4, fontSize: 12, color: 'var(--tx-2)', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
                   {file}
                 </code>
