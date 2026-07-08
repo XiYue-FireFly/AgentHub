@@ -343,7 +343,7 @@ export function SddDraftEditor({ providers, modelSelection, onModelSelectionChan
         saveTimerRef.current = null
       }
     }
-  }, [activeDraft, content, saveStatus])
+  }, [activeDraft?.id, content, saveStatus])
 
   // 解析需求块
   useEffect(() => {
