@@ -7,7 +7,7 @@
  * P2-2: Settings.tsx splitting.
  */
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Icon, IC, Switch } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { styledConfirm } from '../lib/confirm'
@@ -134,20 +134,28 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
     }
   }
 
+  const listToolsRequestId = useRef(0)
+
   const listTools = async (serverId: string) => {
     if (toolsForServer === serverId) { setToolsForServer(null); return }
+    const requestId = ++listToolsRequestId.current
     setToolsForServer(serverId)
     setToolsLoading(true)
     setToolsError(null)
     setToolsList([])
     try {
       const result = await window.electronAPI.mcp.listTools(serverId, workspaceId)
+      // Only apply if this is still the latest request
+      if (requestId !== listToolsRequestId.current) return
       if (result.ok) setToolsList(result.tools || [])
       else setToolsError(result.error || tr('获取工具列表失败', 'Failed to list tools'))
     } catch (err: any) {
+      // Only apply if this is still the latest request
+      if (requestId !== listToolsRequestId.current) return
       setToolsError(err?.message || tr('获取工具列表失败', 'Failed to list tools'))
     } finally {
-      setToolsLoading(false)
+      // Only update loading state if this is still the latest request
+      if (requestId === listToolsRequestId.current) setToolsLoading(false)
     }
   }
 
