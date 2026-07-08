@@ -1,4 +1,7 @@
 import { BrowserWindow, app, type IpcMainInvokeEvent } from 'electron'
+import { execFile } from 'node:child_process'
+import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { configureLocalAgent, getCachedLocalAgentStatuses, refreshLocalAgentStatusCache } from '../runtime/local-agents'
 import { invalidateAgentCache } from './agent-loop-ipc'
 import { readLocalModelConfig, scanLocalModels } from '../runtime/local-models'
@@ -198,9 +201,6 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
   })
 
   typedHandle("release:checks", async () => {
-    const { execFile } = require("child_process")
-    const { join } = require("path")
-    const { existsSync } = require("fs")
     const appVersion = resolveAppVersionFromMain()
     let gitClean = false
     let hasChangelog = false
