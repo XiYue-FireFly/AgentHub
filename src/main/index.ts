@@ -599,10 +599,15 @@ async function initHub(): Promise<void> {
 
 typedHandle("turns:create", async (_event, payload) => {
   if (!dispatcher) {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
     await Promise.race([
       dispatcherReadyPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000))
-    ])
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000)
+      })
+    ]).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
   }
   const activeDispatcher = dispatcher!
   const mode = payload.mode || "auto"
