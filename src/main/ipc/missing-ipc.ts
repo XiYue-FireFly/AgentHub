@@ -8,6 +8,7 @@
 
 import { shell, dialog, app } from 'electron'
 import { readFileSync, statSync } from 'node:fs'
+import * as fs from 'node:fs'
 import { getWorkspaceManager } from '../hub/workspace'
 import { getSkillManager } from '../skills/manager'
 import { BUILTIN_SKILLS } from '../skills/types'
@@ -155,9 +156,10 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       const root = resolveAppBase(input?.workspaceRoot, ws?.rootPath)
       const userData = app.getPath('userData')
       resolved = resolvePathWithinAllowedBases(rawPath, root, [root, userData])
-      const st = statSync(resolved)
+      const st = await fs.promises.stat(resolved)
       if (st.size > 1_000_000) return { ok: false, path: resolved, error: 'File too large' }
-      return { ok: true, path: resolved, content: readFileSync(resolved, 'utf-8') }
+      const content = await fs.promises.readFile(resolved, 'utf-8')
+      return { ok: true, path: resolved, content }
     } catch (e: any) { return { ok: false, path: resolved, error: e?.message } }
   })
   typedHandle('app:pickFolder', async (_e, options) => {
