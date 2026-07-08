@@ -106,14 +106,13 @@ function AppInner() {
   const loadConfig = useCallback(async () => {
     const requestId = ++configRequestId.current
     clearConfigRetryTimer()
-    const retryLoadConfig = () => {
+    const scheduleRetry = () => {
       const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
       if (retryDelay === null) {
         setConfigLoadError('主进程配置暂未就绪，请检查应用日志或点击重试。')
         return
       }
       setConfigLoadError(null)
-      configEmptyRetryCount.current += 1
       configRetryTimer.current = window.setTimeout(() => {
         configRetryTimer.current = null
         if (requestId === configRequestId.current) loadConfig().catch(() => {})
@@ -121,7 +120,7 @@ function AppInner() {
     }
     try {
       const cfg = await window.electronAPI.providers.get().catch(error => {
-        retryLoadConfig()
+        scheduleRetry()
         throw error
       })
       if (requestId !== configRequestId.current) return
@@ -131,17 +130,9 @@ function AppInner() {
         setConfigLoadError(null)
         return
       }
-      const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
-      if (retryDelay !== null) {
-        setConfigLoadError(null)
-        configEmptyRetryCount.current += 1
-        configRetryTimer.current = window.setTimeout(() => {
-          configRetryTimer.current = null
-          if (requestId === configRequestId.current) loadConfig().catch(() => {})
-        }, retryDelay)
-      } else {
-        setConfigLoadError('主进程配置暂未就绪，请检查应用日志或点击重试。')
-      }
+      // Increment counter only once when config is empty
+      configEmptyRetryCount.current += 1
+      scheduleRetry()
     } catch { /* main 进程未就绪 */ }
   }, [applyProviderConfig, clearConfigRetryTimer])
 
@@ -214,36 +205,40 @@ function AppInner() {
   /* ---------- 派发 ---------- */
   /* ---------- 设置操作 ---------- */
   const onSetEnabled = useCallback(async (id: string, enabled: boolean) => {
+    // Capture snapshot before optimistic update to ensure correct rollback
     const prev = providersRef.current
     setProviders(ps => ps.map(p => p.id === id ? { ...p, enabled } : p))
     try { applyProviderConfig(await window.electronAPI.providers.setEnabled(id, enabled)) }
-    catch { setProviders(prev) }
+    catch { setProviders(() => prev) }
     refreshStatus()
   }, [applyProviderConfig, refreshStatus])
 
   const onSetKey = useCallback(async (id: string, key: string) => {
+    // Capture snapshot before optimistic update to ensure correct rollback
     const prev = providersRef.current
     setProviders(ps => ps.map(p => p.id === id ? { ...p, apiKey: key, enabled: p.enabled || !!key } : p))
     try { applyProviderConfig(await window.electronAPI.providers.setKey(id, key)) }
-    catch { setProviders(prev) }
+    catch { setProviders(() => prev) }
     refreshStatus()
   }, [applyProviderConfig, refreshStatus])
 
   const onSetBinding = useCallback(async (b: BindingDef) => {
+    // Capture snapshot before optimistic update to ensure correct rollback
     const prev = bindingsRef.current
     setBindings(bs => bs.some(x => x.agentId === b.agentId) ? bs.map(x => x.agentId === b.agentId ? b : x) : [...bs, b])
     try {
       await window.electronAPI.routing.setBinding(b)
     }
-    catch { setBindings(prev) }
+    catch { setBindings(() => prev) }
     refreshStatus()
   }, [refreshStatus])
 
   const onSetFallback = useCallback(async (chain: string[]) => {
+    // Capture snapshot before optimistic update to ensure correct rollback
     const prev = fallbackChainRef.current
     setFallbackChain(chain)
     try { await window.electronAPI.routing.setFallback(chain) }
-    catch { setFallbackChain(prev) }
+    catch { setFallbackChain(() => prev) }
   }, [])
 
   const onUpsertProvider = useCallback(async (p: any) => {
