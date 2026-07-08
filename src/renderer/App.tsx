@@ -261,7 +261,13 @@ function AppInner() {
 
   const onReorderProvidersForClaude = useCallback(async (orderedIds: string[]) => {
     const byId = new Map(providers.map(provider => [provider.id, provider]))
-    setProviders(orderedIds.map(id => byId.get(id)).filter(Boolean) as ProviderDef[])
+    const reordered = orderedIds.map(id => byId.get(id)).filter((p): p is ProviderDef => !!p)
+    if (reordered.length !== orderedIds.length) {
+      // Some IDs were not found, reload config to get consistent state
+      loadConfig()
+      return
+    }
+    setProviders(reordered)
     try { applyProviderConfig(await window.electronAPI.providers.reorderForClaude(orderedIds)) }
     catch { loadConfig() }
   }, [applyProviderConfig, loadConfig, providers])
