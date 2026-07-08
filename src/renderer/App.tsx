@@ -60,7 +60,7 @@ function AppInner() {
   const applyProviderConfig = useCallback((cfg: any) => {
     if (!cfg) return
     const nextProviders = Array.isArray(cfg.providers) ? cfg.providers : []
-    setProviders(current => nextProviders.length > 0 ? nextProviders : current)
+    setProviders(nextProviders)  // Always update, even if empty array
     setBindings(cfg.routing?.bindings ?? [])
     setFallbackChain(cfg.routing?.fallbackChain ?? [])
   }, [])
