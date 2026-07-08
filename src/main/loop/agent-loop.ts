@@ -287,7 +287,7 @@ export class AgentLoop extends EventEmitter {
       return agents.find(a => a.role === 'orchestrator' || a.role === 'implementer') || agents[0]
     }
 
-    if (lowerReasoning.includes('search') || lowerReasoning.includes('explore') || lowerReasoning.includes('search')) {
+    if (lowerReasoning.includes('search') || lowerReasoning.includes('explore')) {
       // 搜索任务选择 Explorer
       return agents.find(a => a.role === 'explorer') || agents[0]
     }
