@@ -10,6 +10,9 @@
  * Phase 1.3 of AGENTHUB_ITERATION_GOAL.
  */
 
+import { tr } from '../glass/i18n'
+ */
+
 import React, { useState, useCallback } from 'react'
 
 interface InlineEditAffordanceProps {
@@ -19,11 +22,6 @@ interface InlineEditAffordanceProps {
   endLine?: number
   workspaceRoot?: string
   onApply?: (newCode: string) => void
-}
-
-function tr(zh: string, en: string): string {
-  const lang = typeof navigator !== 'undefined' && navigator.language?.startsWith('zh') ? 'zh' : 'en'
-  return lang === 'zh' ? zh : en
 }
 
 export function InlineEditAffordance({ code, filePath, startLine, endLine, workspaceRoot: _workspaceRoot, onApply }: InlineEditAffordanceProps) {
