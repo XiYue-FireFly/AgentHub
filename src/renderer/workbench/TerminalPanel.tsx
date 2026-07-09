@@ -192,7 +192,7 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
     // Stream PTY output → xterm
     const offData = (window as any).electronAPI?.terminalPty?.onData?.((payload: any) => {
       if (payload.sessionId !== sessionId) return
-      term.write(payload.data)
+      try { term.write(payload.data) } catch { /* disposed */ }
     })
     const offExit = (window as any).electronAPI?.terminalPty?.onExit?.((payload: any) => {
       if (payload.sessionId !== sessionId) return
@@ -222,6 +222,16 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
     const resizeObserver = new ResizeObserver(triggerFit)
     resizeObserver.observe(container)
 
+    // G2-MH4: stash disposers BEFORE await so early exits always clean up listeners
+    const runDispose = () => {
+      try { offData?.() } catch { /* ignore */ }
+      try { offExit?.() } catch { /* ignore */ }
+      try { disposable.dispose?.() } catch { /* ignore */ }
+      try { resizeObserver.disconnect() } catch { /* ignore */ }
+      if (resizeTimer) clearTimeout(resizeTimer)
+    }
+    ;(term as any).__dispose = runDispose
+
     // Create PTY session
     try {
       const result = await (window as any).electronAPI?.terminalPty?.create?.({
@@ -230,9 +240,14 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
         cols: fit.proposeDimensions()?.cols || 80,
         rows: fit.proposeDimensions()?.rows || 24
       })
-      if (!isCurrent()) return
+      if (!isCurrent()) {
+        runDispose()
+        try { term.dispose?.() } catch { /* ignore */ }
+        return
+      }
       if (!result?.ok) {
         setError(result?.message || 'Failed to create terminal')
+        runDispose()
         return
       }
       const dims = fit.proposeDimensions()
@@ -241,30 +256,26 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
       }
       setExited(false)
     } catch (e: any) {
-      if (!isCurrent()) return
+      if (!isCurrent()) {
+        runDispose()
+        try { term.dispose?.() } catch { /* ignore */ }
+        return
+      }
       setError(e?.message || String(e))
-    }
-
-    // Stash disposers
-    ;(term as any).__dispose = () => {
-      offData?.()
-      offExit?.()
-      disposable.dispose?.()
-      resizeObserver.disconnect()
-      if (resizeTimer) clearTimeout(resizeTimer)
+      runDispose()
     }
   }, [xtermLoaded, workspaceRoot])
 
   useEffect(() => {
     aliveRef.current = true
-    const sessionId = terminalSessionId(workspaceRoot, activeTabId)
     if (xtermLoaded) attachTerminal(activeTabId)
     return () => {
       aliveRef.current = false
       attachTokenRef.current++
+      // F-W3: only tear down xterm UI on tab switch / panel hide.
+      // Keep the main-process PTY + ring buffer so reattach works.
+      // PTY is killed explicitly in handleCloseTab / handleRestart / app quit.
       disposeRenderer()
-      // Dispose PTY process to prevent zombie processes
-      try { (window as any).electronAPI?.terminalPty?.dispose?.(sessionId) } catch { /* ignore */ }
     }
   }, [activeTabId, xtermLoaded, attachTerminal, disposeRenderer, workspaceRoot])
 
@@ -345,16 +356,31 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
     <aside className="wb-terminal-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       {/* Tab bar */}
       <div className="wb-terminal-tabs">
-        <div className="wb-terminal-tab-list">
+        <div className="wb-terminal-tab-list" role="tablist" aria-label={tr('终端标签', 'Terminal tabs')}>
           {tabs.map(tab => {
             const active = tab.id === activeTabId
             return (
               <div
                 key={tab.id}
                 className={'wb-terminal-tab' + (active ? ' active' : '')}
+                role="tab"
+                tabIndex={active ? 0 : -1}
+                aria-selected={active}
+                aria-label={getTabTitle(tab)}
                 onClick={() => setActiveTabId(tab.id)}
                 onDoubleClick={() => startRename(tab.id)}
                 onContextMenu={(e) => { e.preventDefault(); startRename(tab.id) }}
+                onKeyDown={e => {
+                  if (renamingTabId === tab.id) return
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    setActiveTabId(tab.id)
+                  }
+                  if (e.key === 'F2') {
+                    e.preventDefault()
+                    startRename(tab.id)
+                  }
+                }}
               >
                 {renamingTabId === tab.id ? (
                   <input
@@ -368,6 +394,7 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
                     }}
                     className="wb-terminal-tab-rename"
                     onClick={e => e.stopPropagation()}
+                    aria-label={tr('重命名终端标签', 'Rename terminal tab')}
                   />
                 ) : (
                   <>
@@ -380,6 +407,7 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
                     className="wb-terminal-tab-close"
                     onClick={e => { e.stopPropagation(); handleCloseTab(tab.id) }}
                     title={tr('关闭', 'Close')}
+                    aria-label={tr('关闭终端标签', 'Close terminal tab')}
                   >
                     <Icon d={IC.x} size={10} />
                   </button>
@@ -392,16 +420,17 @@ export function TerminalPanel({ workspaceRoot, onClose }: TerminalPanelProps) {
             onClick={handleNewTab}
             disabled={tabs.length >= MAX_TABS}
             title={tr('新建终端', 'New terminal')}
+            aria-label={tr('新建终端', 'New terminal')}
           >
             <Icon d={IC.plus} size={12} />
           </button>
         </div>
         <div className="wb-terminal-tab-actions">
-          <button onClick={handleRestart} title={tr('重启', 'Restart')}>
+          <button onClick={handleRestart} title={tr('重启', 'Restart')} aria-label={tr('重启终端', 'Restart terminal')}>
             <Icon d={IC.refresh} size={13} />
           </button>
           {onClose && (
-            <button onClick={onClose} title={tr('关闭', 'Close')}>
+            <button onClick={onClose} title={tr('关闭', 'Close')} aria-label={tr('关闭终端面板', 'Close terminal panel')}>
               <Icon d={IC.x} size={13} />
             </button>
           )}

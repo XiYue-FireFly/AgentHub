@@ -25,12 +25,15 @@ describe("SideConversationPanel", () => {
     expect(source).toContain("onSendMessage?: (message: string) => void")
   })
 
-  it("uses turns:create IPC to send messages", () => {
-    expect(source).toContain("window.electronAPI.turns.create")
+  it("creates a dedicated side thread instead of parent (F-W1)", () => {
+    expect(source).toContain("threads.create")
+    expect(source).toContain("ensureSideThread")
+    expect(source).not.toContain("threadId: parentThreadId")
   })
 
-  it("adds context prefix for side conversation", () => {
-    expect(source).toContain("Side conversation from turn")
+  it("uses turns.create with side thread id", () => {
+    expect(source).toContain("window.electronAPI.turns.create")
+    expect(source).toContain("threadId,")
   })
 
   it("has message input with Enter key support", () => {
@@ -41,7 +44,6 @@ describe("SideConversationPanel", () => {
   it("shows user and assistant message bubbles", () => {
     expect(source).toContain("wb-side-message-")
     expect(source).toContain("msg.role")
-    expect(source).toContain("wb-side-message-assistant")
   })
 
   it("shows typing indicator while sending", () => {

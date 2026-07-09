@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 import { promisify } from "node:util"
 import { getWorkspaceManager } from "../hub/workspace"
+import { isPathInsideBase } from "../ipc/path-guards"
 import type {
   GitBranch,
   GitBranchListResponse,
@@ -568,7 +569,7 @@ async function diffStatsForPath(rootPath: string, filePath: string): Promise<{ a
     try {
       const rootResolved = resolve(rootPath)
       const fullPath = resolve(rootResolved, filePath)
-      if (!fullPath.startsWith(rootResolved)) return { additions: 0, deletions: 0 }
+      if (!isPathInsideBase(fullPath, rootResolved)) return { additions: 0, deletions: 0 }
       const st = statSync(fullPath)
       if (st.isFile() && st.size <= 200 * 1024) {
         const text = readFileSync(fullPath, "utf8")
@@ -761,7 +762,7 @@ function untrackedPreview(rootPath: string, filePath: string): string {
   try {
     const rootResolved = resolve(rootPath)
     const fullPath = resolve(rootResolved, filePath)
-    if (!fullPath.startsWith(rootResolved)) return `# 未跟踪\n${filePath}\nInvalid path: traversal not allowed`
+    if (!isPathInsideBase(fullPath, rootResolved)) return `# 未跟踪\n${filePath}\nInvalid path: traversal not allowed`
     const st = statSync(fullPath)
     if (!st.isFile()) return `# 未跟踪\n${filePath}\n无法预览非普通文件。`
     if (st.size > 200 * 1024) return `# 未跟踪\n${filePath}\n文件较大，已跳过内容预览。`

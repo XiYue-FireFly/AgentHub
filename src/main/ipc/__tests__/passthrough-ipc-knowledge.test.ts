@@ -65,47 +65,29 @@ describe('knowledge IPC path validation', () => {
     })
   }
 
-  it('rejects detecting tech stack for unregistered workspace paths', { timeout: 15000 }, async () => {
+  // Full-suite load can make dynamic import of passthrough-ipc slow; use one setup + higher timeout.
+  it('validates knowledge IPC path registration (reject + allow)', { timeout: 30000 }, async () => {
     await setup()
 
-    const handler = electronMock.handlers.get('knowledge:detectTechStack')
-    expect(handler).toBeTruthy()
+    const detect = electronMock.handlers.get('knowledge:detectTechStack')
+    const summarize = electronMock.handlers.get('knowledge:generateSummary')
+    expect(detect).toBeTruthy()
+    expect(summarize).toBeTruthy()
 
-    const result = handler?.({}, 'C:/unregistered-path')
-    expect(result).toEqual({ language: '' })
+    expect(detect?.({}, 'C:/unregistered-path')).toEqual({ language: '' })
     expect(projectKnowledgeMock.detectTechStack).not.toHaveBeenCalled()
-  })
 
-  it('allows detecting tech stack for registered workspace paths', async () => {
-    await setup()
-
-    const handler = electronMock.handlers.get('knowledge:detectTechStack')
-    expect(handler).toBeTruthy()
-
-    const result = handler?.({}, 'C:/registered-workspace')
-    expect(result).toEqual({ language: 'typescript', framework: 'react' })
+    expect(detect?.({}, 'C:/registered-workspace')).toEqual({ language: 'typescript', framework: 'react' })
     expect(projectKnowledgeMock.detectTechStack).toHaveBeenCalledWith('C:/registered-workspace')
-  })
 
-  it('rejects generating summary for unregistered workspace paths', async () => {
-    await setup()
-
-    const handler = electronMock.handlers.get('knowledge:generateSummary')
-    expect(handler).toBeTruthy()
-
-    const result = handler?.({}, 'C:/unregistered-path', [])
-    expect(result).toEqual('')
+    expect(summarize?.({}, 'C:/unregistered-path', [])).toEqual('')
     expect(projectKnowledgeMock.generateWorkspaceSummary).not.toHaveBeenCalled()
-  })
 
-  it('allows generating summary for registered workspace paths', async () => {
-    await setup()
-
-    const handler = electronMock.handlers.get('knowledge:generateSummary')
-    expect(handler).toBeTruthy()
-
-    const result = handler?.({}, 'C:/registered-workspace', [{ title: 'Entry', content: 'Content', category: 'general' }])
-    expect(result).toEqual('Project summary')
-    expect(projectKnowledgeMock.generateWorkspaceSummary).toHaveBeenCalledWith('C:/registered-workspace', [{ title: 'Entry', content: 'Content', category: 'general' }])
+    expect(summarize?.({}, 'C:/registered-workspace', [{ title: 'Entry', content: 'Content', category: 'general' }]))
+      .toEqual('Project summary')
+    expect(projectKnowledgeMock.generateWorkspaceSummary).toHaveBeenCalledWith(
+      'C:/registered-workspace',
+      [{ title: 'Entry', content: 'Content', category: 'general' }]
+    )
   })
 })

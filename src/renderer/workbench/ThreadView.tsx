@@ -24,6 +24,7 @@ export function ThreadView({
   openSetup,
   onCreateProject,
   onCreateThread,
+  onForkThread,
   hasWorkspace,
   workspaceRoot,
   scrollRef,
@@ -38,6 +39,8 @@ export function ThreadView({
   openSetup: (tab?: SetupTab | 'appearance') => void
   onCreateProject: () => void
   onCreateThread: () => void
+  /** F-N4: navigate to forked thread after success */
+  onForkThread?: (threadId: string) => void
   hasWorkspace: boolean
   workspaceRoot?: string | null
   scrollRef?: React.RefObject<HTMLElement>
@@ -83,14 +86,14 @@ export function ThreadView({
               <button onClick={() => onRetry(turn.id)} title={tr('重试', 'Retry')}><Icon d={IC.refresh} size={14} /></button>
             )}
           </div>
-          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} threadId={thread?.id} />
+          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} threadId={thread?.id} onForkThread={onForkThread} />
         </article>
       ))}
     </section>
   )
 }
 
-function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string }) {
+function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId, onForkThread }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string; onForkThread?: (threadId: string) => void }) {
   const grouped = new Map<string, RuntimeEvent[]>()
   const visibleEvents = events.filter(isChatVisibleRuntimeEvent)
   for (const event of visibleEvents) {
@@ -171,6 +174,7 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
                   turnId={turn.id}
                   threadId={threadId || turn.threadId || ''}
                   messageContent={text || doneContent || ''}
+                  onFork={onForkThread}
                 />
               </div>
             )}

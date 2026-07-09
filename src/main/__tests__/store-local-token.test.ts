@@ -82,4 +82,36 @@ describe('main store local token', () => {
     expect(fsMock.promises.writeFile).not.toHaveBeenCalled()
     expect(fsMock.promises.rename).not.toHaveBeenCalled()
   })
+
+  it('serializes concurrent set/flush so last write wins without interleave', async () => {
+    let releaseWrite: (() => void) | undefined
+    const gate = new Promise<void>(resolve => { releaseWrite = resolve })
+    let inFlight = 0
+    let maxInFlight = 0
+
+    fsMock.promises.writeFile.mockImplementation(async (path: string, content: string) => {
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      // First write blocks until released so a second enqueue can pile up
+      if (inFlight === 1) await gate
+      fsMock.files.set(path, content)
+      inFlight--
+    })
+
+    const { store } = await import('../store')
+    store.set('agenthub.test.a', 1)
+    const flush1 = store.flush()
+    // Let first persist start
+    await Promise.resolve()
+    store.set('agenthub.test.b', 2)
+    const flush2 = store.flush()
+    releaseWrite!()
+    await Promise.all([flush1, flush2])
+
+    expect(maxInFlight).toBe(1)
+    const configPath = join(electronMock.userData, 'config.json')
+    const saved = JSON.parse(fsMock.files.get(configPath) || '{}')
+    expect(saved['agenthub.test.a']).toBe(1)
+    expect(saved['agenthub.test.b']).toBe(2)
+  })
 })

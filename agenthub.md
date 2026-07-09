@@ -2,6 +2,9 @@
 
 > 本文档描述 AgentHub-v123 项目的整体架构、模块职责、数据流、IPC 通信模式和测试基础设施。
 > 创建时间：2026-07-06
+> 更新：2026-07-09（Grok 轮）— 分支 `grok` 残差 bug 排查；清单见 `BUG_REPORT_GROK.md` / `BUG_REPORT_GROK_R2.md`。  
+> 更新：2026-07-09（groknew）— 未来迭代路线图 `docs/roadmap/2026-07-09-future-iterations.md`；Wave1/Wave2 计划见 `docs/superpowers/plans/`；Wave2 终审 `docs/fix-results/groknew-wave2-final-report.md`。  
+> 更新：2026-07-09（init/wave4-platform）— Wave4 平台立项：`docs/proposals/2026-07-09-wave4-platform-project-charter.md` 与 `docs/proposals/wave4/`。
 
 ## 1. 项目概述
 

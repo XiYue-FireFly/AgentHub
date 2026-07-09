@@ -102,6 +102,73 @@ describe('sdd draft actions', () => {
     expect(useSddDraftStore.getState().trace).toEqual(trace)
   })
 
+  it('refuses empty content overwrite of non-empty lastSaved (G2-MC1)', async () => {
+    const { saveDraftToDisk } = await import('./sdd-draft-actions')
+    const api = {
+      sdd: {
+        updateDraft: vi.fn(async () => undefined),
+        updateDesignContext: vi.fn(async () => undefined)
+      }
+    }
+    ;(window as any).electronAPI = api
+    useSddDraftStore.getState().setActiveDraft({ ...draftA, content: '# body' })
+    useSddDraftStore.getState().setContent('') // user/rehydrate emptied buffer
+    // lastSaved still non-empty from setActiveDraft
+    const ok = await saveDraftToDisk()
+    expect(ok).toBe(false)
+    expect(api.sdd.updateDraft).not.toHaveBeenCalled()
+  })
+
+  it('flushes dirty draft before loadDraft switches (G2-MH7)', async () => {
+    const updateDraft = vi.fn(async () => undefined)
+    const api = {
+      sdd: {
+        getDraft: vi.fn(async () => draftB),
+        getTrace: vi.fn(async () => null),
+        updateDraft,
+        updateDesignContext: vi.fn(async () => undefined)
+      }
+    }
+    ;(window as any).electronAPI = api
+    useSddDraftStore.getState().setActiveDraft(draftA)
+    useSddDraftStore.getState().setContent('# edited A')
+    expect(useSddDraftStore.getState().saveStatus).toBe('dirty')
+
+    await loadDraft(draftB.workspaceRoot, draftB.id)
+
+    expect(updateDraft).toHaveBeenCalledWith(draftA.workspaceRoot, draftA.id, '# edited A')
+    expect(useSddDraftStore.getState().activeDraft?.id).toBe(draftB.id)
+  })
+
+  it('aborts loadDraft when dirty flush fails (G2-MH7)', async () => {
+    const getDraft = vi.fn(async () => draftB)
+    const api = {
+      sdd: {
+        getDraft,
+        getTrace: vi.fn(async () => null),
+        updateDraft: vi.fn(async () => { throw new Error('disk full') }),
+        updateDesignContext: vi.fn(async () => undefined)
+      }
+    }
+    ;(window as any).electronAPI = api
+    useSddDraftStore.getState().setActiveDraft(draftA)
+    useSddDraftStore.getState().setContent('# unsaved')
+    await loadDraft(draftB.workspaceRoot, draftB.id)
+    expect(getDraft).not.toHaveBeenCalled()
+    expect(useSddDraftStore.getState().activeDraft?.id).toBe(draftA.id)
+    expect(useSddDraftStore.getState().content).toBe('# unsaved')
+  })
+
+  it('markSaved syncs activeDraft.content for rehydrate (G2-MC1)', () => {
+    useSddDraftStore.getState().setActiveDraft({ ...draftA, content: '' })
+    useSddDraftStore.getState().setContent('# body after edit')
+    useSddDraftStore.getState().markSaved()
+    const s = useSddDraftStore.getState()
+    expect(s.activeDraft?.content).toBe('# body after edit')
+    expect(s.lastSavedContent).toBe('# body after edit')
+    expect(s.saveStatus).toBe('saved')
+  })
+
   it('does not overwrite trace if the active draft changes before trace load finishes', async () => {
     let resolveTrace: (value: SddTrace) => void = () => {}
     const tracePromise = new Promise<SddTrace>(resolve => {

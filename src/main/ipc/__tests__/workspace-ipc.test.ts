@@ -249,6 +249,15 @@ describe('workspace IPC file path trust', () => {
     })
   })
 
+  it('rejects writing sensitive files like .env in workspace (G2-MH2)', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    await setup()
+    const result = await electronMock.handlers.get('workspaceFiles:write')?.({}, root, '.env', 'SECRET=1')
+    expect(result).toEqual({ ok: false, error: 'Access denied: sensitive file' })
+    expect(fsMock.writeFile).not.toHaveBeenCalled()
+  })
+
   it('rejects reading sensitive files like .env in workspace', async () => {
     const root = resolve(process.cwd(), 'registered-workspace')
     workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]

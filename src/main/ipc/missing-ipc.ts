@@ -22,10 +22,22 @@ import { ProviderClient } from '../providers/client'
 import type { AgentRouteBinding, ThinkingConfig } from '../providers/types'
 import { workspaceContextPromptForRoot } from '../runtime/workspace-context'
 import { compactTextByTokenBudget } from '../runtime/token-economy'
+import { safeBrowserUrl } from '../security/webview-guards'
 import { resolvePathWithinAllowedBases } from './path-guards'
 import { assertRegisteredWorkspaceRoot } from './workspace-root-guard'
 import { isSensitiveTextFilePath } from './sensitive-files'
 import { typedHandle } from './typed-ipc'
+
+function isSafeOpenExternalUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false
+  if (safeBrowserUrl(url)) return true
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'mailto:'
+  } catch {
+    return false
+  }
+}
 
 interface MissingIpcDeps {
   dispatcher: any
@@ -125,7 +137,7 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
 
   // --- App ---
   typedHandle('app:openExternal', async (_e, url) => {
-    if (url && (url.startsWith('http:') || url.startsWith('https:') || url.startsWith('mailto:'))) {
+    if (isSafeOpenExternalUrl(url)) {
       await shell.openExternal(url)
       return { ok: true }
     }

@@ -92,4 +92,24 @@ describe('github-integration', () => {
       labels: ['fable']
     })
   })
+
+  it('passes cwd to git and gh when provided', async () => {
+    const seen: Array<{ file: string; cwd?: string }> = []
+    childProcessMock.execFile.mockImplementation((file: string, _args: string[], options: any, callback: ExecCallback) => {
+      seen.push({ file, cwd: options?.cwd })
+      if (file === 'git') {
+        callback(null, 'feature\n', '')
+        return {} as never
+      }
+      callback(new Error('no pr'), '', 'not found')
+      return {} as never
+    })
+
+    const { getCurrentBranchPr } = await import('../github-integration')
+    const result = await getCurrentBranchPr('E:/projects/demo')
+
+    expect(result.branch).toBe('feature')
+    expect(seen).toContainEqual({ file: 'git', cwd: 'E:/projects/demo' })
+    expect(seen).toContainEqual({ file: 'gh', cwd: 'E:/projects/demo' })
+  })
 })

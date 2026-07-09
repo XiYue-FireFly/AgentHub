@@ -15,9 +15,19 @@ describe('sensitive IPC text file guard', () => {
     expect(isSensitiveTextFilePath('/workspace/private.key')).toBe(true)
   })
 
+  it('blocks F-W5 expanded cloud/credential paths', () => {
+    expect(isSensitiveTextFilePath('/home/user/.aws/credentials')).toBe(true)
+    expect(isSensitiveTextFilePath('/home/user/.aws/config')).toBe(true)
+    expect(isSensitiveTextFilePath('C:/Users/x/.kube/config')).toBe(true)
+    expect(isSensitiveTextFilePath('/proj/secrets/db.yaml')).toBe(true)
+    expect(isSensitiveTextFilePath('/proj/service-account.json')).toBe(true)
+    expect(isSensitiveTextFilePath('/keys/token.p8')).toBe(true)
+  })
+
   it('allows ordinary text and markdown files', () => {
     expect(isSensitiveTextFilePath('/workspace/README.md')).toBe(false)
     expect(isSensitiveTextFilePath('/workspace/src/env.ts')).toBe(false)
     expect(isSensitiveTextFilePath('/workspace/release..notes.md')).toBe(false)
+    expect(isSensitiveTextFilePath('/workspace/config.json')).toBe(false)
   })
 })

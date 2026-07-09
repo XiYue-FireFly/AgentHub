@@ -353,10 +353,17 @@ export function SddDraftEditor({ providers, modelSelection, onModelSelectionChan
     return () => clearTimeout(timer)
   }, [content])
 
-  // 清理
+  // 清理：卸载时刷盘 dirty，避免 G2-MH7 丢键入
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+      }
+      const snap = useSddDraftStore.getState()
+      if (snap.activeDraft && snap.saveStatus === 'dirty') {
+        void saveDraftToDisk()
+      }
     }
   }, [])
 

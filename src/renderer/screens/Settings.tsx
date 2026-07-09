@@ -1486,20 +1486,68 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
         </div>
 
         <div className="wb-plugin-installed-list">
-          {plugins.map((plugin, idx) => (
-            <div key={plugin.id || idx} className="wb-plugin-row">
-              <div className="wb-plugin-row-main">
-                <strong>{plugin.manifest?.name || plugin.id}</strong>
-                <small className="mono">{plugin.manifest?.version || '?'}</small>
-                {plugin.manifest?.description && (
-                  <div>{plugin.manifest.description}</div>
-                )}
-                <code>
-                  {tr('来源', 'Source')}: {plugin.source || 'unknown'} · {tr('路径', 'Path')}: {plugin.path || '?'}
-                </code>
+          {plugins.map((plugin, idx) => {
+            const integrity = plugin.integrity
+            const integrityLabel = !integrity
+              ? null
+              : integrity.status === 'ok'
+                ? tr('完整性：通过', 'Integrity: OK')
+                : integrity.status === 'unsigned'
+                  ? tr('完整性：未签名', 'Integrity: unsigned')
+                  : integrity.status === 'mismatch'
+                    ? tr('完整性：校验失败', 'Integrity: mismatch')
+                    : integrity.status === 'missing'
+                      ? tr('完整性：文件缺失', 'Integrity: missing files')
+                      : tr('完整性：错误', 'Integrity: error')
+            const integrityColor =
+              integrity?.status === 'ok' ? 'var(--ok)'
+                : integrity?.status === 'unsigned' ? 'var(--muted, #888)'
+                  : 'var(--danger, #c44)'
+            const signature = plugin.signature
+            const signatureLabel = !signature
+              ? null
+              : signature.status === 'ok'
+                ? tr('签名：通过', 'Signature: OK')
+                : signature.status === 'none'
+                  ? tr('签名：无', 'Signature: none')
+                  : signature.status === 'untrusted'
+                    ? tr('签名：发布者未信任', 'Signature: untrusted publisher')
+                    : signature.status === 'invalid'
+                      ? tr('签名：无效', 'Signature: invalid')
+                      : tr('签名：错误', 'Signature: error')
+            const signatureColor =
+              signature?.status === 'ok' ? 'var(--ok)'
+                : signature?.status === 'none' || signature?.status === 'untrusted' ? 'var(--muted, #888)'
+                  : 'var(--danger, #c44)'
+            return (
+              <div key={plugin.id || idx} className="wb-plugin-row">
+                <div className="wb-plugin-row-main">
+                  <strong>{plugin.manifest?.name || plugin.id}</strong>
+                  <small className="mono">{plugin.manifest?.version || '?'}</small>
+                  {plugin.manifest?.description && (
+                    <div>{plugin.manifest.description}</div>
+                  )}
+                  <code>
+                    {tr('来源', 'Source')}: {plugin.source || 'unknown'} · {tr('路径', 'Path')}: {plugin.path || '?'}
+                    {plugin.enabled === false ? ` · ${tr('已禁用', 'Disabled')}` : ''}
+                  </code>
+                  {integrityLabel && (
+                    <div style={{ fontSize: 12, marginTop: 4, color: integrityColor }} title={integrity?.message || ''}>
+                      {integrityLabel}
+                      {integrity?.message ? ` — ${integrity.message}` : ''}
+                    </div>
+                  )}
+                  {signatureLabel && (
+                    <div style={{ fontSize: 12, marginTop: 2, color: signatureColor }} title={signature?.message || ''}>
+                      {signatureLabel}
+                      {signature?.publisher ? ` (${signature.publisher})` : ''}
+                      {signature?.message ? ` — ${signature.message}` : ''}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
           {plugins.length === 0 && !loading && (
             <div className="wb-memory-kun-empty">
               <span>{tr('暂无已发现的插件。', 'No plugins discovered yet.')}</span>
@@ -1507,7 +1555,85 @@ function PluginSettingsTab({ workspaceId }: { workspaceId: string | null }) {
           )}
         </div>
       </section>
+
+      <PluginMarketplaceCard onInstalled={() => void refresh()} />
     </div>
+  )
+}
+
+function PluginMarketplaceCard({ onInstalled }: { onInstalled: () => void }) {
+  const [items, setItems] = useState<Array<{ id: string; name: string; version: string; description?: string; publisher: string; repositoryUrl: string; source: string }>>([])
+  const [busy, setBusy] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [registryUrl, setRegistryUrl] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      const result = await window.electronAPI.plugins.marketplaceList(registryUrl.trim() || undefined)
+      setItems(Array.isArray(result?.plugins) ? result.plugins : [])
+      if (result?.error) setMsg(result.error)
+    } catch (e: any) {
+      setItems([])
+      setMsg(e?.message || tr('加载市场失败', 'Failed to load marketplace'))
+    }
+  }, [registryUrl])
+
+  useEffect(() => { void load() }, [load])
+
+  const install = async (id: string) => {
+    setBusy(id)
+    setMsg(null)
+    try {
+      const result = await window.electronAPI.plugins.marketplaceInstall(id, { registryUrl: registryUrl.trim() || undefined })
+      if (!result?.ok) setMsg(result?.error || tr('安装失败', 'Install failed'))
+      else {
+        setMsg(tr(`已安装 ${id}`, `Installed ${id}`))
+        onInstalled()
+      }
+    } catch (e: any) {
+      setMsg(e?.message || tr('安装失败', 'Install failed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <section className="glass wb-mcp-clean-card">
+      <div className="wb-mcp-clean-head">
+        <div>
+          <strong>{tr('插件市场', 'Plugin marketplace')}</strong>
+          <span>{tr('浏览内置/远程目录（HTTPS 白名单）。安装走 git 克隆 + 完整性/签名校验。', 'Browse built-in/remote catalogs (HTTPS allowlist). Install uses git clone + integrity/signature checks.')}</span>
+        </div>
+        <button className="ah-btn sm" onClick={() => void load()} disabled={!!busy}>{tr('刷新目录', 'Refresh catalog')}</button>
+      </div>
+      {msg && <div className="wb-git-notice" style={{ margin: '8px 0' }}>{msg}</div>}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <input
+          className="ah-input mono"
+          value={registryUrl}
+          onChange={e => setRegistryUrl(e.target.value)}
+          placeholder={tr('可选远程 catalog JSON URL（HTTPS）', 'Optional remote catalog JSON URL (HTTPS)')}
+          aria-label={tr('远程市场 URL', 'Remote marketplace URL')}
+          style={{ flex: 1 }}
+        />
+      </div>
+      <div className="wb-plugin-repo-list">
+        {items.map(item => (
+          <div key={item.id} className="wb-plugin-row">
+            <div className="wb-plugin-row-main">
+              <strong>{item.name}</strong>
+              <small className="mono">{item.version} · {item.publisher} · {item.source}</small>
+              {item.description && <div>{item.description}</div>}
+              <code>{item.repositoryUrl}</code>
+            </div>
+            <button className="ah-btn sm" disabled={!!busy} onClick={() => void install(item.id)}>
+              {busy === item.id ? tr('安装中...', 'Installing...') : tr('安装', 'Install')}
+            </button>
+          </div>
+        ))}
+        {items.length === 0 && <div className="wb-muted-box">{tr('目录为空。', 'Catalog is empty.')}</div>}
+      </div>
+    </section>
   )
 }
 
@@ -2045,10 +2171,362 @@ function AppearanceTab({ motion, setMotion }: { motion: MotionLevel; setMotion: 
             <option value="wsl">WSL</option>
           </select>
         </PreferenceRow>
-        <PreferenceRow title={tr('界面语言', 'Interface language')} detail={tr('切换后立即生效。', 'Applies immediately after switching.')}>
+        <PreferenceRow title={tr('界面语言', 'Interface language')} detail={tr('切换后立即生效（整页按语言重挂载）。', 'Applies immediately (app remounts for language).')}>
           <Seg value={prefs.language} onChange={value => update({ language: value as AppearancePreferences['language'] })} options={[{ value: 'zh', label: '中文' }, { value: 'en', label: 'English' }]} />
         </PreferenceRow>
       </div>
+
+      {/* F-W8: backup create / restore entry */}
+      <BackupSettingsCard />
+      {/* Wave4 P2: encrypted multi-machine sync */}
+      <ConfigSyncSettingsCard />
+      {/* Wave4+: WebDAV auto sync */}
+      <WebDavSyncSettingsCard />
+    </div>
+  )
+}
+
+function WebDavSyncSettingsCard() {
+  const [url, setUrl] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [enabled, setEnabled] = useState(false)
+  const [autoMinutes, setAutoMinutes] = useState(0)
+  const [passphrase, setPassphrase] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [passwordSet, setPasswordSet] = useState(false)
+
+  const reload = useCallback(async () => {
+    try {
+      const cfg = await window.electronAPI.sync.webdavGetConfig()
+      setUrl(cfg?.url || '')
+      setUsername(cfg?.username || '')
+      setEnabled(Boolean(cfg?.enabled))
+      setAutoMinutes(cfg?.autoSyncMinutes || 0)
+      setPasswordSet(Boolean(cfg?.passwordSet))
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  useEffect(() => { void reload() }, [reload])
+
+  const save = async () => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const view = await window.electronAPI.sync.webdavSetConfig({
+        url,
+        username,
+        password: password || undefined,
+        enabled,
+        autoSyncMinutes: autoMinutes
+      })
+      setPasswordSet(Boolean(view?.passwordSet))
+      setPassword('')
+      setMsg(tr('WebDAV 配置已保存', 'WebDAV settings saved'))
+    } catch (e: any) {
+      setMsg(e?.message || tr('保存失败', 'Save failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const test = async () => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.electronAPI.sync.webdavTest({
+        url,
+        username,
+        password: password || undefined
+      })
+      setMsg(result?.ok
+        ? tr(`连接成功 (${result.status || 200})`, `Connected (${result.status || 200})`)
+        : (result?.error || tr('连接失败', 'Connection failed')))
+    } catch (e: any) {
+      setMsg(e?.message || tr('连接失败', 'Connection failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const push = async () => {
+    if (passphrase.length < 8) {
+      setMsg(tr('同步口令至少 8 位', 'Passphrase must be at least 8 characters'))
+      return
+    }
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.electronAPI.sync.webdavPush(passphrase)
+      setMsg(result?.ok
+        ? tr(`已推送到 WebDAV（${result.keys?.length || 0} 键）`, `Pushed to WebDAV (${result.keys?.length || 0} keys)`)
+        : (result?.error || tr('推送失败', 'Push failed')))
+    } catch (e: any) {
+      setMsg(e?.message || tr('推送失败', 'Push failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pull = async () => {
+    if (passphrase.length < 8) {
+      setMsg(tr('同步口令至少 8 位', 'Passphrase must be at least 8 characters'))
+      return
+    }
+    const ok = await styledConfirm({
+      message: tr('确认从 WebDAV 拉取并覆盖本地配置键？', 'Pull from WebDAV and overwrite local config keys?'),
+      danger: true
+    })
+    if (!ok) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.electronAPI.sync.webdavPull(passphrase)
+      setMsg(result?.ok
+        ? tr(`已拉取并恢复 ${result.restored?.length || 0} 项`, `Pulled and restored ${result.restored?.length || 0} keys`)
+        : (result?.error || tr('拉取失败', 'Pull failed')))
+    } catch (e: any) {
+      setMsg(e?.message || tr('拉取失败', 'Pull failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="glass wb-provider-card wb-appearance-card">
+      <div className="wb-card-head">
+        <div>
+          <strong>{tr('WebDAV 自动同步', 'WebDAV auto sync')}</strong>
+          <span>{tr('将口令加密的同步包上传/下载到自建 WebDAV（仅 HTTPS）。Provider 密钥仍为本机绑定。', 'Upload/download passphrase-encrypted sync packages to your WebDAV (HTTPS only). Provider keys remain machine-bound.')}</span>
+        </div>
+      </div>
+      {msg && <div className="wb-git-notice" style={{ margin: '8px 0' }}>{msg}</div>}
+      <div style={{ display: 'grid', gap: 8 }}>
+        <input className="ah-input mono" value={url} onChange={e => setUrl(e.target.value)} placeholder="https://dav.example/remote.php/dav/files/user/agenthub/" aria-label="WebDAV URL" />
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input className="ah-input" value={username} onChange={e => setUsername(e.target.value)} placeholder={tr('用户名', 'Username')} aria-label={tr('用户名', 'Username')} style={{ minWidth: 140 }} />
+          <input className="ah-input" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={passwordSet ? tr('密码（留空保留）', 'Password (blank keeps)') : tr('密码', 'Password')} aria-label={tr('密码', 'Password')} style={{ minWidth: 140 }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+            <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+            {tr('启用', 'Enabled')}
+          </label>
+          <input className="ah-input" type="number" min={0} max={1440} value={autoMinutes} onChange={e => setAutoMinutes(Number(e.target.value) || 0)} title={tr('自动同步间隔（分钟，0=关）', 'Auto-sync minutes (0=off)')} aria-label={tr('自动同步分钟', 'Auto-sync minutes')} style={{ width: 100 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="ah-btn sm" disabled={busy} onClick={() => void save()}>{tr('保存', 'Save')}</button>
+          <button className="ah-btn sm" disabled={busy} onClick={() => void test()}>{tr('测试连接', 'Test')}</button>
+          <input className="ah-input" type="password" value={passphrase} onChange={e => setPassphrase(e.target.value)} placeholder={tr('包口令 ≥8', 'Package passphrase ≥8')} aria-label={tr('同步包口令', 'Sync passphrase')} style={{ minWidth: 140 }} />
+          <button className="ah-btn sm" disabled={busy} onClick={() => void push()}>{tr('推送', 'Push')}</button>
+          <button className="ah-btn sm" disabled={busy} onClick={() => void pull()}>{tr('拉取', 'Pull')}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ConfigSyncSettingsCard() {
+  const [items, setItems] = useState<Array<{ filename: string; createdAt: string; sizeBytes: number; keys: string[] }>>([])
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [exportPass, setExportPass] = useState('')
+  const [importPass, setImportPass] = useState('')
+
+  const reload = useCallback(async () => {
+    try {
+      const list = await window.electronAPI.sync.list()
+      setItems((list || []).slice(0, 8))
+    } catch {
+      setItems([])
+    }
+  }, [])
+
+  useEffect(() => { void reload() }, [reload])
+
+  const doExport = async () => {
+    if (exportPass.length < 8) {
+      setMsg(tr('导出口令至少 8 位', 'Export passphrase must be at least 8 characters'))
+      return
+    }
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.electronAPI.sync.export(exportPass)
+      if (!result?.ok) setMsg(result?.error || tr('导出失败', 'Export failed'))
+      else setMsg(tr(`已导出同步包 ${result.filename || ''}`, `Sync package exported ${result.filename || ''}`))
+      setExportPass('')
+      await reload()
+    } catch (e: any) {
+      setMsg(e?.message || tr('导出失败', 'Export failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const doImport = async (filename: string) => {
+    if (importPass.length < 8) {
+      setMsg(tr('导入口令至少 8 位', 'Import passphrase must be at least 8 characters'))
+      return
+    }
+    const preview = await window.electronAPI.sync.preview(filename).catch(() => null)
+    const keys = preview?.keys?.join(', ') || filename
+    const ok = await styledConfirm({
+      message: tr(`确认导入同步包？将覆盖配置键：${keys}`, `Import sync package? This overwrites config keys: ${keys}`),
+      danger: true
+    })
+    if (!ok) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.electronAPI.sync.import(filename, importPass)
+      if (!result?.ok) setMsg(result?.error || tr('导入失败', 'Import failed'))
+      else setMsg(tr(
+        `已导入 ${result.restored?.length || 0} 项。建议重启应用。`,
+        `Imported ${result.restored?.length || 0} keys. Restart the app if needed.`
+      ))
+      setImportPass('')
+    } catch (e: any) {
+      setMsg(e?.message || tr('导入失败', 'Import failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="glass wb-provider-card wb-appearance-card">
+      <div className="wb-card-head">
+        <div>
+          <strong>{tr('配置同步 / 迁移', 'Config sync / migrate')}</strong>
+          <span>{tr('用口令加密导出后可拷贝到另一台机器导入。Provider API Key 由本机 safeStorage 绑定，跨机导入后需重新填写。', 'Password-encrypt export, then import on another machine. Provider API keys are machine-bound (OS safeStorage); re-enter keys after cross-machine import.')}</span>
+        </div>
+      </div>
+      {msg && <div className="wb-git-notice" style={{ margin: '8px 0' }}>{msg}</div>}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+        <input
+          className="ah-input"
+          type="password"
+          value={exportPass}
+          onChange={e => setExportPass(e.target.value)}
+          placeholder={tr('导出口令（≥8）', 'Export passphrase (≥8)')}
+          aria-label={tr('导出口令', 'Export passphrase')}
+          style={{ minWidth: 160 }}
+        />
+        <button className="ah-btn sm" disabled={busy} onClick={() => void doExport()}>{tr('加密导出', 'Encrypt & export')}</button>
+        <input
+          className="ah-input"
+          type="password"
+          value={importPass}
+          onChange={e => setImportPass(e.target.value)}
+          placeholder={tr('导入口令', 'Import passphrase')}
+          aria-label={tr('导入口令', 'Import passphrase')}
+          style={{ minWidth: 160 }}
+        />
+      </div>
+      {items.length === 0 ? (
+        <div className="wb-muted-box">{tr('暂无同步包。', 'No sync packages yet.')}</div>
+      ) : (
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+          {items.map(item => (
+            <li key={item.filename} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border-1)' }}>
+              <span style={{ fontSize: 12 }}>
+                <code>{item.filename}</code>
+                <small style={{ marginLeft: 8, opacity: 0.7 }}>{item.createdAt}</small>
+              </span>
+              <button className="ah-btn sm" disabled={busy} onClick={() => void doImport(item.filename)} aria-label={tr('导入同步包', 'Import sync package')}>
+                {tr('导入', 'Import')}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function BackupSettingsCard() {
+  const [items, setItems] = useState<Array<{ filename: string; createdAt: string; sizeBytes: number }>>([])
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const reload = useCallback(async () => {
+    try {
+      const list = await window.electronAPI.backup.list()
+      setItems((list || []).slice(0, 8).map((b: any) => ({
+        filename: b.filename,
+        createdAt: b.createdAt,
+        sizeBytes: b.sizeBytes || 0
+      })))
+    } catch {
+      setItems([])
+    }
+  }, [])
+
+  useEffect(() => { void reload() }, [reload])
+
+  const create = async () => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.electronAPI.backup.create()
+      if (result?.error) setMsg(result.error)
+      else setMsg(tr(`已创建备份 ${result.filename || ''}`, `Backup created ${result.filename || ''}`))
+      await reload()
+    } catch (e: any) {
+      setMsg(e?.message || tr('创建失败', 'Create failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const restore = async (filename: string) => {
+    const ok = await styledConfirm({
+      message: tr(`确认从备份恢复？将覆盖本地配置键：${filename}`, `Restore from backup? This overwrites local config keys: ${filename}`),
+      danger: true
+    })
+    if (!ok) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.electronAPI.backup.restore(filename)
+      if (result?.error) setMsg(result.error)
+      else setMsg(tr(
+        `已恢复 ${result.restored?.length || 0} 项。部分配置可能需要重启应用后完全生效。`,
+        `Restored ${result.restored?.length || 0} keys. Restart the app if some settings do not apply fully.`
+      ))
+    } catch (e: any) {
+      setMsg(e?.message || tr('恢复失败', 'Restore failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="glass wb-provider-card wb-appearance-card">
+      <div className="wb-card-head">
+        <div>
+          <strong>{tr('配置备份', 'Config backup')}</strong>
+          <span>{tr('创建加密形态的本地备份，并可从备份恢复。', 'Create local backups (keys stay encrypted) and restore them.')}</span>
+        </div>
+        <button className="ah-btn sm" disabled={busy} onClick={() => void create()}>{tr('立即备份', 'Backup now')}</button>
+      </div>
+      {msg && <div className="wb-git-notice" style={{ margin: '8px 0' }}>{msg}</div>}
+      {items.length === 0 ? (
+        <div className="wb-muted-box">{tr('暂无备份文件。', 'No backups yet.')}</div>
+      ) : (
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+          {items.map(item => (
+            <li key={item.filename} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border-1)' }}>
+              <span style={{ fontSize: 12 }}>
+                <code>{item.filename}</code>
+                <small style={{ marginLeft: 8, opacity: 0.7 }}>{item.createdAt}</small>
+              </span>
+              <button className="ah-btn sm" disabled={busy} onClick={() => void restore(item.filename)}>{tr('恢复', 'Restore')}</button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

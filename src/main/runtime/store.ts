@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events"
 import { store } from "../store"
 import { applyPluginActivityParsers } from "./plugin-contributions"
 import { toDispatcherMode } from "./schedules"
+import { deriveThreadTitleFromPrompt, maybeAutoTitle } from "./thread-auto-title"
 import type {
   AgentRunNode,
   ContextProjection,
@@ -31,11 +32,6 @@ interface PersistedRuntime {
 
 function emptyState(): PersistedRuntime {
   return { version: 1, threads: [], turns: [], runs: [], events: [], hiddenTaskTurnIds: [], activeThreadId: null, nextSeqByThread: {} }
-}
-
-function shortTitle(prompt: string): string {
-  const clean = prompt.replace(/\s+/g, " ").trim()
-  return clean ? clean.slice(0, 42) : "New session"
 }
 
 function id(prefix: string): string {
@@ -169,7 +165,12 @@ export class WorkbenchRuntimeStore extends EventEmitter {
   createTurn(input: { threadId?: string | null; workspaceId?: string | null; prompt: string; mode: DispatchPreset; targetAgent?: string | null; modelSelection?: ModelSelection; thinking?: any; attachments?: WorkbenchAttachment[]; contextProjection?: ContextProjection; customSchedule?: SchedulePreview }): { thread: WorkbenchThread; turn: WorkbenchTurn } {
     const state = this.load()
     let thread = input.threadId ? this.requireThread(input.threadId) : undefined
-    if (!thread) thread = this.createThread({ workspaceId: input.workspaceId ?? null, title: shortTitle(input.prompt) })
+    if (!thread) {
+      thread = this.createThread({
+        workspaceId: input.workspaceId ?? null,
+        title: deriveThreadTitleFromPrompt(input.prompt)
+      })
+    }
     const now = Date.now()
     const turn: WorkbenchTurn = {
       id: id("turn"),
@@ -189,7 +190,8 @@ export class WorkbenchRuntimeStore extends EventEmitter {
     state.turns.push(turn)
     thread.updatedAt = now
     thread.lastTurnStatus = "running"
-    if (thread.title === "New session") thread.title = shortTitle(input.prompt)
+    const autoTitle = maybeAutoTitle(thread.title, input.prompt)
+    if (autoTitle) thread.title = autoTitle
     state.activeThreadId = thread.id
     this.appendEvent(thread.id, turn.id, "turn:created", undefined, { prompt: input.prompt, mode: input.mode, attachments: turn.attachments ?? [], contextProjection: turn.contextProjection, customSchedule: turn.customSchedule, modelSelection: turn.modelSelection, thinking: turn.thinking }, false)
     this.save()

@@ -355,7 +355,9 @@ const api = {
   diagnostics: {
     run: () => typedInvoke('diagnostics:run'),
     logPath: () => typedInvoke('logs:path'),
-    recentLogs: (limit?: number) => typedInvoke('logs:recent', limit)
+    recentLogs: (limit?: number) => typedInvoke('logs:recent', limit),
+    providerDoctor: () => typedInvoke('diagnostics:providerDoctor'),
+    supportBundle: () => typedInvoke('diagnostics:supportBundle')
   },
   // --- Backup ---
   backup: {
@@ -363,6 +365,19 @@ const api = {
     list: () => typedInvoke('backup:list'),
     restore: (filename: string) => typedInvoke('backup:restore', filename),
     delete: (filename: string) => typedInvoke('backup:delete', filename)
+  },
+  // Wave4 P2: encrypted config sync packages + WebDAV
+  sync: {
+    export: (passphrase: string) => typedInvoke('sync:export', passphrase),
+    list: () => typedInvoke('sync:list'),
+    preview: (filename: string) => typedInvoke('sync:preview', filename),
+    import: (filename: string, passphrase: string) => typedInvoke('sync:import', filename, passphrase),
+    delete: (filename: string) => typedInvoke('sync:delete', filename),
+    webdavGetConfig: () => typedInvoke('sync:webdavGetConfig'),
+    webdavSetConfig: (config: IpcArgs<'sync:webdavSetConfig'>[0]) => typedInvoke('sync:webdavSetConfig', config),
+    webdavTest: (config?: IpcArgs<'sync:webdavTest'>[0]) => typedInvoke('sync:webdavTest', config),
+    webdavPush: (passphrase: string, config?: IpcArgs<'sync:webdavPush'>[1]) => typedInvoke('sync:webdavPush', passphrase, config),
+    webdavPull: (passphrase: string, config?: IpcArgs<'sync:webdavPull'>[1]) => typedInvoke('sync:webdavPull', passphrase, config)
   },
   // --- Conversation Export ---
   conversation: {
@@ -437,7 +452,13 @@ const api = {
     validate: (manifest: IpcArgs<'plugins:validate'>[0]) => typedInvoke('plugins:validate', manifest),
     contributions: (plugins: IpcArgs<'plugins:contributions'>[0]) => typedInvoke('plugins:contributions', plugins),
     repositories: () => typedInvoke('plugins:repositories'),
-    importRepository: (input: IpcArgs<'plugins:importRepository'>[0]) => typedInvoke('plugins:importRepository', input)
+    importRepository: (input: IpcArgs<'plugins:importRepository'>[0]) => typedInvoke('plugins:importRepository', input),
+    marketplaceList: (registryUrl?: string) => typedInvoke('plugins:marketplaceList', registryUrl),
+    marketplaceInstall: (pluginId: string, options?: { requireSignature?: boolean; registryUrl?: string }) =>
+      typedInvoke('plugins:marketplaceInstall', pluginId, options),
+    trustList: () => typedInvoke('plugins:trustList'),
+    trustAdd: (publisher: IpcArgs<'plugins:trustAdd'>[0]) => typedInvoke('plugins:trustAdd', publisher),
+    trustRemove: (id: string) => typedInvoke('plugins:trustRemove', id)
   },
   // --- Project Map ---
   projectMap: {
@@ -578,7 +599,9 @@ const api = {
       project?: string
     ) => typedInvoke('firefly:getRoleContext', state, role, prompt, memory, project),
     isComplete: (state: IpcArgs<'firefly:isComplete'>[0]) => typedInvoke('firefly:isComplete', state),
-    getOutput: (state: IpcArgs<'firefly:getOutput'>[0]) => typedInvoke('firefly:getOutput', state)
+    getOutput: (state: IpcArgs<'firefly:getOutput'>[0]) => typedInvoke('firefly:getOutput', state),
+    listTemplates: () => typedInvoke('firefly:listTemplates'),
+    getTemplate: (id: string) => typedInvoke('firefly:getTemplate', id)
   },
   // --- /AgentHub skills + native agentic ---
   platform: process.platform

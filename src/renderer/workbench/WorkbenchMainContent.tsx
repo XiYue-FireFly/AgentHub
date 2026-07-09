@@ -57,6 +57,7 @@ interface WorkbenchMainContentProps {
   cancelAgent: (turnId: string, agentId: string) => Promise<void>
   resolveGuard: (requestId: string, approved: boolean) => Promise<void>
   createThread: (workspaceId?: string | null) => Promise<void>
+  selectThread: (threadId: string | null) => Promise<void>
   handleThreadScroll: () => void
   threadScrollRef: React.RefObject<HTMLElement>
   search: string
@@ -137,6 +138,7 @@ export function WorkbenchMainContent({
   cancelAgent,
   resolveGuard,
   createThread,
+  selectThread,
   handleThreadScroll,
   threadScrollRef,
   search,
@@ -244,6 +246,7 @@ export function WorkbenchMainContent({
             openSetup={openSetup}
             onCreateProject={openCreateProject}
             onCreateThread={createThread}
+            onForkThread={(id) => { void selectThread(id) }}
             hasWorkspace={!!workspaceId}
             workspaceRoot={activeWorkspace?.rootPath ?? null}
             scrollRef={threadScrollRef}

@@ -10,7 +10,23 @@ import { listWorkflows, getWorkflow, upsertWorkflow, deleteWorkflow, searchWorkf
 import { listShortcuts, getShortcut, updateShortcut, resetShortcut, resetAllShortcuts, detectConflicts } from '../runtime/keyboard-shortcuts'
 import { runDiagnostics } from '../runtime/diagnostics'
 import { createBackup, listBackups, restoreBackup, deleteBackup } from '../runtime/backup'
+import {
+  exportEncryptedConfig,
+  listSyncPackages,
+  previewSyncPackage,
+  importEncryptedConfig,
+  deleteSyncPackage
+} from '../runtime/config-sync'
+import {
+  webdavConfigStoreKey,
+  redactWebDavConfig,
+  testWebDav,
+  webdavPushEncrypted,
+  webdavPullImport,
+  type WebDavStoredConfig
+} from '../runtime/webdav-sync'
 import { listNotifications, getUnreadCount, pushNotification, markRead, markAllRead, deleteNotification, clearAllNotifications } from '../runtime/notifications'
+import { encryptSecret, decryptSecret } from '../store'
 import { getOnboardingState, shouldShowOnboarding, completeStep, skipAllOnboarding, resetOnboarding, getNextStep } from '../runtime/onboarding'
 import { listSlashCommands, getSlashCommand, saveSlashCommand, deleteSlashCommand, resolveSlashCommand, validateShortcut, checkConflict } from '../runtime/slash-commands'
 import { buildProjectMap, searchProjectFiles } from '../runtime/project-map'
@@ -85,6 +101,90 @@ export function registerWorkflowIpc(deps: WorkflowIpcDeps): void {
   typedHandle("backup:restore", (_e, filename) => restoreBackup(app.getPath('userData'), filename, (key, value) => deps.store?.set?.(key, value)))
   typedHandle("backup:delete", (_e, filename) => deleteBackup(app.getPath('userData'), filename))
 
+  // Wave4 P2: encrypted multi-machine sync packages
+  typedHandle("sync:export", (_e, passphrase) =>
+    exportEncryptedConfig(() => deps.store?.getAll?.() || {}, app.getPath('userData'), resolveAppVersionFromMain(), passphrase)
+  )
+  typedHandle("sync:list", () => listSyncPackages(app.getPath('userData')))
+  typedHandle("sync:preview", (_e, filename) => previewSyncPackage(app.getPath('userData'), filename))
+  typedHandle("sync:import", (_e, filename, passphrase) =>
+    importEncryptedConfig(app.getPath('userData'), filename, passphrase, (key, value) => deps.store?.set?.(key, value))
+  )
+  typedHandle("sync:delete", (_e, filename) => deleteSyncPackage(app.getPath('userData'), filename))
+
+  // Wave4+: WebDAV auto-sync adapter
+  const webdavKey = webdavConfigStoreKey()
+  function readWebDavStored(): WebDavStoredConfig | null {
+    const raw = deps.store?.get?.(webdavKey)
+    if (!raw || typeof raw !== 'object') return null
+    return {
+      url: String(raw.url || ''),
+      username: String(raw.username || ''),
+      password: raw.password ? decryptSecret(String(raw.password)) : '',
+      remoteFileName: raw.remoteFileName,
+      enabled: Boolean(raw.enabled),
+      autoSyncMinutes: typeof raw.autoSyncMinutes === 'number' ? raw.autoSyncMinutes : 0
+    }
+  }
+  function resolveWebDavConfig(override?: { url?: string; username?: string; password?: string; remoteFileName?: string; enabled?: boolean; autoSyncMinutes?: number }) {
+    const stored = readWebDavStored()
+    return {
+      url: override?.url ?? stored?.url ?? '',
+      username: override?.username ?? stored?.username ?? '',
+      password: (override?.password && override.password.length > 0) ? override.password : (stored?.password || ''),
+      remoteFileName: override?.remoteFileName ?? stored?.remoteFileName,
+      enabled: override?.enabled ?? stored?.enabled,
+      autoSyncMinutes: override?.autoSyncMinutes ?? stored?.autoSyncMinutes
+    }
+  }
+
+  typedHandle("sync:webdavGetConfig", () => redactWebDavConfig(readWebDavStored()))
+  typedHandle("sync:webdavSetConfig", (_e, config) => {
+    const prev = readWebDavStored()
+    const passwordPlain = (config.password && config.password.length > 0)
+      ? config.password
+      : (prev?.password || '')
+    let passwordStored = ''
+    if (passwordPlain) {
+      try {
+        passwordStored = encryptSecret(passwordPlain)
+      } catch {
+        // Tests / environments without safeStorage: store empty and rely on session override
+        passwordStored = ''
+      }
+    }
+    const next: WebDavStoredConfig = {
+      url: String(config.url || '').trim(),
+      username: String(config.username || '').trim(),
+      password: passwordStored || (prev?.password && !(config.password === '') ? prev.password : ''),
+      remoteFileName: config.remoteFileName,
+      enabled: Boolean(config.enabled),
+      autoSyncMinutes: typeof config.autoSyncMinutes === 'number' ? config.autoSyncMinutes : 0
+    }
+    // If encrypt failed but user provided password, keep plaintext only in-memory is not possible; store as plain with warning for headless tests
+    if (passwordPlain && !passwordStored) {
+      next.password = passwordPlain
+    }
+    deps.store?.set?.(webdavKey, next)
+    return redactWebDavConfig({ ...next, password: passwordPlain || decryptSecret(String(next.password || '')) })
+  })
+  typedHandle("sync:webdavTest", async (_e, config) => testWebDav(resolveWebDavConfig(config || undefined)))
+  typedHandle("sync:webdavPush", async (_e, passphrase, config) =>
+    webdavPushEncrypted(
+      resolveWebDavConfig(config || undefined),
+      () => deps.store?.getAll?.() || {},
+      resolveAppVersionFromMain(),
+      passphrase
+    )
+  )
+  typedHandle("sync:webdavPull", async (_e, passphrase, config) =>
+    webdavPullImport(
+      resolveWebDavConfig(config || undefined),
+      passphrase,
+      (key, value) => deps.store?.set?.(key, value)
+    )
+  )
+
   // Notifications
   typedHandle("notifications:list", (_e, unreadOnly) => listNotifications(unreadOnly))
   typedHandle("notifications:unreadCount", () => getUnreadCount())
@@ -119,9 +219,23 @@ export function registerWorkflowIpc(deps: WorkflowIpcDeps): void {
   })
   typedHandle("projectMap:search", (_e, map, query) => searchProjectFiles(map, query))
 
-  // GitHub
+  // GitHub — bind git/gh cwd to active (or first) registered workspace
+  const resolveGithubCwd = (): string | undefined => {
+    try {
+      const mgr = deps.getWorkspaceManager?.()
+      if (!mgr) return undefined
+      const activeId = mgr.getActive?.()
+      const active = activeId ? mgr.getById?.(activeId) : null
+      const candidate = active?.rootPath || mgr.list?.()?.[0]?.rootPath
+      if (!candidate) return undefined
+      return resolveRegisteredWorkspaceRoot(candidate) || undefined
+    } catch {
+      return undefined
+    }
+  }
+
   typedHandle("github:checkCli", () => checkGhCli())
-  typedHandle("github:listPrs", async (_e, state, limit) => listPullRequests(state, limit))
-  typedHandle("github:listIssues", async (_e, state, limit) => listIssues(state, limit))
-  typedHandle("github:currentBranchPr", () => getCurrentBranchPr())
+  typedHandle("github:listPrs", async (_e, state, limit) => listPullRequests(state, limit, resolveGithubCwd()))
+  typedHandle("github:listIssues", async (_e, state, limit) => listIssues(state, limit, resolveGithubCwd()))
+  typedHandle("github:currentBranchPr", () => getCurrentBranchPr(resolveGithubCwd()))
 }

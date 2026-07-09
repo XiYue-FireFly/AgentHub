@@ -65,8 +65,14 @@ export function FileTreePanel({ workspaceRoot, workspaceId, onClose, onFileSelec
   const root = workspaceRoot?.trim() || ''
   const rootKey = root ? pathKey(root) : ''
 
+  // F-N6: generation token so stale list results after workspace switch are ignored
+  const loadGenRef = useRef(0)
+  const rootRef = useRef(root)
+  rootRef.current = root
+
   // Reset on workspace change
   useEffect(() => {
+    loadGenRef.current++
     setDirectories({})
     setExpanded(new Set())
     setSelectedPath(null)
@@ -92,6 +98,8 @@ export function FileTreePanel({ workspaceRoot, workspaceId, onClose, onFileSelec
 
   const loadDirectory = useCallback(async (path: string) => {
     if (!root) return
+    const gen = loadGenRef.current
+    const rootAtStart = root
     const key = path === root ? '' : path
     setDirectories(prev => ({
       ...prev,
@@ -104,6 +112,7 @@ export function FileTreePanel({ workspaceRoot, workspaceId, onClose, onFileSelec
     }))
     try {
       const result = await window.electronAPI.workspaceFiles.list(key || root)
+      if (loadGenRef.current !== gen || rootRef.current !== rootAtStart) return
       setDirectories(prev => ({
         ...prev,
         [pathKey(path)]: {
@@ -114,6 +123,7 @@ export function FileTreePanel({ workspaceRoot, workspaceId, onClose, onFileSelec
         }
       }))
     } catch (err: any) {
+      if (loadGenRef.current !== gen || rootRef.current !== rootAtStart) return
       setDirectories(prev => ({
         ...prev,
         [pathKey(path)]: {

@@ -1354,6 +1354,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           cancelAgent={cancelAgent}
           resolveGuard={resolveGuard}
           createThread={createThread}
+          selectThread={selectThread}
           handleThreadScroll={handleThreadScroll}
           threadScrollRef={threadScrollRef}
           search={search}

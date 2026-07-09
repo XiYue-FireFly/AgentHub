@@ -52,6 +52,11 @@ export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose 
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [sddPlanItemId, setSddPlanItemId] = useState('')
+  const [githubBranch, setGithubBranch] = useState('')
+  const [githubPr, setGithubPr] = useState<{ number: number; title: string; state: string; url: string } | null>(null)
+  const [githubPrs, setGithubPrs] = useState<Array<{ number: number; title: string; state: string; url: string }>>([])
+  const [githubError, setGithubError] = useState<string | null>(null)
+  const [githubLoading, setGithubLoading] = useState(false)
   const mountedRef = useRef(true)
   const activeSddDraft = useSddDraftStore(state => state.activeDraft)
   const activeSddTrace = useSddDraftStore(state => state.trace)
@@ -65,6 +70,10 @@ export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose 
     ? selectedCommitDiff?.diff || ''
     : selectedWorkingDiff
 
+  const refreshGenRef = useRef(0)
+  const workspaceIdRef = useRef(workspaceId)
+  workspaceIdRef.current = workspaceId
+
   const refresh = useCallback(async () => {
     if (!workspaceId) {
       setStatus(null)
@@ -75,11 +84,15 @@ export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose 
       setCheckedKeys([])
       return
     }
+    // G2-MH6: generation token so stale workspace responses are ignored
+    const reqId = ++refreshGenRef.current
+    const ws = workspaceId
+    const isStale = () => !mountedRef.current || refreshGenRef.current !== reqId || workspaceIdRef.current !== ws
     setLoading(true)
     try {
       setError(null)
       const nextStatus = await window.electronAPI.git.status(workspaceId)
-      if (!mountedRef.current) return
+      if (isStale()) return
       setStatus(nextStatus)
       if (!nextStatus.isRepo) {
         setBranches(null)
@@ -93,7 +106,7 @@ export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose 
         window.electronAPI.git.branches(workspaceId).catch(() => null),
         window.electronAPI.git.log(workspaceId, 80).catch(() => null)
       ])
-      if (!mountedRef.current) return
+      if (isStale()) return
       setBranches(nextBranches)
       setLog(nextLog)
       setDiffs([])
@@ -109,17 +122,58 @@ export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose 
       })
       setSelectedPath(current => current && nextPaths.includes(current) ? current : nextPaths[0] || null)
     } catch (e: any) {
-      if (mountedRef.current) setError(e?.message || tr('读取 Git 状态失败。', 'Failed to read Git status.'))
+      if (!isStale()) setError(e?.message || tr('读取 Git 状态失败。', 'Failed to read Git status.'))
     } finally {
-      if (mountedRef.current) setLoading(false)
+      if (!isStale()) setLoading(false)
     }
   }, [workspaceId])
 
   useEffect(() => {
     mountedRef.current = true
     refresh().catch(() => {})
-    return () => { mountedRef.current = false }
+    return () => {
+      mountedRef.current = false
+      refreshGenRef.current++
+    }
   }, [refresh])
+
+  // F-W2: load GitHub PR context for active workspace (uses main github IPC + registered cwd)
+  const refreshGithub = useCallback(async () => {
+    if (!workspaceId) {
+      setGithubBranch('')
+      setGithubPr(null)
+      setGithubPrs([])
+      setGithubError(null)
+      return
+    }
+    setGithubLoading(true)
+    setGithubError(null)
+    try {
+      const [branchPr, prs] = await Promise.all([
+        window.electronAPI.github.currentBranchPr(),
+        window.electronAPI.github.listPrs('open', 8)
+      ])
+      if (!mountedRef.current) return
+      setGithubBranch(branchPr?.branch || '')
+      setGithubPr(branchPr?.pr
+        ? { number: branchPr.pr.number, title: branchPr.pr.title, state: branchPr.pr.state, url: branchPr.pr.url }
+        : null)
+      setGithubPrs((prs || []).map((p: any) => ({
+        number: p.number,
+        title: p.title,
+        state: p.state,
+        url: p.url
+      })))
+    } catch (e: any) {
+      if (mountedRef.current) setGithubError(e?.message || tr('无法读取 GitHub 状态', 'Failed to load GitHub status'))
+    } finally {
+      if (mountedRef.current) setGithubLoading(false)
+    }
+  }, [workspaceId])
+
+  useEffect(() => {
+    void refreshGithub()
+  }, [refreshGithub])
 
   useEffect(() => {
     if (!workspaceId || !selectedCommitSha) {
@@ -302,10 +356,52 @@ export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose 
           <button onClick={() => runAction('pull', () => window.electronAPI.git.pull(workspaceId))} disabled={!status?.isRepo || !!actionLoading}>{tr('Pull', 'Pull')}</button>
           <button onClick={async () => { const ok = await styledConfirm({ message: tr('确认推送到远程仓库？', 'Push to remote?') }); if (ok) void runAction('push', () => window.electronAPI.git.push(workspaceId)) }} disabled={!status?.isRepo || !!actionLoading}>{tr('Push', 'Push')}</button>
           <button onClick={async () => { const ok = await styledConfirm({ message: tr('确认同步（pull + push）到远程仓库？', 'Sync (pull + push) to remote?') }); if (ok) void runAction('sync', () => window.electronAPI.git.sync(workspaceId)) }} disabled={!status?.isRepo || !!actionLoading}>{tr('同步', 'Sync')}</button>
-          <button onClick={refresh} disabled={loading}><Icon d={IC.refresh} size={14} /></button>
-          <button onClick={onClose}><Icon d={IC.x} size={14} /></button>
+          <button onClick={refresh} disabled={loading} title={tr('刷新', 'Refresh')} aria-label={tr('刷新 Git 状态', 'Refresh Git status')}><Icon d={IC.refresh} size={14} /></button>
+          <button onClick={onClose} title={tr('关闭', 'Close')} aria-label={tr('关闭 Git 面板', 'Close Git panel')}><Icon d={IC.x} size={14} /></button>
         </div>
       </div>
+
+      {/* F-W2: GitHub PR strip */}
+      {workspaceId && (
+        <div className="wb-git-github-strip" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-1)', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <strong style={{ fontSize: 12 }}>{tr('GitHub', 'GitHub')}</strong>
+          {githubLoading && <span className="wb-muted">{tr('加载中…', 'Loading…')}</span>}
+          {githubError && <span className="wb-send-error" style={{ fontSize: 12 }}>{githubError}</span>}
+          {!githubLoading && !githubError && (
+            <>
+              <span style={{ fontSize: 11, opacity: 0.65 }}>{tr('基于活动工作区 / gh cwd', 'Uses active workspace / gh cwd')}</span>
+              <span style={{ fontSize: 12 }}>{tr('分支', 'Branch')}: <code>{githubBranch || status?.branch || '—'}</code></span>
+              {githubPr ? (
+                <a href={githubPr.url} onClick={(e) => { e.preventDefault(); void window.electronAPI.app.openExternal(githubPr.url) }} style={{ fontSize: 12 }}>
+                  #{githubPr.number} {githubPr.title} ({githubPr.state})
+                </a>
+              ) : (
+                <span style={{ fontSize: 12, opacity: 0.7 }}>{tr('当前分支无关联 PR', 'No PR for current branch')}</span>
+              )}
+              {githubPrs.length > 0 && (
+                <span style={{ fontSize: 12, opacity: 0.8 }}>
+                  {tr(`打开的 PR：${githubPrs.length}`, `Open PRs: ${githubPrs.length}`)}
+                  {githubPrs.slice(0, 3).map(p => (
+                    <button
+                      key={p.number}
+                      type="button"
+                      className="ah-btn sm"
+                      style={{ marginLeft: 4 }}
+                      title={p.title}
+                      onClick={() => void window.electronAPI.app.openExternal(p.url)}
+                    >
+                      #{p.number}
+                    </button>
+                  ))}
+                </span>
+              )}
+              <button type="button" className="ah-btn sm" onClick={() => void refreshGithub()} disabled={githubLoading}>
+                <Icon d={IC.refresh} size={12} />
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {!workspaceId && <div className="wb-muted-box">{tr('Git 需要先选择工作目录。', 'Choose a working folder to use Git.')}</div>}
       {workspaceId && status && !status.isRepo && <div className="wb-muted-box">{status.error || tr('没有检测到 Git 仓库。', 'No Git repository detected.')}</div>}

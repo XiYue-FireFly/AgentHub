@@ -44,6 +44,13 @@ describe('sanitizeHtml', () => {
     expect(sanitizeHtml('<div style="x:expression(alert(1))">x</div>')).toBe('<div style="x:">x</div>')
   })
 
+  it('neutralizes deeply nested url/expression in style attributes', () => {
+    const html = '<div style="background:url(a(b(c(javascript:alert(1)))))">x</div>'
+    const out = sanitizeHtml(html)
+    expect(out.toLowerCase()).not.toContain('javascript')
+    expect(out.toLowerCase()).not.toContain('expression(')
+  })
+
   it('preserves safe inline styles', () => {
     expect(sanitizeHtml('<div style="color:red;font-size:12px">x</div>')).toBe('<div style="color:red;font-size:12px">x</div>')
   })

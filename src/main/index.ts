@@ -1141,7 +1141,8 @@ app.on("activate", () => {
 // to will-quit which natively supports event.preventDefault() + manual exit.
 app.on("before-quit", () => {
   (app as any).isQuitting = true
-  store.flush()
+  // Fire-and-forget flag only; durable flush happens in will-quit (G2-MH8)
+  void store.flush()
 })
 
 let willQuitCleanupStarted = false
@@ -1152,6 +1153,8 @@ app.on("will-quit", (event) => {
 
   const STOP_TIMEOUT_MS = 5000
   const cleanup = async (): Promise<void> => {
+    // G2-MH8: await config flush so in-flight set() is not lost on exit
+    try { await store.flush() } catch { /* non-critical */ }
     // Kill any still-running terminal children so we don't orphan shell processes.
     try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
     // 清理所有 PTY 终端会话

@@ -3,6 +3,12 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 
 describe("ThreadView agent output status", () => {
+  it("wires ForkButton onFork from onForkThread prop (F-N4)", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+    expect(source).toContain("onForkThread")
+    expect(source).toContain("onFork={onForkThread}")
+  })
+
   it("uses the latest agent lifecycle event instead of the first done event", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 

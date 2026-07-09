@@ -12,6 +12,9 @@
     "node": ">=24",
     "npm": ">=11"
   },
+  "bin": {
+    "agenthub-cli": "scripts/agenthub-cli.mjs"
+  },
   "scripts": {
     "dev": "electron-vite dev --watch",
     "build": "electron-vite build",
@@ -21,6 +24,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "lint": "eslint .",
+    "cli": "node scripts/agenthub-cli.mjs",
     "build:mac": "npm run build && electron-builder --mac --publish never",
     "build:linux": "npm run build && electron-builder --linux --publish never",
     "build:all": "npm run build && electron-builder -mw --publish never",
@@ -240,9 +244,9 @@
     "afterPack": null
   },
   "homepage": "https://agenthub.dev",
-  "bugs": "https://github.com/XiYue-FireFly/AgengHub/issues",
+  "bugs": "https://github.com/XiYue-FireFly/AgentHub/issues",
   "repository": {
     "type": "git",
-    "url": "https://github.com/XiYue-FireFly/AgengHub.git"
+    "url": "https://github.com/XiYue-FireFly/AgentHub.git"
   }
 }

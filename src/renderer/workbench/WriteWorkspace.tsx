@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import type { AgentUIStatus } from '../glass/meta'
@@ -49,32 +49,83 @@ export function WriteWorkspace({
   void hasWorkspace
   void onCreateProject
 
+  // F-N7: avoid StrictMode remount wiping drafts with empty initial state
+  const dirtyRef = useRef(false)
+  const hydratedKeyRef = useRef<string | null>(null)
+  const titleRef = useRef(title)
+  const contentRef = useRef(content)
+  titleRef.current = title
+  contentRef.current = content
+
   useEffect(() => {
+    dirtyRef.current = false
+    hydratedKeyRef.current = null
     try {
       const raw = localStorage.getItem(storageKey)
       if (raw) {
         const saved = JSON.parse(raw)
-        setTitle(saved.title || tr('未命名文稿', 'Untitled draft'))
-        setContent(saved.content || '')
+        const nextTitle = saved.title || tr('未命名文稿', 'Untitled draft')
+        const nextContent = saved.content || ''
+        setTitle(nextTitle)
+        setContent(nextContent)
+        titleRef.current = nextTitle
+        contentRef.current = nextContent
       } else {
-        setTitle(tr('未命名文稿', 'Untitled draft'))
+        const nextTitle = tr('未命名文稿', 'Untitled draft')
+        setTitle(nextTitle)
         setContent('')
+        titleRef.current = nextTitle
+        contentRef.current = ''
       }
     } catch {
-      setTitle(tr('未命名文稿', 'Untitled draft'))
+      const nextTitle = tr('未命名文稿', 'Untitled draft')
+      setTitle(nextTitle)
       setContent('')
+      titleRef.current = nextTitle
+      contentRef.current = ''
+    } finally {
+      hydratedKeyRef.current = storageKey
     }
   }, [storageKey])
 
+  const updateTitle = (value: string) => {
+    dirtyRef.current = true
+    setTitle(value)
+  }
+  const updateContent = (value: string) => {
+    dirtyRef.current = true
+    setContent(value)
+  }
+
   useEffect(() => {
     let innerTimer: number | undefined
+    const keyAtStart = storageKey
     const timer = window.setTimeout(() => {
-      try { localStorage.setItem(storageKey, JSON.stringify({ title, content, updatedAt: Date.now() })) } catch { /* noop */ }
+      if (hydratedKeyRef.current !== keyAtStart || !dirtyRef.current) return
+      try {
+        localStorage.setItem(keyAtStart, JSON.stringify({
+          title: titleRef.current,
+          content: contentRef.current,
+          updatedAt: Date.now()
+        }))
+      } catch { /* noop */ }
       setNotice(tr('已自动保存本地草稿', 'Local draft saved'))
       // P2-9: Track inner timer so it's cleaned up if the effect re-runs.
       innerTimer = window.setTimeout(() => setNotice(null), 1400)
     }, 450)
-    return () => { window.clearTimeout(timer); if (innerTimer !== undefined) window.clearTimeout(innerTimer) }
+    return () => {
+      window.clearTimeout(timer)
+      if (innerTimer !== undefined) window.clearTimeout(innerTimer)
+      // Only flush user edits after hydrate — never wipe with empty mount state
+      if (hydratedKeyRef.current !== keyAtStart || !dirtyRef.current) return
+      try {
+        localStorage.setItem(keyAtStart, JSON.stringify({
+          title: titleRef.current,
+          content: contentRef.current,
+          updatedAt: Date.now()
+        }))
+      } catch { /* noop */ }
+    }
   }, [content, storageKey, title])
 
   const stats = useMemo(() => documentStats(content), [content])
@@ -111,7 +162,7 @@ export function WriteWorkspace({
         <div className="wb-write-title-block">
           <input
             value={title}
-            onChange={event => setTitle(event.target.value)}
+            onChange={event => updateTitle(event.target.value)}
             aria-label={tr('文稿标题', 'Draft title')}
           />
           <span title={workspace?.rootPath}>
@@ -142,8 +193,8 @@ export function WriteWorkspace({
             <p>{tr('在左侧写草稿，右侧选择 Agent 做提纲、润色、总结或续写。', 'Write in the editor, then ask an agent to outline, polish, summarize, or continue.')}</p>
           </div>
           <button onClick={() => {
-            setTitle(tr('新文稿', 'New draft'))
-            setContent('# ' + tr('新文稿', 'New draft') + '\n\n')
+            updateTitle(tr('新文稿', 'New draft'))
+            updateContent('# ' + tr('新文稿', 'New draft') + '\n\n')
           }}>
             <Icon d={IC.plus} size={14} />
             {tr('新建草稿', 'New draft')}
@@ -157,7 +208,7 @@ export function WriteWorkspace({
             <textarea
               className="wb-write-editor"
               value={content}
-              onChange={event => setContent(event.target.value)}
+              onChange={event => updateContent(event.target.value)}
               placeholder={tr('写下你想处理的内容', 'Write what you want to handle')}
               spellCheck
             />

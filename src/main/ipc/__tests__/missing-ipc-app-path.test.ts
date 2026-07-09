@@ -199,8 +199,15 @@ describe('missing IPC app path workspace trust', () => {
       .resolves.toEqual({ ok: true })
     await expect(electronMock.handlers.get('app:openExternal')?.({}, 'file:///secret.txt'))
       .resolves.toEqual({ ok: false, error: 'Invalid URL scheme' })
-    expect(electronMock.openExternal).toHaveBeenCalledTimes(1)
+    await expect(electronMock.handlers.get('app:openExternal')?.({}, 'javascript:alert(1)'))
+      .resolves.toEqual({ ok: false, error: 'Invalid URL scheme' })
+    await expect(electronMock.handlers.get('app:openExternal')?.({}, 'not-a-url'))
+      .resolves.toEqual({ ok: false, error: 'Invalid URL scheme' })
+    await expect(electronMock.handlers.get('app:openExternal')?.({}, 'mailto:user@example.com'))
+      .resolves.toEqual({ ok: true })
+    expect(electronMock.openExternal).toHaveBeenCalledTimes(2)
     expect(electronMock.openExternal).toHaveBeenCalledWith('https://agenthub.dev')
+    expect(electronMock.openExternal).toHaveBeenCalledWith('mailto:user@example.com')
   })
 
   it('returns null for pickFolder and pickFiles when no window is available', async () => {

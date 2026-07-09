@@ -1,8 +1,8 @@
 /**
  * MCP System Tools - 内建系统级工具
  *
- * 提供全盘文件系统读写、Shell 执行、系统信息查询能力
- * 不受工作区限制，通过审批门控保证安全
+ * 提供工作区（ctx.cwd）内的文件系统读写、Shell 执行、系统信息查询。
+ * 所有路径经 isPathInsideBase 约束在 cwd 内；写/执行另受审批门控。
  */
 
 import { spawn } from 'node:child_process'
@@ -16,11 +16,13 @@ import {
   unlinkSync,
   renameSync,
   copyFileSync,
-  rmdirSync
+  rmdirSync,
+  realpathSync
 } from 'node:fs'
-import { resolve, relative, isAbsolute, dirname, basename, join } from 'node:path'
+import { resolve, isAbsolute, dirname, basename, join } from 'node:path'
 import { homedir, platform, arch, release, totalmem, freemem, cpus, hostname } from 'node:os'
 import { decodeProcessChunk } from '../runtime/process-decoder'
+import { isPathInsideBase } from '../ipc/path-guards'
 
 // ============================================================
 // Types
@@ -133,9 +135,9 @@ export const SYSTEM_TOOL_SCHEMAS = [
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The shell command to execute.' },
-        cwd: { type: 'string', description: 'Working directory for the command.' },
-        timeout: { type: 'number', description: 'Timeout in milliseconds (default: 120000).' },
-        env: { type: 'object', description: 'Additional environment variables.' }
+        cwd: { type: 'string', description: 'Working directory for the command (must stay inside tool cwd).' },
+        timeout: { type: 'number', description: 'Timeout in milliseconds (default: 120000).' }
+        // env intentionally omitted: caller env is ignored for security (G2-MH3)
       },
       required: ['command']
     }
@@ -156,9 +158,42 @@ export const SYSTEM_TOOL_SCHEMAS = [
 // Tool Implementations
 // ============================================================
 
-function resolvePath(pathStr: string, cwd: string): string {
-  if (isAbsolute(pathStr)) return resolve(pathStr)
-  return resolve(cwd, pathStr)
+/**
+ * Resolve a path and require it to stay inside cwd (workspace scope).
+ * Uses realpath on existing ancestors to block symlink escapes (G2-MC2).
+ */
+function resolvePath(pathStr: string, cwd: string): string | null {
+  if (!pathStr || typeof pathStr !== 'string' || !cwd) return null
+  const base = resolve(cwd)
+  const resolved = isAbsolute(pathStr) ? resolve(pathStr) : resolve(base, pathStr)
+  if (!isPathInsideBase(resolved, base)) return null
+
+  let rootReal: string
+  try {
+    rootReal = realpathSync(base)
+  } catch {
+    // cwd not present yet: logical isPathInsideBase already passed
+    return resolved
+  }
+
+  // Walk up to first existing ancestor and verify realpath stays under rootReal
+  let cur = resolved
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = realpathSync(cur)
+      if (!isPathInsideBase(real, rootReal)) return null
+      return resolved
+    } catch {
+      const parent = dirname(cur)
+      if (parent === cur) return null
+      cur = parent
+    }
+  }
+  return null
+}
+
+function pathEscapeError(label = 'path'): SystemToolResult {
+  return { ok: false, output: '', error: `${label} escapes the workspace cwd` }
 }
 
 function safeReadFile(filePath: string, offset?: number, limit?: number): SystemToolResult {
@@ -327,17 +362,17 @@ function safeCopy(source: string, destination: string): SystemToolResult {
 async function safeExec(
   command: string,
   cwd: string,
-  timeout = EXEC_TIMEOUT_MS,
-  env?: Record<string, string>
+  timeout = EXEC_TIMEOUT_MS
 ): Promise<SystemToolResult> {
   return new Promise((resolve) => {
     const isWin = platform() === 'win32'
     const shell = isWin ? 'cmd.exe' : '/bin/sh'
     const args = isWin ? ['/c', command] : ['-c', command]
 
+    // G2-MH3: never merge caller-controlled env (PATH/BASH_ENV/etc. injection)
     const child = spawn(shell, args, {
       cwd,
-      env: { ...process.env, ...env },
+      env: { ...process.env },
       stdio: ['pipe', 'pipe', 'pipe']
     })
 
@@ -431,6 +466,7 @@ export async function executeSystemTool(
   switch (toolName) {
     case 'fs_read': {
       const filePath = resolvePath(args.path, cwd)
+      if (!filePath) return pathEscapeError('path')
       return safeReadFile(filePath, args.offset, args.limit)
     }
 
@@ -439,12 +475,17 @@ export async function executeSystemTool(
         return { ok: false, output: '', error: 'Write operation not allowed in read-only mode' }
       }
       const filePath = resolvePath(args.path, cwd)
+      if (!filePath) return pathEscapeError('path')
       return safeWriteFile(filePath, args.content)
     }
 
     case 'fs_list': {
-      const dirPath = args.path ? resolvePath(args.path, cwd) : cwd
-      return safeListDir(dirPath, args.recursive)
+      if (args.path) {
+        const dirPath = resolvePath(args.path, cwd)
+        if (!dirPath) return pathEscapeError('path')
+        return safeListDir(dirPath, args.recursive)
+      }
+      return safeListDir(cwd, args.recursive)
     }
 
     case 'fs_delete': {
@@ -452,6 +493,7 @@ export async function executeSystemTool(
         return { ok: false, output: '', error: 'Delete operation not allowed in read-only mode' }
       }
       const targetPath = resolvePath(args.path, cwd)
+      if (!targetPath) return pathEscapeError('path')
       return safeDelete(targetPath)
     }
 
@@ -460,7 +502,9 @@ export async function executeSystemTool(
         return { ok: false, output: '', error: 'Move operation not allowed in read-only mode' }
       }
       const source = resolvePath(args.source, cwd)
+      if (!source) return pathEscapeError('source')
       const destination = resolvePath(args.destination, cwd)
+      if (!destination) return pathEscapeError('destination')
       return safeMove(source, destination)
     }
 
@@ -469,7 +513,9 @@ export async function executeSystemTool(
         return { ok: false, output: '', error: 'Copy operation not allowed in read-only mode' }
       }
       const source = resolvePath(args.source, cwd)
+      if (!source) return pathEscapeError('source')
       const destination = resolvePath(args.destination, cwd)
+      if (!destination) return pathEscapeError('destination')
       return safeCopy(source, destination)
     }
 
@@ -477,8 +523,13 @@ export async function executeSystemTool(
       if (ctx.readOnly) {
         return { ok: false, output: '', error: 'Shell execution not allowed in read-only mode' }
       }
-      const execCwd = args.cwd ? resolvePath(args.cwd, cwd) : cwd
-      return safeExec(args.command, execCwd, args.timeout, args.env)
+      let execCwd = cwd
+      if (args.cwd) {
+        const resolvedCwd = resolvePath(args.cwd, cwd)
+        if (!resolvedCwd) return pathEscapeError('cwd')
+        execCwd = resolvedCwd
+      }
+      return safeExec(args.command, execCwd, args.timeout)
     }
 
     case 'system_info': {

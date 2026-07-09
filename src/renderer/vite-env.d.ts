@@ -371,6 +371,18 @@ interface ElectronAPI {
     restore: (filename: string) => Promise<BackupRestoreResult>
     delete: (filename: string) => Promise<boolean>
   }
+  sync: {
+    export: (passphrase: string) => Promise<{ ok: boolean; filename?: string; path?: string; keys?: string[]; error?: string }>
+    list: () => Promise<Array<{ filename: string; createdAt: string; sizeBytes: number; keys: string[] }>>
+    preview: (filename: string) => Promise<{ ok: boolean; keys?: string[]; createdAt?: string; appVersion?: string; error?: string }>
+    import: (filename: string, passphrase: string) => Promise<{ ok: boolean; restored?: string[]; error?: string }>
+    delete: (filename: string) => Promise<boolean>
+    webdavGetConfig: () => Promise<{ url: string; username: string; passwordSet: boolean; remoteFileName?: string; enabled?: boolean; autoSyncMinutes?: number }>
+    webdavSetConfig: (config: { url: string; username: string; password?: string; remoteFileName?: string; enabled?: boolean; autoSyncMinutes?: number }) => Promise<{ url: string; username: string; passwordSet: boolean; remoteFileName?: string; enabled?: boolean; autoSyncMinutes?: number }>
+    webdavTest: (config?: { url?: string; username?: string; password?: string; remoteFileName?: string }) => Promise<{ ok: boolean; status?: number; error?: string; remoteUrl?: string }>
+    webdavPush: (passphrase: string, config?: { url?: string; username?: string; password?: string }) => Promise<{ ok: boolean; error?: string; keys?: string[]; remoteUrl?: string }>
+    webdavPull: (passphrase: string, config?: { url?: string; username?: string; password?: string }) => Promise<{ ok: boolean; error?: string; restored?: string[]; remoteUrl?: string }>
+  }
   conversation: {
     exportMarkdown: (data: ConversationExportData) => Promise<string>
     exportHtml: (data: ConversationExportData) => Promise<string>
@@ -487,6 +499,11 @@ interface ElectronAPI {
     }>
     repositories: () => Promise<Array<{ id: string; name: string; url: string; description?: string; source: 'builtin' }>>
     importRepository: (input: { url: string; id?: string; name?: string; branch?: string }) => Promise<{ ok: boolean; plugin?: any; plugins?: any[]; path?: string; error?: string; diagnostics?: string[] }>
+    marketplaceList: (registryUrl?: string) => Promise<{ ok: boolean; plugins: any[]; error?: string; source?: string }>
+    marketplaceInstall: (pluginId: string, options?: { requireSignature?: boolean; registryUrl?: string }) => Promise<{ ok: boolean; error?: string; plugin?: any; plugins?: any[] }>
+    trustList: () => Promise<Array<{ id: string; name?: string; publicKeyPem: string; addedAt?: string }>>
+    trustAdd: (publisher: { id: string; name?: string; publicKeyPem: string }) => Promise<Array<{ id: string; name?: string; publicKeyPem: string; addedAt?: string }>>
+    trustRemove: (id: string) => Promise<Array<{ id: string; name?: string; publicKeyPem: string; addedAt?: string }>>
   }
   projectMap: {
     build: (rootPath: string, maxDepth?: number) => Promise<ProjectMap | null>
@@ -525,6 +542,24 @@ interface ElectronAPI {
     getRoleContext: (state: FireflyState, role: FireflyRole, prompt: string, memory?: string, project?: string) => Promise<FireflyRoleContext>
     isComplete: (state: FireflyState) => Promise<boolean>
     getOutput: (state: FireflyState) => Promise<string | null>
+    listTemplates: () => Promise<Array<{
+      id: string
+      name: string
+      version: number
+      description?: string
+      roles: string[]
+      schedule: { nodes: Array<{ id: string; role: string; label: string }>; edges: Array<{ from: string; to: string }> }
+      defaultMode: string
+    }>>
+    getTemplate: (id: string) => Promise<{
+      id: string
+      name: string
+      version: number
+      description?: string
+      roles: string[]
+      schedule: { nodes: Array<{ id: string; role: string; label: string }>; edges: Array<{ from: string; to: string }> }
+      defaultMode: string
+    } | null>
   }
   platform: string
 }

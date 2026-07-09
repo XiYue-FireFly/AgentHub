@@ -38,6 +38,22 @@ describe("WorkbenchRuntimeStore", () => {
     expect(runtime.eventsSince(thread.id, 1).some(e => e.kind === "turn:status")).toBe(true)
   })
 
+  it("auto-titles New chat / 新对话 placeholders on first turn (IT-1)", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const en = runtime.createThread({ title: "New chat" })
+    const zh = runtime.createThread({ title: "新对话" })
+    const named = runtime.createThread({ title: "My notes" })
+
+    expect(runtime.createTurn({ threadId: en.id, prompt: "Explain React hooks", mode: "auto" }).thread.title)
+      .toBe("Explain React hooks")
+    expect(runtime.createTurn({ threadId: zh.id, prompt: "修复登录 bug", mode: "auto" }).thread.title)
+      .toBe("修复登录 bug")
+    expect(runtime.createTurn({ threadId: named.id, prompt: "other prompt", mode: "auto" }).thread.title)
+      .toBe("My notes")
+  })
+
   it("allows personal threads and turns without a workspace", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()

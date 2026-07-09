@@ -32,10 +32,35 @@ export async function createNewDraft(
 }
 
 /**
+ * F-W4: After persist rehydrate, reload draft from disk so buffer matches filesystem.
+ */
+export async function reloadActiveDraftFromDisk(): Promise<void> {
+  const { activeDraft } = useSddDraftStore.getState()
+  if (!activeDraft?.id || !activeDraft.workspaceRoot) return
+  try {
+    const draft = await window.electronAPI.sdd.getDraft(activeDraft.workspaceRoot, activeDraft.id)
+    if (!draft) return
+    // Only overwrite if still same draft and not dirty user edits
+    const current = useSddDraftStore.getState()
+    if (current.saveStatus === 'dirty') return
+    if (current.activeDraft?.id !== activeDraft.id) return
+    useSddDraftStore.getState().setActiveDraft(draft)
+  } catch {
+    /* keep rehydrated snapshot */
+  }
+}
+
+/**
  * 加载需求草稿
  */
 export async function loadDraft(workspaceRoot: string, draftId: string): Promise<void> {
   try {
+    // G2-MH7: flush dirty buffer before replacing active draft; abort switch on failure
+    const current = useSddDraftStore.getState()
+    if (current.activeDraft && current.saveStatus === 'dirty') {
+      const ok = await saveDraftToDisk()
+      if (!ok) return
+    }
     const draft = await window.electronAPI.sdd.getDraft(workspaceRoot, draftId)
     if (draft) {
       useSddDraftStore.getState().setActiveDraft(draft)
@@ -68,6 +93,14 @@ export async function saveDraftToDisk(): Promise<boolean> {
 
   if (!draft) return true
   if (store.saveStatus === 'saved' && content === store.lastSavedContent) return true
+
+  // G2-MC1: refuse accidental empty overwrite of a non-empty document
+  // (e.g. rehydrate left content empty while lastSaved/disk had body).
+  if (content === '' && (store.lastSavedContent || '').length > 0) {
+    store.setSaveStatus('error')
+    store.setError('Refused to save empty content over a non-empty draft')
+    return false
+  }
 
   store.setSaveStatus('saving')
 

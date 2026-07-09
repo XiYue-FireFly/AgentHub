@@ -7,11 +7,25 @@ const SVG_EVENTS = /<(?:svg|img|video|audio|source|input|details|select|textarea
 const CSS_DANGER = /style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi
 // Match expression(...)/url(...) including nested parens (e.g. url(javascript:alert(1))), plus @import.
 // @import[^"';]* stops at quote/semicolon so it does not eat the closing quote of the style attribute.
+// One level of nesting is matched per pass; neutralizeStyleAttr loops until stable for deeper trees.
 const CSS_PAYLOAD_DANGER = /(?:expression|url)\s*\((?:[^()]*|\([^()]*\))*\)|@import[^"';]*/gi
 
 function neutralizeStyleAttr(match: string): string {
   // Keep `style="..."` but strip dangerous CSS payloads inside the quotes.
-  return match.replace(CSS_PAYLOAD_DANGER, '')
+  // Loop so multi-level nested url/expression eventually strip.
+  let prev = ''
+  let next = match
+  let guard = 0
+  while (prev !== next && guard < 8) {
+    prev = next
+    next = next.replace(CSS_PAYLOAD_DANGER, '')
+    guard++
+  }
+  // Residual deep nesting the regex cannot fully peel — drop the style value.
+  if (/(?:javascript|vbscript|expression\s*\(|@import)/i.test(next)) {
+    return match.replace(/=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/, '=""')
+  }
+  return next
 }
 
 export function sanitizeHtml(html: string): string {

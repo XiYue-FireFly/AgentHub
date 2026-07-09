@@ -27,7 +27,11 @@ import { substituteVariables, evaluateCondition, saveRunRecord, loadRunHistory, 
 import { listTeamPresets, saveTeamPreset, deleteTeamPreset, getDefaultFireflyTeam } from '../runtime/team-builder'
 import { detectTechStack, generateWorkspaceSummary } from '../runtime/project-knowledge-enhanced'
 import { runDiagnosticSuite } from '../runtime/diagnostics-suite'
+import { diagnoseProviders } from '../runtime/provider-doctor'
+import { buildSupportBundle } from '../runtime/support-bundle'
+import { scanPlugins } from '../runtime/plugin-manager'
 import { createFireflyState, completeRole, getRoleContext, isComplete, getFinalOutput } from '../runtime/firefly-state-machine'
+import { listFireflyTemplates, getFireflyTemplate } from '../runtime/firefly-templates'
 import { getBudgetConfig, checkBudget, updateBudgetConfig, estimateDispatchBudget } from '../runtime/budget-center'
 import { registerModelsIpc } from './models-ipc'
 import { buildInlineEditPrompt, validateEditResult, applyInlineEdit } from '../runtime/inline-edit'
@@ -160,6 +164,8 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
   typedHandle("firefly:getRoleContext", (_e, state, role, prompt, memory, project) => getRoleContext(state, role, prompt, memory, project))
   typedHandle("firefly:isComplete", (_e, state) => isComplete(state))
   typedHandle("firefly:getOutput", (_e, state) => getFinalOutput(state))
+  typedHandle("firefly:listTemplates", () => listFireflyTemplates())
+  typedHandle("firefly:getTemplate", (_e, id) => getFireflyTemplate(id))
 
   registerModelsIpc({ providerMgr })
 
@@ -197,6 +203,71 @@ export function registerPassthroughIpc(deps: PassthroughDeps): void {
       hasMcpServers: listMcpServers().length > 0,
       hasMemoryEntries: (memory()?.listEntries?.()?.length ?? 0) > 0,
       hasWorkspace: !!getWorkspaceManager()?.getActive()
+    })
+  })
+
+  typedHandle("diagnostics:providerDoctor", () => {
+    const providers = providerMgr?.getConfig?.()?.providers || []
+    return diagnoseProviders(providers.map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      enabled: p.enabled,
+      baseUrl: p.baseUrl,
+      apiKey: p.apiKey,
+      apiKeyLocked: p.apiKeyLocked,
+      models: p.models,
+      protocol: p.protocol
+    })))
+  })
+
+  typedHandle("diagnostics:supportBundle", async () => {
+    const providers = providerMgr?.getConfig?.()?.providers || []
+    const doctor = diagnoseProviders(providers.map((p: any) => ({
+      id: p.id, name: p.name, enabled: p.enabled, baseUrl: p.baseUrl, apiKey: p.apiKey, apiKeyLocked: p.apiKeyLocked, models: p.models
+    })))
+    const suite = await runDiagnosticSuite({
+      appVersion: resolveAppVersionFromMain(),
+      hasProviders: providers.length > 0,
+      hasAgents: registry.getAll().length > 0,
+      hasMcpServers: listMcpServers().length > 0,
+      hasMemoryEntries: (memory()?.listEntries?.()?.length ?? 0) > 0,
+      hasWorkspace: !!getWorkspaceManager()?.getActive()
+    })
+    let plugins: any[] = []
+    try { plugins = scanPlugins() } catch { plugins = [] }
+    let threadCount = 0
+    let turnCount = 0
+    let recentEventKinds: string[] = []
+    try {
+      const snap = runtimeStore?.snapshot?.(undefined)
+      const threads = Array.isArray(snap?.threads) ? snap.threads : []
+      const turns = Array.isArray(snap?.turns) ? snap.turns : []
+      threadCount = threads.length
+      turnCount = turns.length
+      const kinds: string[] = []
+      for (const t of threads.slice(0, 16)) {
+        const evs = runtimeStore?.eventsSince?.(t.id, 0) || []
+        for (const e of evs) kinds.push(String(e?.kind || 'event'))
+      }
+      recentEventKinds = kinds.slice(-32)
+    } catch { /* ignore */ }
+    return buildSupportBundle({
+      appVersion: resolveAppVersionFromMain(),
+      platform: process.platform,
+      nodeVersion: process.version,
+      diagnosticsOverall: suite.overall,
+      diagnosticChecks: suite.checks.map(c => ({ id: c.id, status: c.level, message: c.message })),
+      providers: providers.map((p: any) => ({ id: p.id, enabled: p.enabled, name: p.name })),
+      providerDoctorOverall: doctor.overall,
+      pluginScan: plugins.map(p => ({
+        id: p.id,
+        enabled: p.enabled,
+        integrity: p.integrity,
+        signature: p.signature
+      })),
+      threadCount,
+      turnCount,
+      recentEventKinds
     })
   })
 

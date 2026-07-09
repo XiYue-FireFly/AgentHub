@@ -296,6 +296,21 @@ export interface FireflyRoleContextLike {
   constraints: string[]
 }
 
+export type FireflyTemplateModeLike = 'orchestrate' | 'auto' | 'chain' | 'parallel-review'
+
+export interface FireflyTemplateLike {
+  id: string
+  name: string
+  version: number
+  description?: string
+  roles: string[]
+  schedule: {
+    nodes: Array<{ id: string; role: string; label: string }>
+    edges: Array<{ from: string; to: string }>
+  }
+  defaultMode: FireflyTemplateModeLike
+}
+
 export interface TerminalContextLike {
   recentCommands: string[]
   recentOutput: string[]
@@ -842,6 +857,35 @@ export interface BackupRestoreResultLike {
   error?: string
 }
 
+export interface SyncPackageMetaLike {
+  filename: string
+  createdAt: string
+  sizeBytes: number
+  keys: string[]
+}
+
+export interface SyncExportResultLike {
+  ok: boolean
+  filename?: string
+  path?: string
+  keys?: string[]
+  error?: string
+}
+
+export interface SyncImportResultLike {
+  ok: boolean
+  restored?: string[]
+  error?: string
+}
+
+export interface SyncPreviewResultLike {
+  ok: boolean
+  keys?: string[]
+  createdAt?: string
+  appVersion?: string
+  error?: string
+}
+
 export interface BrowserOpenInputLike {
   workspaceId?: string | null
   url?: string
@@ -1260,12 +1304,96 @@ export interface PluginManifestLike {
   contributes?: PluginContributionSet
 }
 
+export type PluginIntegrityStatusLike = 'ok' | 'mismatch' | 'missing' | 'unsigned' | 'error'
+
+export interface PluginIntegrityLike {
+  status: PluginIntegrityStatusLike
+  message?: string
+  checkedFiles?: number
+  failedFiles?: string[]
+}
+
+export type PluginSignatureStatusLike = 'none' | 'ok' | 'untrusted' | 'invalid' | 'error'
+
+export interface PluginSignatureLike {
+  status: PluginSignatureStatusLike
+  publisher?: string
+  message?: string
+}
+
 export interface PluginEntryLike {
   id: string
   manifest: PluginManifestLike
   path: string
   enabled: boolean
   source: 'local' | 'global'
+  integrity?: PluginIntegrityLike
+  signature?: PluginSignatureLike
+}
+
+export interface MarketplacePluginLike {
+  id: string
+  name: string
+  version: string
+  description?: string
+  publisher: string
+  repositoryUrl: string
+  branch?: string
+  source: 'builtin' | 'remote'
+  homepage?: string
+}
+
+export interface MarketplaceListResultLike {
+  ok: boolean
+  plugins: MarketplacePluginLike[]
+  error?: string
+  source?: string
+}
+
+export interface MarketplaceInstallResultLike {
+  ok: boolean
+  plugin?: PluginEntryLike
+  plugins?: PluginEntryLike[]
+  path?: string
+  error?: string
+  integrity?: PluginIntegrityLike
+  signature?: PluginSignatureLike
+  diagnostics?: string[]
+}
+
+export interface TrustedPublisherLike {
+  id: string
+  name?: string
+  publicKeyPem: string
+  addedAt?: string
+}
+
+export interface WebDavConfigLike {
+  url: string
+  username: string
+  password?: string
+  remoteFileName?: string
+  enabled?: boolean
+  autoSyncMinutes?: number
+}
+
+export interface WebDavConfigViewLike {
+  url: string
+  username: string
+  passwordSet: boolean
+  remoteFileName?: string
+  enabled?: boolean
+  autoSyncMinutes?: number
+}
+
+export interface WebDavResultLike {
+  ok: boolean
+  status?: number
+  error?: string
+  bytes?: number
+  remoteUrl?: string
+  restored?: string[]
+  keys?: string[]
 }
 
 export interface PluginValidationResult {
@@ -2694,6 +2822,14 @@ export interface IpcContract {
     args: []
     result: LegacyDiagnosticSuiteLike
   }
+  'diagnostics:providerDoctor': {
+    args: []
+    result: unknown
+  }
+  'diagnostics:supportBundle': {
+    args: []
+    result: unknown
+  }
   'projectMap:build': {
     args: [rootPath: string, maxDepth?: number]
     result: ProjectMapLike | null
@@ -3326,6 +3462,74 @@ export interface IpcContract {
     args: [state: FireflyStateLike]
     result: string | null
   }
+  'firefly:listTemplates': {
+    args: []
+    result: FireflyTemplateLike[]
+  }
+  'firefly:getTemplate': {
+    args: [id: string]
+    result: FireflyTemplateLike | null
+  }
+  'sync:export': {
+    args: [passphrase: string]
+    result: SyncExportResultLike
+  }
+  'sync:list': {
+    args: []
+    result: SyncPackageMetaLike[]
+  }
+  'sync:preview': {
+    args: [filename: string]
+    result: SyncPreviewResultLike
+  }
+  'sync:import': {
+    args: [filename: string, passphrase: string]
+    result: SyncImportResultLike
+  }
+  'sync:delete': {
+    args: [filename: string]
+    result: boolean
+  }
+  'sync:webdavGetConfig': {
+    args: []
+    result: WebDavConfigViewLike
+  }
+  'sync:webdavSetConfig': {
+    args: [config: WebDavConfigLike]
+    result: WebDavConfigViewLike
+  }
+  'sync:webdavTest': {
+    args: [config?: WebDavConfigLike]
+    result: WebDavResultLike
+  }
+  'sync:webdavPush': {
+    args: [passphrase: string, config?: WebDavConfigLike]
+    result: WebDavResultLike
+  }
+  'sync:webdavPull': {
+    args: [passphrase: string, config?: WebDavConfigLike]
+    result: WebDavResultLike
+  }
+  'plugins:marketplaceList': {
+    args: [registryUrl?: string]
+    result: MarketplaceListResultLike
+  }
+  'plugins:marketplaceInstall': {
+    args: [pluginId: string, options?: { requireSignature?: boolean; registryUrl?: string }]
+    result: MarketplaceInstallResultLike
+  }
+  'plugins:trustList': {
+    args: []
+    result: TrustedPublisherLike[]
+  }
+  'plugins:trustAdd': {
+    args: [publisher: TrustedPublisherLike]
+    result: TrustedPublisherLike[]
+  }
+  'plugins:trustRemove': {
+    args: [id: string]
+    result: TrustedPublisherLike[]
+  }
   'terminalAi:buildPrompt': {
     args: [userPrompt: string, context: TerminalContextLike]
     result: string
@@ -3781,6 +3985,18 @@ function validateBackupFilename(value: unknown, label = 'filename'): string | nu
   return /^agenthub-backup-[A-Za-z0-9._-]+\.json$/.test(filename)
     ? null
     : `${label} must be an AgentHub backup JSON filename`
+}
+
+function validateSyncFilename(value: unknown, label = 'filename'): string | null {
+  const issue = validateBoundedString(value, label, { max: MAX_BACKUP_FILENAME_CHARS })
+  if (issue) return issue
+  const filename = value as string
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return `${label} must not contain path separators or traversal`
+  }
+  return /^agenthub-sync-[A-Za-z0-9._-]+\.json$/.test(filename)
+    ? null
+    : `${label} must be an AgentHub sync JSON filename`
 }
 
 function validateProjectRootPath(value: unknown, label = 'rootPath'): string | null {
@@ -5897,6 +6113,31 @@ function validatePluginManifest(value: unknown, label: string, options: { requir
   )
 }
 
+function validatePluginIntegrity(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) return null
+  const recordIssue = validateRecord(value, label)
+  if (recordIssue) return recordIssue
+  const record = value as Record<string, unknown>
+  return (
+    validateEnum(record.status, `${label}.status`, ['ok', 'mismatch', 'missing', 'unsigned', 'error']) ||
+    (hasOwn(record, 'message') ? validateBoundedString(record.message, `${label}.message`, { allowEmpty: true, max: 1024 }) : null) ||
+    (hasOwn(record, 'checkedFiles') ? validateNumber(record.checkedFiles, `${label}.checkedFiles`, { integer: true, min: 0 }) : null) ||
+    (hasOwn(record, 'failedFiles') ? validateBoundedStringArray(record.failedFiles, `${label}.failedFiles`, { maxItems: 64, maxStringLength: 512 }) : null)
+  )
+}
+
+function validatePluginSignatureInfo(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) return null
+  const recordIssue = validateRecord(value, label)
+  if (recordIssue) return recordIssue
+  const record = value as Record<string, unknown>
+  return (
+    validateEnum(record.status, `${label}.status`, ['none', 'ok', 'untrusted', 'invalid', 'error']) ||
+    (hasOwn(record, 'publisher') ? validateBoundedString(record.publisher, `${label}.publisher`, { allowEmpty: true, max: 128 }) : null) ||
+    (hasOwn(record, 'message') ? validateBoundedString(record.message, `${label}.message`, { allowEmpty: true, max: 1024 }) : null)
+  )
+}
+
 function validatePluginEntry(value: unknown, label: string): string | null {
   const recordIssue = validateRecord(value, label)
   if (recordIssue) return recordIssue
@@ -5906,7 +6147,38 @@ function validatePluginEntry(value: unknown, label: string): string | null {
     validatePluginManifest(record.manifest, `${label}.manifest`) ||
     validateString(record.path, `${label}.path`) ||
     validateBoolean(record.enabled, `${label}.enabled`) ||
-    validateEnum(record.source, `${label}.source`, ['local', 'global'])
+    validateEnum(record.source, `${label}.source`, ['local', 'global']) ||
+    (hasOwn(record, 'integrity') ? validatePluginIntegrity(record.integrity, `${label}.integrity`) : null) ||
+    (hasOwn(record, 'signature') ? validatePluginSignatureInfo(record.signature, `${label}.signature`) : null)
+  )
+}
+
+function validateWebDavConfig(value: unknown, label = 'config', options: { optional?: boolean; requirePassword?: boolean } = {}): string | null {
+  if (value === undefined || value === null) return options.optional ? null : `${label} must be an object`
+  const recordIssue = validateRecord(value, label)
+  if (recordIssue) return recordIssue
+  const record = value as Record<string, unknown>
+  return (
+    validateBoundedString(record.url, `${label}.url`, { max: 2048 }) ||
+    validateBoundedString(record.username, `${label}.username`, { max: 256 }) ||
+    (options.requirePassword
+      ? validateBoundedString(record.password, `${label}.password`, { max: 512 })
+      : (hasOwn(record, 'password') ? validateBoundedString(record.password, `${label}.password`, { allowEmpty: true, max: 512 }) : null)) ||
+    (hasOwn(record, 'remoteFileName') ? validateBoundedString(record.remoteFileName, `${label}.remoteFileName`, { allowEmpty: true, max: 180 }) : null) ||
+    (hasOwn(record, 'enabled') ? validateBoolean(record.enabled, `${label}.enabled`) : null) ||
+    (hasOwn(record, 'autoSyncMinutes') ? validateNumber(record.autoSyncMinutes, `${label}.autoSyncMinutes`, { integer: true, min: 0, max: 1440 }) : null)
+  )
+}
+
+function validateTrustedPublisher(value: unknown, label = 'publisher'): string | null {
+  const recordIssue = validateRecord(value, label)
+  if (recordIssue) return recordIssue
+  const record = value as Record<string, unknown>
+  return (
+    validateBoundedString(record.id, `${label}.id`, { max: 128 }) ||
+    validateBoundedString(record.publicKeyPem, `${label}.publicKeyPem`, { max: 8192 }) ||
+    (hasOwn(record, 'name') ? validateBoundedString(record.name, `${label}.name`, { allowEmpty: true, max: 256 }) : null) ||
+    (hasOwn(record, 'addedAt') ? validateBoundedString(record.addedAt, `${label}.addedAt`, { allowEmpty: true, max: 64 }) : null)
   )
 }
 
@@ -6173,6 +6445,12 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
     validate: validateNoArgs
   },
   'diagnostics:run': {
+    validate: validateNoArgs
+  },
+  'diagnostics:providerDoctor': {
+    validate: validateNoArgs
+  },
+  'diagnostics:supportBundle': {
     validate: validateNoArgs
   },
   'github:checkCli': {
@@ -6615,6 +6893,72 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
   },
   'firefly:getOutput': {
     validate: args => validateFireflyState(args[0])
+  },
+  'firefly:listTemplates': {
+    validate: validateNoArgs
+  },
+  'firefly:getTemplate': {
+    validate: args => validateBoundedString(args[0], 'id', { max: 128 })
+  },
+  'sync:export': {
+    validate: args => validateBoundedString(args[0], 'passphrase', { max: 256 })
+  },
+  'sync:list': {
+    validate: validateNoArgs
+  },
+  'sync:preview': {
+    validate: args => validateSyncFilename(args[0])
+  },
+  'sync:import': {
+    validate: args => validateSyncFilename(args[0]) || validateBoundedString(args[1], 'passphrase', { max: 256 })
+  },
+  'sync:delete': {
+    validate: args => validateSyncFilename(args[0])
+  },
+  'sync:webdavGetConfig': {
+    validate: validateNoArgs
+  },
+  'sync:webdavSetConfig': {
+    validate: args => validateWebDavConfig(args[0], 'config')
+  },
+  'sync:webdavTest': {
+    validate: args => validateWebDavConfig(args[0], 'config', { optional: true })
+  },
+  'sync:webdavPush': {
+    validate: args =>
+      validateBoundedString(args[0], 'passphrase', { max: 256 }) ||
+      validateWebDavConfig(args[1], 'config', { optional: true })
+  },
+  'sync:webdavPull': {
+    validate: args =>
+      validateBoundedString(args[0], 'passphrase', { max: 256 }) ||
+      validateWebDavConfig(args[1], 'config', { optional: true })
+  },
+  'plugins:marketplaceList': {
+    validate: args => validateBoundedString(args[0], 'registryUrl', { optional: true, allowEmpty: true, max: 2048 })
+  },
+  'plugins:marketplaceInstall': {
+    validate: args => {
+      const idIssue = validateBoundedString(args[0], 'pluginId', { max: 128 })
+      if (idIssue) return idIssue
+      if (args[1] === undefined || args[1] === null) return null
+      const recIssue = validateRecord(args[1], 'options')
+      if (recIssue) return recIssue
+      const rec = args[1] as Record<string, unknown>
+      return (
+        (hasOwn(rec, 'requireSignature') ? validateBoolean(rec.requireSignature, 'options.requireSignature') : null) ||
+        (hasOwn(rec, 'registryUrl') ? validateBoundedString(rec.registryUrl, 'options.registryUrl', { allowEmpty: true, max: 2048 }) : null)
+      )
+    }
+  },
+  'plugins:trustList': {
+    validate: validateNoArgs
+  },
+  'plugins:trustAdd': {
+    validate: args => validateTrustedPublisher(args[0])
+  },
+  'plugins:trustRemove': {
+    validate: args => validateBoundedString(args[0], 'id', { max: 128 })
   },
   'notifications:list': {
     validate: args => validateBoolean(args[0], 'unreadOnly', { optional: true })

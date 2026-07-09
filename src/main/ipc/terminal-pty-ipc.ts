@@ -9,8 +9,30 @@
 
 import { BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { getWorkspaceManager } from '../hub/workspace'
+import { isPathInsideBase } from './path-guards'
+import { isValidIpcPathString, resolvePathInRegisteredWorkspace } from './workspace-root-guard'
 import { typedHandle } from './typed-ipc'
+
+/**
+ * Terminal cwd must stay inside a registered workspace.
+ * When no workspaces are registered (dev/tests), allow paths under process.cwd() only.
+ */
+export function resolveSafeTerminalCwd(cwd?: string): { ok: true; cwd: string } | { ok: false; message: string } {
+  if (cwd != null && String(cwd).trim() !== '' && !isValidIpcPathString(String(cwd).trim())) {
+    return { ok: false, message: 'cwd must be within a registered workspace' }
+  }
+  const requested = resolve((cwd && String(cwd).trim()) || process.cwd())
+  const insideRegistered = resolvePathInRegisteredWorkspace(requested)
+  if (insideRegistered) return { ok: true, cwd: insideRegistered }
+
+  const registered = getWorkspaceManager().list()
+  if (registered.length === 0 && isPathInsideBase(requested, process.cwd())) {
+    return { ok: true, cwd: requested }
+  }
+  return { ok: false, message: 'cwd must be within a registered workspace' }
+}
 
 type TerminalSession = {
   pty: any // IPty from node-pty
@@ -100,6 +122,11 @@ export function registerTerminalPtyIpc(_getMainWindow: () => BrowserWindow | nul
       return { ok: false, message: `Maximum ${MAX_SESSIONS} terminal sessions reached.` }
     }
 
+    const safeCwd = resolveSafeTerminalCwd(cwd)
+    if (!safeCwd.ok) {
+      return { ok: false, message: safeCwd.message }
+    }
+
     const shell = resolveDefaultShell()
     const sender = _event.sender
 
@@ -108,7 +135,7 @@ export function registerTerminalPtyIpc(_getMainWindow: () => BrowserWindow | nul
         name: 'xterm-256color',
         cols,
         rows,
-        cwd: cwd || process.cwd(),
+        cwd: safeCwd.cwd,
         env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>
       })
 
@@ -149,24 +176,24 @@ export function registerTerminalPtyIpc(_getMainWindow: () => BrowserWindow | nul
 
   typedHandle('terminal:write', (_event, payload) => {
     const session = sessions.get(payload.sessionId)
-    if (session && !session.exited) {
-      try { session.pty.write(payload.data) } catch { /* ignore */ }
-    }
+    // F-N1: only the owning renderer may write into a session
+    if (!session || session.exited || session.sender !== _event.sender || session.sender.isDestroyed()) return
+    try { session.pty.write(payload.data) } catch { /* ignore */ }
   })
 
   typedHandle('terminal:resize', (_event, payload) => {
     const session = sessions.get(payload.sessionId)
-    if (session && !session.exited) {
-      try { session.pty.resize(payload.cols, payload.rows) } catch { /* ignore */ }
-    }
+    if (!session || session.exited || session.sender !== _event.sender || session.sender.isDestroyed()) return
+    try { session.pty.resize(payload.cols, payload.rows) } catch { /* ignore */ }
   })
 
   typedHandle('terminal:dispose', (_event, sessionId) => {
     const session = sessions.get(sessionId)
-    if (session) {
-      try { session.pty.kill() } catch { /* ignore */ }
-      sessions.delete(sessionId)
-    }
+    if (!session) return
+    // Allow dispose only from current owner (or if owner already destroyed)
+    if (!session.sender.isDestroyed() && session.sender !== _event.sender) return
+    try { session.pty.kill() } catch { /* ignore */ }
+    sessions.delete(sessionId)
   })
 }
 

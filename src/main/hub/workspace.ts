@@ -11,9 +11,11 @@
  *   - 删/重命名/路径改动时不动 activeId；若被删的是 active，主动让 UI 重新选择（getActive 返回 null）
  */
 import { statSync, readFileSync } from 'fs'
-import { resolve as resolvePath, join as joinPath, relative as relativePath, isAbsolute } from 'path'
+import { resolve as resolvePath, join as joinPath, relative as relativePath, isAbsolute, basename } from 'path'
 import { store } from '../store'
 import { createLogger } from '../logger'
+import { isSensitiveTextFilePath } from '../ipc/sensitive-files'
+import { isPathInsideBase } from '../ipc/path-guards'
 
 const log = createLogger('Workspace')
 
@@ -149,9 +151,11 @@ class WorkspaceManager {
     for (const rel of ws.bootstrapFiles) {
       if (typeof rel !== 'string' || !rel.trim()) continue
       if (isAbsolute(rel)) { omitted++; continue }
+      // F-N2: never inject secrets (.env, keys) into model context
+      if (isSensitiveTextFilePath(rel) || isSensitiveTextFilePath(basename(rel))) { omitted++; continue }
       const abs = resolvePath(joinPath(root, rel))
-      const within = abs === root || abs.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))
-      if (!within) { omitted++; continue }            // 拒绝 `..` 逃逸
+      if (!isPathInsideBase(abs, root)) { omitted++; continue }            // 拒绝 `..` 逃逸
+      if (isSensitiveTextFilePath(abs)) { omitted++; continue }
       let text: string
       try { text = readFileSync(abs, 'utf-8') } catch { omitted++; continue }
       const relLabel = relativePath(root, abs).replace(/\\/g, '/')
