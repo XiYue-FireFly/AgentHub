@@ -5,7 +5,6 @@
  * for the Composer's @file reference feature.
  */
 
-import { existsSync, readdirSync, statSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import { join, extname } from 'node:path'
 
@@ -37,18 +36,21 @@ const TEXT_EXTENSIONS = new Set([
 /**
  * List files in a workspace directory (non-recursive, fast).
  */
-export function listWorkspaceFiles(rootPath: string, maxEntries = 200): FileEntry[] {
-  if (!existsSync(rootPath) || !statSync(rootPath).isDirectory()) return []
+export async function listWorkspaceFiles(rootPath: string, maxEntries = 200): Promise<FileEntry[]> {
+  try {
+    const stat = await fs.stat(rootPath)
+    if (!stat.isDirectory()) return []
+  } catch { /* path missing or inaccessible */ return [] }
   const entries: FileEntry[] = []
   try {
-    const items = readdirSync(rootPath, { withFileTypes: true })
+    const items = await fs.readdir(rootPath, { withFileTypes: true })
     for (const item of items) {
       if (entries.length >= maxEntries) break
       if (IGNORE_DIRS.has(item.name)) continue
       if (item.name.startsWith('.') && item.name !== '.env' && item.name !== '.gitignore') continue
       const fullPath = join(rootPath, item.name)
       try {
-        const stat = statSync(fullPath)
+        const stat = await fs.stat(fullPath)
         entries.push({
           path: fullPath,
           relativePath: item.name,
@@ -66,8 +68,8 @@ export function listWorkspaceFiles(rootPath: string, maxEntries = 200): FileEntr
 /**
  * Search files by name (fuzzy match). Used for @ mentions.
  */
-export function searchWorkspaceFiles(rootPath: string, query: string, maxResults = 20): FileEntry[] {
-  const allFiles = listWorkspaceFiles(rootPath, 500)
+export async function searchWorkspaceFiles(rootPath: string, query: string, maxResults = 20): Promise<FileEntry[]> {
+  const allFiles = await listWorkspaceFiles(rootPath, 500)
   const needle = query.trim().toLowerCase()
   if (!needle) return allFiles.slice(0, maxResults)
   return allFiles
@@ -82,7 +84,6 @@ export function searchWorkspaceFiles(rootPath: string, query: string, maxResults
  * Read a text file preview (first N lines).
  */
 export async function readFilePreview(filePath: string, maxLines = 30): Promise<{ ok: boolean; content?: string; error?: string }> {
-  if (!existsSync(filePath)) return { ok: false, error: 'File not found' }
   try {
     const stat = await fs.stat(filePath)
     if (stat.isDirectory()) return { ok: false, error: 'Is a directory' }
@@ -92,8 +93,8 @@ export async function readFilePreview(filePath: string, maxLines = 30): Promise<
     const content = await fs.readFile(filePath, 'utf-8')
     const lines = content.split('\n').slice(0, maxLines)
     return { ok: true, content: lines.join('\n') + (content.split('\n').length > maxLines ? '\n... (truncated)' : '') }
-  } catch (e: any) {
-    return { ok: false, error: e?.message || String(e) }
+  } catch {
+    return { ok: false, error: 'File not found' }
   }
 }
 

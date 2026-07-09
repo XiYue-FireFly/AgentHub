@@ -836,10 +836,15 @@ typedHandle("turns:retry", async (_event, turnId) => {
   const thread = runtimeStore.getThread(turn.threadId)
   if (!thread) throw new Error(`Thread not found: ${turn.threadId}`)
   if (!dispatcher) {
+    let retryTimeoutId: ReturnType<typeof setTimeout> | null = null
     await Promise.race([
       dispatcherReadyPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000))
-    ])
+      new Promise((_, reject) => {
+        retryTimeoutId = setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000)
+      })
+    ]).finally(() => {
+      if (retryTimeoutId) clearTimeout(retryTimeoutId)
+    })
   }
   const activeDispatcher = dispatcher!
   const retryRequestedTargetAgent = turn.targetAgent || undefined

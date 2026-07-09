@@ -166,11 +166,11 @@ describe("workbench git dock layout", () => {
 
     expect(dispatchStart).toBeGreaterThan(-1)
     expect(dispatchEnd).toBeGreaterThan(dispatchStart)
-    expect(dispatchSource).toContain("const result = await sendPrompt(todo.content")
+    expect(dispatchSource).toContain("const result = await sendPromptRef.current(todo.content")
     expect(dispatchSource).toContain("result?.turn?.id")
     expect(dispatchSource).toContain("window.electronAPI.todos.upsert")
     expect(dispatchSource).toContain("persistSddPlanDispatch")
-    expect(dispatchSource.indexOf("const result = await sendPrompt")).toBeLessThan(dispatchSource.indexOf("window.electronAPI.todos.upsert"))
+    expect(dispatchSource.indexOf("const result = await sendPromptRef.current")).toBeLessThan(dispatchSource.indexOf("window.electronAPI.todos.upsert"))
     expect(row).toContain("onDispatch")
     expect(row).not.toContain("window.electronAPI.turns.create")
   })

@@ -17,18 +17,18 @@ function makeTestDir(): string {
 }
 
 describe("workspace-files", () => {
-  it("lists files excluding node_modules and hidden dirs", () => {
+  it("lists files excluding node_modules and hidden dirs", async () => {
     const dir = makeTestDir()
-    const files = listWorkspaceFiles(dir)
+    const files = await listWorkspaceFiles(dir)
     expect(files.length).toBeGreaterThanOrEqual(4)
     expect(files.some(f => f.name === "node_modules")).toBe(false)
     expect(files.some(f => f.name === "index.ts")).toBe(true)
     expect(files.some(f => f.name === "src")).toBe(true)
   })
 
-  it("searches files by name", () => {
+  it("searches files by name", async () => {
     const dir = makeTestDir()
-    const results = searchWorkspaceFiles(dir, "index")
+    const results = await searchWorkspaceFiles(dir, "index")
     expect(results.length).toBe(1)
     expect(results[0].name).toBe("index.ts")
   })
@@ -48,7 +48,15 @@ describe("workspace-files", () => {
     expect(result.error).toContain("Binary")
   })
 
-  it("returns empty for non-existent directory", () => {
-    expect(listWorkspaceFiles("/nonexistent/path")).toEqual([])
+  it("returns empty for non-existent directory", async () => {
+    expect(await listWorkspaceFiles("/nonexistent/path")).toEqual([])
+  })
+
+  it("returns 'File not found' for non-existent file preview (no path leak)", async () => {
+    // M-H1: after switching to fs.promises, a missing file should be reported as 'File not found'
+    // without leaking the absolute path in the error message.
+    const result = await readFilePreview(join(tmpdir(), "agenthub-nonexistent-" + Date.now() + ".ts"))
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe("File not found")
   })
 })

@@ -28,6 +28,26 @@ describe('sanitizeHtml', () => {
     expect(sanitizeHtml('<svg><a xlink:href="javascript:alert(1)">click</a></svg>')).toBe('<svg><a>click</a></svg>')
   })
 
+  it('neutralizes CSS expression() in inline style', () => {
+    expect(sanitizeHtml('<div style="width:expression(alert(1))">x</div>')).toBe('<div style="width:">x</div>')
+  })
+
+  it('neutralizes CSS @import in inline style', () => {
+    expect(sanitizeHtml('<div style="@import url(evil.css)">x</div>')).toBe('<div style="">x</div>')
+  })
+
+  it('neutralizes CSS url(javascript:) in inline style', () => {
+    expect(sanitizeHtml('<div style="background:url(javascript:alert(1))">x</div>')).toBe('<div style="background:">x</div>')
+  })
+
+  it('neutralizes CSS expression with nested parens (1 level)', () => {
+    expect(sanitizeHtml('<div style="x:expression(alert(1))">x</div>')).toBe('<div style="x:">x</div>')
+  })
+
+  it('preserves safe inline styles', () => {
+    expect(sanitizeHtml('<div style="color:red;font-size:12px">x</div>')).toBe('<div style="color:red;font-size:12px">x</div>')
+  })
+
   it('preserves safe HTML', () => {
     const safeHtml = '<p>Hello <strong>world</strong></p>'
     expect(sanitizeHtml(safeHtml)).toBe(safeHtml)

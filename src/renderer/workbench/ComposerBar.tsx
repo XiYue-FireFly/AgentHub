@@ -1107,22 +1107,17 @@ function ContextCapacityIndicator({
   modelSelection: ModelSelection
   providers: ProviderDef[]
 }) {
-  const [capacity, setCapacity] = useState<{ usedRatio: number; tone: string } | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    const estimate = () => {
-      const provider = providers.find(p => p.id === modelSelection.providerId)
-      const model = provider?.models?.find(m => m.id === modelSelection.modelId)
-      const windowTokens = model?.contextWindow || 128_000
-      // Simple text-based estimation
-      const textTokens = Math.ceil((text.length + attachments.reduce((sum, a) => sum + (a.text?.length || 0), 0)) / 4)
-      const usedRatio = Math.min(1, textTokens / windowTokens)
-      const tone = usedRatio > 0.85 ? 'danger' : usedRatio > 0.7 ? 'warn' : 'ok'
-      if (alive) setCapacity({ usedRatio, tone })
-    }
-    estimate()
-    return () => { alive = false }
+  // W-M4b: useMemo instead of effect+setState — derived value recomputed only when inputs change,
+  // no extra render pass per keystroke.
+  const capacity = useMemo<{ usedRatio: number; tone: string } | null>(() => {
+    const provider = providers.find(p => p.id === modelSelection.providerId)
+    const model = provider?.models?.find(m => m.id === modelSelection.modelId)
+    const windowTokens = model?.contextWindow || 128_000
+    // Simple text-based estimation
+    const textTokens = Math.ceil((text.length + attachments.reduce((sum, a) => sum + (a.text?.length || 0), 0)) / 4)
+    const usedRatio = Math.min(1, textTokens / windowTokens)
+    const tone = usedRatio > 0.85 ? 'danger' : usedRatio > 0.7 ? 'warn' : 'ok'
+    return { usedRatio, tone }
   }, [text, attachments, modelSelection, providers])
 
   if (!capacity) return null

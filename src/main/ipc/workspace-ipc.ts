@@ -30,12 +30,12 @@ export function registerWorkspaceIpc(): void {
   typedHandle("worktrees:sync", (_event, id) => syncWorktree(id))
   typedHandle("worktrees:open", (_event, id) => openWorktree(id))
 
-  typedHandle("workspaceFiles:list", (_e, rootPath, max) => {
+  typedHandle("workspaceFiles:list", async (_e, rootPath, max) => {
     const directoryPath = resolvePathInRegisteredWorkspace(rootPath)
     if (!directoryPath) return []
     return listWorkspaceFiles(directoryPath, max)
   })
-  typedHandle("workspaceFiles:search", (_e, rootPath, query, max) => {
+  typedHandle("workspaceFiles:search", async (_e, rootPath, query, max) => {
     const directoryPath = resolvePathInRegisteredWorkspace(rootPath)
     if (!directoryPath) return []
     return searchWorkspaceFiles(directoryPath, query, max)

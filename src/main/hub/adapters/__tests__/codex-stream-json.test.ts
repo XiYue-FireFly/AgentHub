@@ -70,6 +70,22 @@ describe("parseCodexStreamJsonLine", () => {
     expect(step.output).toBe("boom")
   })
 
+  it("marks command_execution item.completed with missing exit_code as error (not done)", () => {
+    // H-M6: a completed command_execution without exit_code must not be masked as a green "done".
+    const line = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_missing_exit",
+        type: "command_execution",
+        command: "risky-cmd",
+        aggregated_output: "no exit code reported",
+        status: "completed"
+      }
+    })
+    const step = parseCodexStreamJsonLine(line)!.steps![0]
+    expect(step.status).toBe("error")
+  })
+
   it("extracts final answer from agent_message item.completed", () => {
     const line = JSON.stringify({
       type: "item.completed",

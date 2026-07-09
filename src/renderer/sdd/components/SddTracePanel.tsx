@@ -73,19 +73,21 @@ function findPlanItemsForBlock(trace: SddTrace, blockId: string): PlanItem[] {
 }
 
 export function SddTracePanel({ trace, blocks = [] }: SddTracePanelProps) {
-  if (!trace) return null
+  const displayBlocks = blocks.length > 0 ? blocks : (trace?.requirementBlocks ?? [])
 
-  const displayBlocks = blocks.length > 0 ? blocks : trace.requirementBlocks
-  if (displayBlocks.length === 0 && trace.planItems.length === 0) return null
-
-  // Pre-compute plan items map to avoid O(blocks × planItems) on each render
+  // Pre-compute plan items map to avoid O(blocks × planItems) on each render.
+  // NOTE: useMemo must run unconditionally (React Hooks rule) — guard null trace inside the callback.
   const planItemsMap = React.useMemo(() => {
     const map = new Map<string, PlanItem[]>()
+    if (!trace) return map
     for (const block of displayBlocks) {
       map.set(block.id, findPlanItemsForBlock(trace, block.id))
     }
     return map
   }, [trace, displayBlocks])
+
+  if (!trace) return null
+  if (displayBlocks.length === 0 && trace.planItems.length === 0) return null
 
   const coveredCount = displayBlocks.filter(block =>
     (planItemsMap.get(block.id)?.length ?? 0) > 0
@@ -113,7 +115,7 @@ export function SddTracePanel({ trace, blocks = [] }: SddTracePanelProps) {
 
       <div className="sdd-trace-list">
         {displayBlocks.map(block => {
-          const planItems = findPlanItemsForBlock(trace, block.id)
+          const planItems = planItemsMap.get(block.id) ?? []
           const derivedStatus = trace.derivedStatuses[block.id] ?? block.status
           const uncovered = trace.uncoveredRequirementIds.includes(block.id) || planItems.length === 0
 

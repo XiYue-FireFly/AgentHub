@@ -243,6 +243,10 @@ function DagScheduleEditor({
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(graph.nodes[0]?.id ?? null)
   const [graphError, setGraphError] = React.useState<string | null>(null)
   const dragRef = React.useRef<{ id: string; dx: number; dy: number } | null>(null)
+  // W-M7: live layout during drag — updated on pointermove without re-validating/recompiling the
+  // whole schedule graph; committed to schedule once on pointerup.
+  const [dragLayout, setDragLayout] = React.useState<Record<string, { x: number; y: number }> | null>(null)
+  const layout = dragLayout ?? graph.layout
   const selectedNode = graph.nodes.find(node => node.id === selectedNodeId) || graph.nodes[0] || null
   const graphValidation = validateScheduleGraph(graph)
 
@@ -328,25 +332,29 @@ function DagScheduleEditor({
   }
 
   const onNodePointerDown = (event: React.PointerEvent<SVGGElement>, nodeId: string) => {
-    const point = graph.layout[nodeId] || { x: 0, y: 0 }
+    const point = layout[nodeId] || { x: 0, y: 0 }
     dragRef.current = { id: nodeId, dx: event.clientX - point.x, dy: event.clientY - point.y }
+    setDragLayout({ ...layout })
     event.currentTarget.setPointerCapture(event.pointerId)
     setSelectedNodeId(nodeId)
   }
 
   const onNodePointerMove = (event: React.PointerEvent<SVGGElement>) => {
     const drag = dragRef.current
-    if (!drag) return
+    if (!drag || !dragLayout) return
     const x = Math.max(0, Math.min(360, event.clientX - drag.dx))
     const y = Math.max(0, Math.min(330, event.clientY - drag.dy))
-    patchGraph(current => ({
-      ...current,
-      layout: { ...current.layout, [drag.id]: { x, y } }
-    }))
+    setDragLayout(current => ({ ...current, [drag.id]: { x, y } }))
   }
 
   const onNodePointerUp = (event: React.PointerEvent<SVGGElement>) => {
+    const drag = dragRef.current
+    if (drag && dragLayout) {
+      // Commit the final layout once, revalidating the graph.
+      patchGraph(current => ({ ...current, layout: { ...current.layout, [drag.id]: dragLayout[drag.id] } }))
+    }
     dragRef.current = null
+    setDragLayout(null)
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
@@ -378,8 +386,8 @@ function DagScheduleEditor({
             </marker>
           </defs>
           {graph.edges.map(edge => {
-            const from = graph.layout[edge.from] || { x: 0, y: 0 }
-            const to = graph.layout[edge.to] || { x: 0, y: 0 }
+            const from = layout[edge.from] || { x: 0, y: 0 }
+            const to = layout[edge.to] || { x: 0, y: 0 }
             return (
               <g key={edge.id} className="wb-dag-edge">
                 <path d={`M ${from.x + 142} ${from.y + 34} C ${from.x + 188} ${from.y + 34}, ${to.x - 34} ${to.y + 34}, ${to.x + 8} ${to.y + 34}`} markerEnd="url(#dag-arrow)" />
@@ -388,7 +396,7 @@ function DagScheduleEditor({
             )
           })}
           {graph.nodes.map((node, index) => {
-            const point = graph.layout[node.id] || { x: 28 + index * 24, y: 32 + index * 84 }
+            const point = layout[node.id] || { x: 28 + index * 24, y: 32 + index * 84 }
             const selected = selectedNode?.id === node.id
             return (
               <g

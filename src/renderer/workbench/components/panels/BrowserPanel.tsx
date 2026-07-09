@@ -27,6 +27,13 @@ export function BrowserPanel({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false })
   const webviewRef = useRef<any>(null)
+  // W-H4: track webview mount via state (not just ref) so the listener effect re-runs once the
+  // <webview> is actually attached to the DOM and webviewRef.current is populated.
+  const [webviewMounted, setWebviewMounted] = useState(0)
+  const webviewRefCallback = useCallback((el: any) => {
+    webviewRef.current = el
+    if (el) setWebviewMounted(n => n + 1)
+  }, [])
 
   const open = useCallback(async (nextUrl = url) => {
     if (!nextUrl.trim()) return
@@ -90,22 +97,27 @@ export function BrowserPanel({
       webview.removeEventListener?.('did-fail-load', fail)
       webview.removeEventListener?.('page-title-updated', title)
     }
-  }, [session?.id])
+  }, [session?.id, webviewMounted])
 
   const capture = async () => {
     const webview = webviewRef.current
     if (!webview) return
-    const result = await webview.executeJavaScript(`(() => {
+    // W-M6b: wrap executeJavaScript + browser.capture in try/catch to surface CSP/runtime errors.
+    try {
+      const result = await webview.executeJavaScript(`(() => {
       const text = document.body ? document.body.innerText.slice(0, 12000) : ''
       const headings = Array.from(document.querySelectorAll('h1,h2,h3')).slice(0, 24).map(el => el.textContent?.trim()).filter(Boolean)
       const links = Array.from(document.querySelectorAll('a[href]')).slice(0, 40).map(a => ({ text: a.textContent?.trim().slice(0, 80) || a.href, href: a.href }))
       const forms = Array.from(document.querySelectorAll('form')).slice(0, 10).map(form => form.getAttribute('aria-label') || form.getAttribute('name') || 'form')
       return { url: location.href, title: document.title, text, headings, links, forms, capturedAt: Date.now() }
     })()`)
-    const attachment = await window.electronAPI.browser.capture(result)
-    setCaptured(attachment)
-    onAttach(browserCaptureToAttachment(attachment))
-    setAttached(true)
+      const attachment = await window.electronAPI.browser.capture(result)
+      setCaptured(attachment)
+      onAttach(browserCaptureToAttachment(attachment))
+      setAttached(true)
+    } catch (e: any) {
+      setLoadError(e?.message || tr('页面捕获失败。', 'Failed to capture page.'))
+    }
   }
 
   return (
@@ -167,7 +179,7 @@ export function BrowserPanel({
       {loadError && <div className="wb-send-error">{loadError}</div>}
       {captured && <div className="wb-muted-box">{attached ? tr('已加入下一轮上下文：', 'Attached to next prompt: ') : tr('已捕获页面上下文：', 'Captured page context: ')}{captured.title || captured.url}</div>}
       {session
-        ? <webview ref={webviewRef} className="wb-browser-webview" src={session.url} allowpopups={false} />
+        ? <webview ref={webviewRefCallback} className="wb-browser-webview" src={session.url} allowpopups={false} />
         : <div className="wb-browser-blank"><Icon d={IC.search} size={20} /><strong>{tr('浏览器未打开', 'Browser is blank')}</strong><span>{tr('输入网址后再载入页面。', 'Enter a URL to load a page.')}</span></div>}
     </div>
   )

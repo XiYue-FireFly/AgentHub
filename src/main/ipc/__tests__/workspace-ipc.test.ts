@@ -39,8 +39,8 @@ const fsMock = vi.hoisted(() => ({
 }))
 
 const workspaceFilesMock = vi.hoisted(() => ({
-  listWorkspaceFiles: vi.fn(() => [{ relativePath: 'README.md' }]),
-  searchWorkspaceFiles: vi.fn(() => [{ relativePath: 'README.md' }]),
+  listWorkspaceFiles: vi.fn(async () => [{ relativePath: 'README.md' }]),
+  searchWorkspaceFiles: vi.fn(async () => [{ relativePath: 'README.md' }]),
   readFilePreview: vi.fn(async () => ({ ok: true, content: 'preview' }))
 }))
 
@@ -178,13 +178,13 @@ describe('workspace IPC file path trust', () => {
     workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
     await setup()
 
-    expect(electronMock.handlers.get('workspaceFiles:list')?.({}, otherRoot, 10)).toEqual([])
-    expect(electronMock.handlers.get('workspaceFiles:search')?.({}, otherRoot, 'readme', 10)).toEqual([])
+    expect(await electronMock.handlers.get('workspaceFiles:list')?.({}, otherRoot, 10)).toEqual([])
+    expect(await electronMock.handlers.get('workspaceFiles:search')?.({}, otherRoot, 'readme', 10)).toEqual([])
     expect(workspaceFilesMock.listWorkspaceFiles).not.toHaveBeenCalled()
     expect(workspaceFilesMock.searchWorkspaceFiles).not.toHaveBeenCalled()
 
-    expect(electronMock.handlers.get('workspaceFiles:list')?.({}, root, 10)).toEqual([{ relativePath: 'README.md' }])
-    expect(electronMock.handlers.get('workspaceFiles:search')?.({}, root, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
+    expect(await electronMock.handlers.get('workspaceFiles:list')?.({}, root, 10)).toEqual([{ relativePath: 'README.md' }])
+    expect(await electronMock.handlers.get('workspaceFiles:search')?.({}, root, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
     expect(workspaceFilesMock.listWorkspaceFiles).toHaveBeenCalledWith(root, 10)
     expect(workspaceFilesMock.searchWorkspaceFiles).toHaveBeenCalledWith(root, 'readme', 10)
   })
@@ -195,8 +195,8 @@ describe('workspace IPC file path trust', () => {
     workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
     await setup()
 
-    expect(electronMock.handlers.get('workspaceFiles:list')?.({}, srcDir, 10)).toEqual([{ relativePath: 'README.md' }])
-    expect(electronMock.handlers.get('workspaceFiles:search')?.({}, srcDir, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
+    expect(await electronMock.handlers.get('workspaceFiles:list')?.({}, srcDir, 10)).toEqual([{ relativePath: 'README.md' }])
+    expect(await electronMock.handlers.get('workspaceFiles:search')?.({}, srcDir, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
     expect(workspaceFilesMock.listWorkspaceFiles).toHaveBeenCalledWith(srcDir, 10)
     expect(workspaceFilesMock.searchWorkspaceFiles).toHaveBeenCalledWith(srcDir, 'readme', 10)
   })

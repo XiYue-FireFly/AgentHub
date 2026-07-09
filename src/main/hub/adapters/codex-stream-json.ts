@@ -110,7 +110,8 @@ export function parseCodexStreamJsonLine(line: string): ParsedActivity | null {
       return {
         steps: [{
           id: String(item.id || item.command || 'command'),
-          status: exitCode === 0 ? 'done' : exitCode === undefined ? 'done' : 'error',
+          // exit_code 0 -> done; missing/non-zero exit_code -> error (avoid masking failures as green "done")
+          status: exitCode === 0 ? 'done' : 'error',
           output: truncate(item.aggregated_output, 800).trim() || undefined
         }]
       }

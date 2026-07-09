@@ -584,7 +584,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     if (props.providers.length > 0) return
     const timer = window.setTimeout(() => props.providerActions.onReload(), 350)
     return () => window.clearTimeout(timer)
-  }, [props.providers.length, props.providerActions])
+  }, [props.providers.length, props.providerActions.onReload])
 
   const applyRoutingSelectionPatch = useCallback((patch: WorkbenchRoutingSelectionPatch) => {
     if (patch.targetAgent !== undefined) setTargetAgent(patch.targetAgent)
@@ -738,6 +738,9 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setActiveGoal(goal)
       shouldStickToBottom.current = true
       setView('chat')
+    } catch (e: any) {
+      // W-M3: Capture selectThread failures so the UI shows an error instead of hanging in "switching".
+      setSendError(e?.message || tr('切换对话失败。', 'Failed to switch thread.'))
     } finally {
       if (selectThreadGenRef.current === gen) {
         setPendingActiveThreadId(null)
@@ -959,12 +962,18 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
   }
 
+  // W-M8: keep a stable ref to the latest sendPrompt so dispatchThreadTodo does not need
+  // sendPrompt in its dependency array (avoids re-creating dispatchThreadTodo every render and
+  // causing unnecessary re-renders of children receiving it as a prop).
+  const sendPromptRef = useRef(sendPrompt)
+  sendPromptRef.current = sendPrompt
+
   const dispatchThreadTodo = useCallback(async (todo: ThreadTodo) => {
     if (!activeThreadId || sending || dispatchingTodoId) return
     setDispatchingTodoId(todo.id)
     try {
       const gitBaseline = await getSddPlanDispatchGitBaseline(workspaceId, todo)
-      const result = await sendPrompt(todo.content, [], { targetAgent, mode: 'auto' })
+      const result = await sendPromptRef.current(todo.content, [], { targetAgent, mode: 'auto' })
       const turnId = result?.turn?.id
       if (!turnId) return
       const nextSource = { ...(todo.source || { kind: 'manual' as const }), threadId: activeThreadId, ...gitBaseline, turnId }
@@ -998,7 +1007,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     } finally {
       setDispatchingTodoId(null)
     }
-  }, [activeThreadId, dispatchingTodoId, refreshThreadTodos, sendPrompt, sending, syncSddPlanTodoForRuntimeEvent, targetAgent, workspaceId])
+  }, [activeThreadId, dispatchingTodoId, refreshThreadTodos, sending, syncSddPlanTodoForRuntimeEvent, targetAgent, workspaceId])
 
   const cancelAgent = async (turnId: string, agentId: string) => {
     await window.electronAPI.turns.cancelAgent(turnId, agentId).catch(() => false)

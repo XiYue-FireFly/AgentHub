@@ -9,6 +9,20 @@ type GitViewMode = 'changes' | 'branches' | 'commits'
 type GitDiffMode = 'working' | 'commit'
 type GitChangeSection = 'staged' | 'unstaged'
 
+// W-M2: Cap the working-diff cache to avoid unbounded growth in large repos.
+const MAX_WORKING_DIFF_CACHE = 50
+
+/** Append a key to the cache, evicting the oldest entry when over the cap (insertion-order LRU). */
+function appendWorkingDiffCache(current: Record<string, string>, path: string, diff: string): Record<string, string> {
+  const next = { ...current, [path]: diff }
+  const keys = Object.keys(next)
+  if (keys.length > MAX_WORKING_DIFF_CACHE) {
+    // Delete the oldest entries (first inserted) until under cap.
+    for (let i = 0; i < keys.length - MAX_WORKING_DIFF_CACHE; i++) delete next[keys[i]]
+  }
+  return next
+}
+
 interface GitWorkbenchPanelProps {
   workspaceId: string | null
   activeThreadId?: string | null
@@ -135,11 +149,11 @@ export function GitWorkbenchPanel({ workspaceId, activeThreadId = null, onClose 
     window.electronAPI.git.diff(workspaceId, selectedPath)
       .then(diff => {
         if (cancelled) return
-        setWorkingDiffCache(current => ({ ...current, [selectedPath]: diff || '' }))
+        setWorkingDiffCache(current => appendWorkingDiffCache(current, selectedPath, diff || ''))
       })
       .catch(() => {
         if (cancelled) return
-        setWorkingDiffCache(current => ({ ...current, [selectedPath]: '' }))
+        setWorkingDiffCache(current => appendWorkingDiffCache(current, selectedPath, ''))
       })
     return () => { cancelled = true }
   }, [workspaceId, diffMode, selectedPath, workingDiffCache])
