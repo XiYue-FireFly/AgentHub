@@ -41,7 +41,7 @@ const fsMock = vi.hoisted(() => ({
 const workspaceFilesMock = vi.hoisted(() => ({
   listWorkspaceFiles: vi.fn(() => [{ relativePath: 'README.md' }]),
   searchWorkspaceFiles: vi.fn(() => [{ relativePath: 'README.md' }]),
-  readFilePreview: vi.fn(() => ({ ok: true, content: 'preview' }))
+  readFilePreview: vi.fn(async () => ({ ok: true, content: 'preview' }))
 }))
 
 const worktreesMock = vi.hoisted(() => ({

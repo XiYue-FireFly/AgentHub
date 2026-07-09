@@ -777,15 +777,15 @@ typedHandle("turns:create", async (_event, payload) => {
         preserveCurrentMessage
       }
     )
+  // Sanitize error messages to prevent leaking sensitive paths (M-L5)
+  const sanitizeError = (err: unknown): string | undefined => {
+    if (!err) return undefined
+    const msg = err instanceof Error ? err.message : String(err)
+    return msg.replace(/[A-Z]:\\[^\s]+/gi, '<path>').replace(/\/home\/[^\s]+/g, '<path>')
+  }
   void runner
     .then((task: any) => {
       if (runtimeStore.getTurn(turn.id)?.status === "cancelled") return
-      // Sanitize error messages to prevent leaking sensitive paths
-      const sanitizeError = (err: unknown): string | undefined => {
-        if (!err) return undefined
-        const msg = err instanceof Error ? err.message : String(err)
-        return msg.replace(/[A-Z]:\\[^\s]+/gi, '<path>').replace(/\/home\/[^\s]+/g, '<path>')
-      }
       if (scheduleForTurn && !("id" in task)) {
         runtimeStore.setTurnStatus(turn.id, task.status, { error: sanitizeError(task.error) })
         return
@@ -800,7 +800,7 @@ typedHandle("turns:create", async (_event, payload) => {
       }
     })
     .catch((e: any) => {
-      runtimeStore.setTurnStatus(turn.id, "failed", { error: e?.message || String(e) })
+      runtimeStore.setTurnStatus(turn.id, "failed", { error: sanitizeError(e) })
     })
   return { thread, turn }
 })

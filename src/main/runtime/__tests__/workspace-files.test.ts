@@ -33,17 +33,17 @@ describe("workspace-files", () => {
     expect(results[0].name).toBe("index.ts")
   })
 
-  it("reads text file preview", () => {
+  it("reads text file preview", async () => {
     const dir = makeTestDir()
-    const result = readFilePreview(join(dir, "index.ts"))
+    const result = await readFilePreview(join(dir, "index.ts"))
     expect(result.ok).toBe(true)
     expect(result.content).toContain("export const x")
   })
 
-  it("rejects binary files", () => {
+  it("rejects binary files", async () => {
     const dir = makeTestDir()
     writeFileSync(join(dir, "image.png"), Buffer.from([0x89, 0x50]))
-    const result = readFilePreview(join(dir, "image.png"))
+    const result = await readFilePreview(join(dir, "image.png"))
     expect(result.ok).toBe(false)
     expect(result.error).toContain("Binary")
   })

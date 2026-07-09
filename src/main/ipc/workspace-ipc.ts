@@ -40,7 +40,7 @@ export function registerWorkspaceIpc(): void {
     if (!directoryPath) return []
     return searchWorkspaceFiles(directoryPath, query, max)
   })
-  typedHandle("workspaceFiles:preview", (_e, filePath, maxLines) => {
+  typedHandle("workspaceFiles:preview", async (_e, filePath, maxLines) => {
     const resolved = resolve(filePath)
     const activeId = getWorkspaceManager()?.getActive()
     const ws = activeId ? getWorkspaceManager()?.getById(activeId) : null

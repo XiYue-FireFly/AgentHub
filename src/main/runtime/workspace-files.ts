@@ -5,7 +5,8 @@
  * for the Composer's @file reference feature.
  */
 
-import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { promises as fs } from 'node:fs'
 import { join, extname } from 'node:path'
 
 export interface FileEntry {
@@ -80,15 +81,15 @@ export function searchWorkspaceFiles(rootPath: string, query: string, maxResults
 /**
  * Read a text file preview (first N lines).
  */
-export function readFilePreview(filePath: string, maxLines = 30): { ok: boolean; content?: string; error?: string } {
+export async function readFilePreview(filePath: string, maxLines = 30): Promise<{ ok: boolean; content?: string; error?: string }> {
   if (!existsSync(filePath)) return { ok: false, error: 'File not found' }
   try {
-    const stat = statSync(filePath)
+    const stat = await fs.stat(filePath)
     if (stat.isDirectory()) return { ok: false, error: 'Is a directory' }
     if (stat.size > 1_000_000) return { ok: false, error: 'File too large (>1MB)' }
     const ext = extname(filePath).toLowerCase()
     if (!TEXT_EXTENSIONS.has(ext)) return { ok: false, error: `Binary file (${ext})` }
-    const content = readFileSync(filePath, 'utf-8')
+    const content = await fs.readFile(filePath, 'utf-8')
     const lines = content.split('\n').slice(0, maxLines)
     return { ok: true, content: lines.join('\n') + (content.split('\n').length > maxLines ? '\n... (truncated)' : '') }
   } catch (e: any) {
