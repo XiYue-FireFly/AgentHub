@@ -60,6 +60,9 @@ class AppStore {
   private initialized: boolean = false
   private initFailed: boolean = false
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private setRevisions = new Map<string, number>()
+  private legacyRevision = 0
+  private persistedLegacyRevision = 0
   /** Serialize async write/rename so concurrent save/flush cannot interleave. */
   private saveChain: Promise<void> = Promise.resolve()
 
@@ -83,21 +86,50 @@ class AppStore {
       }
     } catch (e: any) {
       log.error(`[Store] Load failed (${this.filePath}):`, e?.message || String(e))
+      throw e
+    }
+  }
+
+  private isReady(): boolean {
+    return this.initialized && !this.initFailed && Boolean(this.filePath)
+  }
+
+  private cloneJsonValue(value: any): any {
+    const wrapped = JSON.parse(JSON.stringify({ value }))
+    if (!Object.prototype.hasOwnProperty.call(wrapped, 'value')) {
+      throw new TypeError('Commit value is not JSON-serializable')
+    }
+    return wrapped.value
+  }
+
+  private async persistSnapshot(snapshot: Record<string, any>): Promise<Record<string, any>> {
+    const tmp = this.filePath + '.tmp'
+    const serialized = JSON.stringify(snapshot, null, 2)
+    const persistedSnapshot = JSON.parse(serialized)
+    await fs.promises.writeFile(tmp, serialized)
+    await fs.promises.rename(tmp, this.filePath)
+    return persistedSnapshot
+  }
+
+  private async persistLatestLegacy(): Promise<void> {
+    if (!this.isReady()) {
+      log.error('[Store] Persist skipped: store is not initialized')
+      return
+    }
+
+    const snapshot = { ...this.data }
+    const revision = this.legacyRevision
+    try {
+      await this.persistSnapshot(snapshot)
+      this.persistedLegacyRevision = Math.max(this.persistedLegacyRevision, revision)
+    } catch (e: any) {
+      log.error(`[Store] Persist failed (${this.filePath}):`, e?.message || String(e))
     }
   }
 
   /** Enqueue a persist of the current in-memory snapshot. Always serial. */
   private enqueuePersist(): Promise<void> {
-    this.saveChain = this.saveChain.then(async () => {
-      try {
-        const tmp = this.filePath + '.tmp'
-        // Snapshot at write time so the last queued persist wins with latest data
-        await fs.promises.writeFile(tmp, JSON.stringify(this.data, null, 2))
-        await fs.promises.rename(tmp, this.filePath)
-      } catch (e: any) {
-        log.error(`[Store] Persist failed (${this.filePath}):`, e?.message || String(e))
-      }
-    })
+    this.saveChain = this.saveChain.then(() => this.persistLatestLegacy())
     return this.saveChain
   }
 
@@ -110,12 +142,72 @@ class AppStore {
   }
 
   async flush(): Promise<void> {
+    this.init()
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
     }
+    if (!this.isReady()) {
+      log.error('[Store] Flush skipped: store is not initialized')
+      return
+    }
     // Always await the chain so in-flight writes finish; enqueue a fresh snapshot last
     await this.enqueuePersist()
+  }
+
+  async commit(key: string, value: any): Promise<void> {
+    this.init()
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+
+    if (!this.isReady()) {
+      throw new Error('Store is not initialized')
+    }
+
+    const setRevision = this.setRevisions.get(key) ?? 0
+    const legacyRevisionAtCall = this.legacyRevision
+    let isolatedValue: any
+    let isolationError: unknown
+    let isolationFailed = false
+    try {
+      isolatedValue = this.cloneJsonValue(value)
+    } catch (e) {
+      isolationError = e
+      isolationFailed = true
+    }
+
+    const operation = this.saveChain.then(async () => {
+      if (isolationFailed) throw isolationError
+
+      const candidate = { ...this.data, [key]: isolatedValue }
+      const candidateLegacyRevision = this.legacyRevision
+      const persistedCandidate = await this.persistSnapshot(candidate)
+      const targetSetChanged = (this.setRevisions.get(key) ?? 0) !== setRevision
+      if (targetSetChanged) {
+        this.persistedLegacyRevision = legacyRevisionAtCall
+      } else {
+        this.persistedLegacyRevision = Math.max(
+          this.persistedLegacyRevision,
+          candidateLegacyRevision
+        )
+      }
+
+      if (!targetSetChanged) {
+        this.data = { ...this.data, [key]: persistedCandidate[key] }
+      }
+    })
+
+    // Keep the shared chain usable after a rejected commit while returning the
+    // original operation (and its rejection) to this caller.
+    this.saveChain = operation.catch(async (e: any) => {
+      log.error(`[Store] Commit failed (${this.filePath}):`, e?.message || String(e))
+      if (this.persistedLegacyRevision < this.legacyRevision) {
+        await this.persistLatestLegacy()
+      }
+    })
+    return operation
   }
 
   get(key: string, defaultValue?: any): any {
@@ -125,7 +217,13 @@ class AppStore {
 
   set(key: string, value: any): void {
     this.init()
-    this.data[key] = value
+    if (!this.isReady()) {
+      log.error('[Store] Set skipped: store is not initialized')
+      return
+    }
+    this.data = { ...this.data, [key]: value }
+    this.setRevisions.set(key, (this.setRevisions.get(key) ?? 0) + 1)
+    this.legacyRevision++
     this.save()
   }
 
