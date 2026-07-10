@@ -12,6 +12,8 @@ import { tr } from '../glass/i18n'
 import { SetupTab, firstRunActionForError } from '../glass/connection-status'
 import { MarkdownBlock } from './MarkdownBlock'
 
+const INTERNAL_TIMELINE_AGENT_IDS = new Set(['prompt-optimizer', 'budget-guard', 'dispatch-planner'])
+
 export function ThreadView({
   thread,
   turns,
@@ -22,6 +24,7 @@ export function ThreadView({
   openSetup,
   onCreateProject,
   onCreateThread,
+  onForkThread,
   hasWorkspace,
   workspaceRoot,
   scrollRef,
@@ -36,6 +39,8 @@ export function ThreadView({
   openSetup: (tab?: SetupTab | 'appearance') => void
   onCreateProject: () => void
   onCreateThread: () => void
+  /** F-N4: navigate to forked thread after success */
+  onForkThread?: (threadId: string) => void
   hasWorkspace: boolean
   workspaceRoot?: string | null
   scrollRef?: React.RefObject<HTMLElement>
@@ -81,18 +86,17 @@ export function ThreadView({
               <button onClick={() => onRetry(turn.id)} title={tr('重试', 'Retry')}><Icon d={IC.refresh} size={14} /></button>
             )}
           </div>
-          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} threadId={thread?.id} />
+          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} threadId={thread?.id} onForkThread={onForkThread} />
         </article>
       ))}
     </section>
   )
 }
 
-function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string }) {
+function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId, onForkThread }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string; onForkThread?: (threadId: string) => void }) {
   const grouped = new Map<string, RuntimeEvent[]>()
-  const visibleEvents = events.filter(event => event.kind !== 'turn:created' && event.kind !== 'turn:status')
+  const visibleEvents = events.filter(isChatVisibleRuntimeEvent)
   for (const event of visibleEvents) {
-    if (event.kind === 'memory:candidate') continue
     if (!event.agentId && event.kind !== 'orchestrate' && event.kind !== 'route:decision' && event.kind !== 'guard:verdict' && !event.payload?.kind?.startsWith?.('orchestrate:')) continue
     const key = eventGroupKey(event)
     const bucket = grouped.get(key)
@@ -158,7 +162,7 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
                 {action && <button onClick={() => openSetup(action.tab)}>{tr(action.labelZh, action.labelEn)}</button>}
               </div>
             )}
-            {status !== 'running' && <CompletionSummary agentId={agentId} events={agentEvents} summary={summary} status={status} workspaceRoot={workspaceRoot} />}
+            {status !== 'running' && <CompletionSummary agentId={agentId} events={agentEvents} summary={summary} status={status} />}
             {/* Context Ledger for completed turns */}
             {status === 'completed' && threadId && (
               <ContextLedger threadId={threadId} turnId={turn.id} compact />
@@ -170,6 +174,7 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
                   turnId={turn.id}
                   threadId={threadId || turn.threadId || ''}
                   messageContent={text || doneContent || ''}
+                  onFork={onForkThread}
                 />
               </div>
             )}
@@ -257,14 +262,12 @@ function CompletionSummary({
   agentId: _agentId,
   events,
   summary,
-  status,
-  workspaceRoot
+  status
 }: {
   agentId: string
   events: RuntimeEvent[]
   summary: AgentEventSummary
   status: WorkbenchTurnStatus
-  workspaceRoot?: string | null
 }) {
   const stats = completionStats(events, summary, status)
   if (status === 'cancelled' && stats.activities === 0) return null
@@ -275,7 +278,7 @@ function CompletionSummary({
   const successfulRunCount = failedRunCount || toolCalls.length > 0 ? 0 : status === 'completed' || summary.hasDone || summary.hasOrchestrateFinal ? 1 : 0
   const visibleFailedTools = status === 'failed' ? toolCalls.filter(c => c.status === 'failed').length : 0
   const historicalFailedAttempts = status === 'completed' ? toolCalls.filter(c => c.status === 'failed').length : 0
-  const hasReportableWork = toolCalls.length > 0 || successfulRunCount > 0 || failedRunCount > 0 || stats.files.length > 0 || stats.finalPreview
+  const hasReportableWork = toolCalls.length > 0 || failedRunCount > 0 || stats.files.length > 0
   if (!hasReportableWork) return null
   const execReport = {
     totalTools: toolCalls.length + failedRunCount + successfulRunCount,
@@ -289,11 +292,6 @@ function CompletionSummary({
   return (
     <div className="wb-completion-wrapper">
       <ExecutionReport stats={execReport} />
-      {stats.finalPreview && (
-        <div className="wb-completion-final-preview">
-          <MarkdownBlock content={stats.finalPreview} workspaceRoot={workspaceRoot} />
-        </div>
-      )}
       {status === 'failed' && summary.error?.payload?.error && (
         <div className="wb-output-error">
           {friendlyError(summary.error.payload.error)}
@@ -427,7 +425,7 @@ function completionStats(events: RuntimeEvent[], summary: AgentEventSummary, sta
     guardVerdicts: summary.guardEvents.length,
     routeDecisions: summary.routeEvents.length,
     files,
-    finalPreview: status === 'completed' ? doneSummaryText(summary) : ''
+    finalPreview: ''
   }
 }
 
@@ -755,6 +753,16 @@ function groupEvents(events: RuntimeEvent[]): Map<string, RuntimeEvent[]> {
     else grouped.set(event.turnId, [event])
   }
   return grouped
+}
+
+function isChatVisibleRuntimeEvent(event: RuntimeEvent): boolean {
+  if (event.kind === 'turn:created' || event.kind === 'turn:status' || event.kind === 'turn:summary' || event.kind === 'memory:candidate') return false
+  if (event.agentId && INTERNAL_TIMELINE_AGENT_IDS.has(event.agentId)) return false
+  if (event.payload?.visibility === 'run') return false
+  if (event.kind === 'agent:delta' || event.kind === 'agent:done' || event.kind === 'agent:start' || event.kind === 'agent:error' || event.kind === 'agent:activity') return true
+  if (event.kind === 'orchestrate' || event.payload?.kind?.startsWith?.('orchestrate:')) return true
+  if (event.kind === 'guard:verdict') return true
+  return false
 }
 
 function turnLabel(turn: WorkbenchTurn): string {

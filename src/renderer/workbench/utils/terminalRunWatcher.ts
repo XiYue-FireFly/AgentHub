@@ -12,7 +12,9 @@ export async function watchTerminalRun(
     const current = history.find(run => run.id === runId)
     setRuns(history)
     if (current && current.status !== 'running') break
-    if (!current) break
+    // Only break if history is non-empty but runId not found (run was deleted)
+    // If history is empty, retry (might be temporary IPC issue)
+    if (!current && history.length > 0) break
     attempt += 1
   }
 }

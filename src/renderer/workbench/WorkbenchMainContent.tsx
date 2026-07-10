@@ -41,6 +41,7 @@ interface WorkbenchMainContentProps {
   targetAgent: string | null
   agents: AgentMap
   localAgents: LocalAgentStatus[]
+  onLocalAgentsChanged: (agents: LocalAgentStatus[]) => void
   sending: boolean
   sendPrompt: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: { targetAgent?: string | null; mode?: DispatchPreset; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }) => Promise<any>
   cancelLatest: () => Promise<void>
@@ -56,13 +57,14 @@ interface WorkbenchMainContentProps {
   cancelAgent: (turnId: string, agentId: string) => Promise<void>
   resolveGuard: (requestId: string, approved: boolean) => Promise<void>
   createThread: (workspaceId?: string | null) => Promise<void>
+  selectThread: (threadId: string | null) => Promise<void>
   handleThreadScroll: () => void
   threadScrollRef: React.RefObject<HTMLElement>
   search: string
   runtimeTasks: TaskItem[]
   cancelRuntimeTask: (id: string) => Promise<void>
   deleteRuntimeTask: (id: string) => Promise<void>
-  clearCompletedRuntimeTasks: () => Promise<void>
+  clearCompletedRuntimeTasks: (workspaceId?: string | null) => Promise<void>
   providers: ProviderDef[]
   bindings: BindingDef[]
   fallbackChain: string[]
@@ -120,6 +122,7 @@ export function WorkbenchMainContent({
   targetAgent,
   agents,
   localAgents,
+  onLocalAgentsChanged,
   sending,
   sendPrompt,
   cancelLatest,
@@ -135,6 +138,7 @@ export function WorkbenchMainContent({
   cancelAgent,
   resolveGuard,
   createThread,
+  selectThread,
   handleThreadScroll,
   threadScrollRef,
   search,
@@ -242,6 +246,7 @@ export function WorkbenchMainContent({
             openSetup={openSetup}
             onCreateProject={openCreateProject}
             onCreateThread={createThread}
+            onForkThread={(id) => { void selectThread(id) }}
             hasWorkspace={!!workspaceId}
             workspaceRoot={activeWorkspace?.rootPath ?? null}
             scrollRef={threadScrollRef}
@@ -291,6 +296,7 @@ export function WorkbenchMainContent({
         <div className="wb-scroll-surface">
           <TasksScreen
             tasks={runtimeTasks}
+            workspaces={workspaces}
             search={search}
             onCancelTask={cancelRuntimeTask}
             onDeleteTask={deleteRuntimeTask}
@@ -303,13 +309,18 @@ export function WorkbenchMainContent({
 
       {view === 'requirements' && (
         <ErrorBoundary label="Requirements">
-        <div className="wb-scroll-surface">
+        <div className="wb-scroll-surface wb-requirements-surface">
           <SddRequirementsList
             workspaceRoot={activeWorkspace?.rootPath ?? null}
             threadId={activeThreadId}
             threadTodos={threadTodos}
             events={activeEvents}
+            providers={providers}
+            modelSelection={modelSelection}
+            onModelSelectionChange={setModelSelection}
             onThreadTodosChanged={refreshThreadTodos}
+            onSendRequirementToChat={(prompt, requirementModelSelection) => sendPrompt(prompt, [], { modelSelection: requirementModelSelection ?? modelSelection })}
+            onRequirementSentToChat={() => setView('chat')}
           />
         </div>
         </ErrorBoundary>
@@ -338,6 +349,7 @@ export function WorkbenchMainContent({
             connectionSummary={connectionSummary}
             goChat={agentId => { selectTargetAgent(agentId); setView('chat') }}
             openSetup={openSetup}
+            onLocalAgentsChanged={onLocalAgentsChanged}
           />
           </React.Suspense>
         </div>

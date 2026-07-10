@@ -264,7 +264,10 @@ async function probeStdioServer(server: McpServerConfig): Promise<void> {
         clientInfo: { name: appName, version: appVersion }
       }
     }) + '\n'
-    try { child.stdin?.write(initRequest) } catch (err) { console.error('[mcp] stdin write failed:', err) }
+    try { child.stdin?.write(initRequest) } catch (err) {
+      console.error('[mcp] stdin write failed:', err)
+      finish(new Error('Failed to write initialize request to MCP server stdin'))
+    }
   })
 }
 

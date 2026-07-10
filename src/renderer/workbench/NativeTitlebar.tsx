@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
-import { readAppearanceLocal } from '../appearance'
 import { resolveKeyboardShortcutBindings, shortcutDisplay } from '../keyboard-shortcuts'
 import type { ViewMode } from './viewModes'
 
@@ -52,18 +51,8 @@ export function NativeTitlebar({
   shortcuts
 }: NativeTitlebarProps) {
   const win = window.electronAPI?.win
+  const platformClass = window.electronAPI?.platform === 'darwin' ? 'platform-darwin' : 'platform-win32'
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'help' | null>(null)
-  const [uiStyle, setUiStyle] = useState<'mac' | 'win'>(() => readAppearanceLocal().uiStyle)
-  const isMacStyle = uiStyle === 'mac'
-
-  useEffect(() => {
-    const handler = (event: Event) => {
-      const next = (event as CustomEvent).detail
-      if (next?.uiStyle) setUiStyle(next.uiStyle)
-    }
-    window.addEventListener('agenthub:appearance-change', handler)
-    return () => window.removeEventListener('agenthub:appearance-change', handler)
-  }, [])
 
   useEffect(() => {
     if (!openMenu) return
@@ -83,12 +72,12 @@ export function NativeTitlebar({
   }
 
   return (
-    <div className="wb-titlebar app-drag" onDoubleClick={() => win?.maximizeToggle()}>
-      {isMacStyle && (
-        <div className="wb-traffic-lights app-no-drag">
-          <span className="tl-dot tl-close" onClick={() => win?.close()} />
-          <span className="tl-dot tl-min" onClick={() => win?.minimize()} />
-          <span className="tl-dot tl-max" onClick={() => win?.maximizeToggle()} />
+    <div className={`wb-titlebar ${platformClass} app-drag`} onDoubleClick={() => win?.maximizeToggle()}>
+      {platformClass === 'platform-darwin' && (
+        <div className="wb-traffic-lights app-no-drag" aria-label="Window controls">
+          <button type="button" className="tl-dot tl-close" onClick={() => win?.close()} title="Close" aria-label="Close" />
+          <button type="button" className="tl-dot tl-min" onClick={() => win?.minimize()} title="Minimize" aria-label="Minimize" />
+          <button type="button" className="tl-dot tl-max" onClick={() => win?.maximizeToggle()} title="Maximize" aria-label="Maximize" />
         </div>
       )}
       <TitlebarMenu
@@ -98,6 +87,7 @@ export function NativeTitlebar({
         setOpenMenu={setOpenMenu}
         items={[
           { label: tr('新建对话', 'New chat'), shortcut: shortcutDisplay(shortcuts['new-chat']), action: run(createThread) },
+          { label: tr('新建工作台窗口', 'New workbench window'), shortcut: 'Ctrl+Shift+N', action: run(() => window.electronAPI.windows.openWorkbench()) },
           { label: tr('添加工作目录', 'Add working folder'), shortcut: shortcutDisplay(shortcuts['choose-workspace']), action: run(openCreateProject) },
           { label: tr('打开 Git 面板', 'Open Git panel'), shortcut: shortcutDisplay(shortcuts['panel-git']), action: run(() => setRightPanel('git')) },
           { label: tr('打开浏览器', 'Open browser'), shortcut: shortcutDisplay(shortcuts['panel-browser']), action: run(() => setRightPanel('browser')) }
@@ -113,6 +103,7 @@ export function NativeTitlebar({
           { label: tr('写作', 'Write'), shortcut: shortcutDisplay(shortcuts['view-write']), checked: view === 'write', action: run(() => setView('write')) },
           { label: tr('任务历史', 'Tasks'), shortcut: shortcutDisplay(shortcuts['view-tasks']), checked: view === 'tasks', action: run(() => setView('tasks')) },
           { label: tr('需求', 'Requirements'), shortcut: shortcutDisplay(shortcuts['view-requirements']), checked: view === 'requirements', action: run(() => setView('requirements')) },
+          { label: tr('工作流', 'Workflows'), shortcut: shortcutDisplay(shortcuts['open-workflows']), checked: view === 'workflows', action: run(() => setView('workflows')) },
           { label: tr('设置', 'Settings'), shortcut: shortcutDisplay(shortcuts['view-settings']), checked: view === 'settings', action: run(() => setView('settings')) },
           { label: tr('运行面板', 'Runs panel'), shortcut: shortcutDisplay(shortcuts['panel-runs']), action: run(() => setRightPanel('runs')) },
           { label: tr('工作树面板', 'Worktrees panel'), action: run(() => setRightPanel('worktrees')) }
@@ -126,6 +117,12 @@ export function NativeTitlebar({
         items={[
           { label: tr('快捷键设置', 'Keyboard shortcuts'), shortcut: shortcutDisplay(shortcuts['settings-shortcuts']), action: run(() => openSetup('shortcuts')) },
           { label: tr('MCP 配置', 'MCP settings'), shortcut: shortcutDisplay(shortcuts['settings-mcp']), action: run(() => openSetup('mcp')) },
+          { label: tr('插件管理', 'Plugin manager'), action: run(() => openSetup('plugins')) },
+          { label: tr('模型列表', 'Models'), action: run(() => openSetup('models')) },
+          { label: tr('用量统计', 'Usage stats'), action: run(() => openSetup('usage')) },
+          { label: tr('运行诊断', 'Diagnostics'), action: run(() => openSetup('diagnostics')) },
+          { label: tr('Agent Loop', 'Agent Loop'), action: run(() => openSetup('agentLoop')) },
+          { label: tr('版本与更新', 'Version & Updates'), action: run(() => openSetup('updates')) },
           { label: tr('打开项目主页', 'Open homepage'), action: run(() => window.electronAPI.app.openExternal('https://agenthub.dev')) }
         ]}
       />
@@ -139,9 +136,9 @@ export function NativeTitlebar({
         {hubRunning ? tr('Hub 运行中', 'Hub running') : tr('Hub 离线', 'Hub offline')}
       </div>
       <div className="wb-window-actions app-no-drag">
-        <button onClick={() => win?.minimize()}><Icon d={IC.min} size={13} /></button>
-        <button onClick={() => win?.maximizeToggle()}><Icon d={IC.max} size={13} /></button>
-        <button onClick={() => win?.close()}><Icon d={IC.x} size={13} /></button>
+        <button onClick={() => win?.minimize()} title="Minimize" aria-label="Minimize"><Icon d={IC.min} size={13} /></button>
+        <button onClick={() => win?.maximizeToggle()} title="Maximize" aria-label="Maximize"><Icon d={IC.max} size={13} /></button>
+        <button onClick={() => win?.close()} title="Close" aria-label="Close"><Icon d={IC.x} size={13} /></button>
       </div>
     </div>
   )

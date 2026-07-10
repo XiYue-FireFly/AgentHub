@@ -1,6 +1,6 @@
 # AgentHub Version Register
 
-Current code version: 1.2.4
+Current code version: 2.0.0
 Current branch baseline: new
 Updated: 2026-07-06
 
@@ -9,6 +9,31 @@ keep `package.json.version`, `package.json.build.buildVersion`, this current
 version, and release notes aligned.
 
 ## Release History
+
+### 2.0.0
+
+Purpose: AgentHub 2.0 orchestration release with local-agent detection hardening.
+
+Main changes:
+- Added visual DAG scheduling metadata while keeping compiled steps as the runtime execution format.
+- Added dispatch budget estimation, pre-dispatch budget blocking, and usage attribution filters.
+- Added declarative plugin contribution points for slash commands, activity parsers, and pre-dispatch hooks.
+- Added multi-window workbench support with shared runtime state and per-window UI state.
+- Added unsigned GitHub auto-update flow with manual check, download, progress, and install states.
+- Hardened local Agent detection so invalid, quoted, `.cmd`/`.bat`, and Windows shim command paths cannot crash `localAgents:detect`.
+
+Fixes:
+- Prevents `spawn EINVAL` from escaping local Agent detection IPC.
+- Preserves usable local Agent entries when one configured binary is stale or malformed.
+- Supports configured local command names such as `codex`, `opencode`, `codex.cmd`, and quoted executable paths.
+
+Verification recorded:
+- `npm run typecheck`
+- `npm run lint`
+- `npm test`
+- `npm run build`
+- `npm run test:e2e`
+- `npm run build:win`
 
 ### 1.2.4
 

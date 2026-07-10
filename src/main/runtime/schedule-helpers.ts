@@ -6,6 +6,7 @@ import { getWorkbenchRuntimeStore } from './store'
 import { getApprovalConfig } from '../agentic/approval'
 import { evaluateGuardVerdict, emitGuardVerdict, executorVerdictNeedsApproval, requestGuardApproval } from './guard-approval-service'
 import { guardShouldBlockExecutor } from './guards'
+import { compactChatMessages, compactTextByTokenBudget } from './token-economy'
 
 const runtimeStore = getWorkbenchRuntimeStore()
 
@@ -146,11 +147,6 @@ export function appendSyntheticChatRelease(input: {
     synthetic: true,
     usageExcluded: true
   }
-  runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:delta", input.step.agentId, {
-    ...payload,
-    channel: "content",
-    text: content
-  })
   runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:done", input.step.agentId, payload)
 }
 
@@ -165,6 +161,7 @@ export async function runCustomScheduleTurn(input: {
   isCancelled: () => boolean
   thinking?: any
   modelSelection?: ModelSelection
+  preserveCurrentMessage?: boolean
   routeDecision?: RouteDecision
   recentUserMessages?: string[]
   emitMemoryCandidates: (threadId: string, turnId: string, prompt: string, content: string) => void
@@ -177,10 +174,11 @@ export async function runCustomScheduleTurn(input: {
   if (validation.error) return { status: "failed", error: validation.error }
   const layers = fireflyHandoff ? validation.steps.map(step => [step]) : orderedCustomLayers(validation.steps)
   const gatedCandidateIds = fireflyHandoff ? new Set<string>() : gatedCandidateStepIds(validation.steps)
+  const stepsById = new Map(validation.steps.map(step => [step.id, step]))
+  const compressedHistory = compactScheduleHistory(input.messages, input.prompt)
   if (layers.length === 0) {
     return { status: "failed", error: "No usable local agents are available for this custom schedule." }
   }
-  let context = input.prompt
   const outputs: Array<{ step: ScheduleStep; content: string; error?: string }> = []
   let blockedByGuard: string | null = null
   let deniedByGuard: string | null = null
@@ -217,7 +215,7 @@ export async function runCustomScheduleTurn(input: {
         return { step, content: "", error: blockedByGuard, status: "failed" as const }
       }
       const role = `${step.label} / ${step.role}`
-      const stepContext = promptForScheduleStep(step, context, outputs, input)
+      const stepContext = promptForScheduleStep(step, outputs, input, stepsById, compressedHistory)
       const stepPrompt = [
         `[AgentHub Custom Schedule]`,
         `Current step: ${role}`,
@@ -226,12 +224,10 @@ export async function runCustomScheduleTurn(input: {
         stepContext
       ].filter(Boolean).join("\n")
       const stepModelSelection = modelSelectionForScheduleStep(input.modelSelection, step)
-      const stepMessages = step.role === "router"
-        ? [{ role: "user", content: stepPrompt } as ChatCompletionMessage]
-        : [
-          ...input.messages.slice(0, -1),
-          { role: "user", content: stepPrompt } as ChatCompletionMessage
-        ]
+      const stepMessages = [
+        ...compressedHistory,
+        { role: "user", content: stepPrompt } as ChatCompletionMessage
+      ]
       const task = await input.dispatcher.dispatch(stepPrompt, "auto", step.agentId, {
         thinking: input.thinking,
         workspaceId: input.workspaceId,
@@ -240,6 +236,7 @@ export async function runCustomScheduleTurn(input: {
         threadId: `${input.threadId}:custom:${step.id}`,
         conversationText: stepPrompt,
         messages: stepMessages,
+        preserveCurrentMessage: input.preserveCurrentMessage,
         streamMeta: streamMetaForScheduleStep(step, gatedCandidateIds, fireflyHandoff)
       })
       const content = task.results.get(step.agentId) || ""
@@ -336,12 +333,6 @@ export async function runCustomScheduleTurn(input: {
         return { status: "failed", error: failed.error || `${failed.step.label} failed` }
       }
     }
-    context = [
-      input.prompt,
-      "",
-      "[Upstream Custom Schedule Outputs]",
-      ...outputs.map(item => `## ${item.step.label} (${item.step.agentId})\n${item.content || "(no text output)"}`)
-    ].join("\n\n")
   }
   if (blockedByGuard) return { status: "failed", error: blockedByGuard }
   const gatedFinal = finalScheduleRelease(outputs, fireflyHandoff, gatedCandidateIds)
@@ -405,7 +396,13 @@ export function stripGuardPreamble(content: string): string {
   return [rest, tail].filter(Boolean).join("\n\n").trim() || String(content || "").trim()
 }
 
-export function promptForScheduleStep(step: ScheduleStep, context: string, outputs: Array<{ step: ScheduleStep; content: string; error?: string }>, input: { prompt: string; routeDecision?: RouteDecision; recentUserMessages?: string[] }): string {
+export function promptForScheduleStep(
+  step: ScheduleStep,
+  outputs: Array<{ step: ScheduleStep; content: string; error?: string }>,
+  input: { prompt: string; routeDecision?: RouteDecision; recentUserMessages?: string[]; preserveCurrentMessage?: boolean },
+  stepsById = new Map<string, ScheduleStep>(),
+  _compressedHistory: ChatCompletionMessage[] = []
+): string {
   if (step.role === "router") {
     return [
       "[Router scope]",
@@ -419,6 +416,7 @@ export function promptForScheduleStep(step: ScheduleStep, context: string, outpu
       `Route decision:\n${JSON.stringify(input.routeDecision || {}, null, 2)}`
     ].join("\n")
   }
+  const context = scheduleStepContext(step, outputs, input.prompt, stepsById, input.preserveCurrentMessage)
   if (step.role === "reviewer") {
     return [
       "[Reviewer scope]",
@@ -459,6 +457,58 @@ export function promptForScheduleStep(step: ScheduleStep, context: string, outpu
     ].join("\n")
   }
   return context
+}
+
+function compactScheduleHistory(messages: ChatCompletionMessage[], prompt: string): ChatCompletionMessage[] {
+  if (!messages.length) return []
+  const history = messages.slice(0, -1)
+  if (!history.length) return []
+  return compactChatMessages(history, {
+    maxTokens: 3_000,
+    keepRecentMessages: 2,
+    perHistoricalMessageTokens: 700,
+    currentMessageTokens: 1_200
+  })
+    .filter(message => !sameTrimmed(message.content, prompt))
+    .slice(-3)
+}
+
+function scheduleStepContext(step: ScheduleStep, outputs: Array<{ step: ScheduleStep; content: string; error?: string }>, prompt: string, stepsById: Map<string, ScheduleStep>, preservePrompt = false): string {
+  const dependencyIds = dependencyOutputIds(step, stepsById)
+  const relevant = dependencyIds.size
+    ? outputs.filter(item => dependencyIds.has(item.step.id))
+    : outputs.slice(-2)
+  const upstream = relevant.map(item => {
+    const raw = item.error ? `ERROR: ${item.error}` : item.content || "(no text output)"
+    const compacted = compactTextByTokenBudget(raw, 1_800, {
+      headTokens: 1_200,
+      tailTokens: 400,
+      marker: `[... upstream output from ${item.step.label} omitted by token economy ...]`
+    }).text
+    return `## ${item.step.label} (${item.step.agentId}, ${item.step.role})\n${compacted}`
+  })
+  return [
+    "[User Request]",
+    preservePrompt ? prompt : compactTextByTokenBudget(prompt, 4_000).text,
+    upstream.length ? "\n[Relevant Upstream Outputs]" : "",
+    ...upstream
+  ].filter(Boolean).join("\n\n")
+}
+
+function dependencyOutputIds(step: ScheduleStep, stepsById: Map<string, ScheduleStep>): Set<string> {
+  const ids = new Set<string>()
+  const visit = (id: string) => {
+    if (ids.has(id)) return
+    ids.add(id)
+    const dep = stepsById.get(id)
+    for (const parent of dep?.dependsOn ?? []) visit(parent)
+  }
+  for (const dep of step.dependsOn ?? []) visit(dep)
+  return ids
+}
+
+function sameTrimmed(left: string, right: string): boolean {
+  return left.replace(/\s+/g, " ").trim() === right.replace(/\s+/g, " ").trim()
 }
 
 export function modelSelectionForScheduleStep(selection: ModelSelection | undefined, step: ScheduleStep): ModelSelection | undefined {

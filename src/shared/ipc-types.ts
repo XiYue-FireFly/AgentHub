@@ -486,12 +486,22 @@ export interface PluginManifest {
   }
 }
 
+export type PluginIntegrityStatus = 'ok' | 'mismatch' | 'missing' | 'unsigned' | 'error'
+
+export interface PluginIntegrity {
+  status: PluginIntegrityStatus
+  message?: string
+  checkedFiles?: number
+  failedFiles?: string[]
+}
+
 export interface PluginEntry {
   id: string
   manifest: PluginManifest
   path: string
   enabled: boolean
   source: 'local' | 'global'
+  integrity?: PluginIntegrity
 }
 
 // ============================================================

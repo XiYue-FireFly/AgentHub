@@ -243,6 +243,10 @@ function DagScheduleEditor({
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(graph.nodes[0]?.id ?? null)
   const [graphError, setGraphError] = React.useState<string | null>(null)
   const dragRef = React.useRef<{ id: string; dx: number; dy: number } | null>(null)
+  // W-M7: live layout during drag — updated on pointermove without re-validating/recompiling the
+  // whole schedule graph; committed to schedule once on pointerup.
+  const [dragLayout, setDragLayout] = React.useState<Record<string, { x: number; y: number }> | null>(null)
+  const layout = dragLayout ?? graph.layout
   const selectedNode = graph.nodes.find(node => node.id === selectedNodeId) || graph.nodes[0] || null
   const graphValidation = validateScheduleGraph(graph)
 
@@ -328,25 +332,29 @@ function DagScheduleEditor({
   }
 
   const onNodePointerDown = (event: React.PointerEvent<SVGGElement>, nodeId: string) => {
-    const point = graph.layout[nodeId] || { x: 0, y: 0 }
+    const point = layout[nodeId] || { x: 0, y: 0 }
     dragRef.current = { id: nodeId, dx: event.clientX - point.x, dy: event.clientY - point.y }
+    setDragLayout({ ...layout })
     event.currentTarget.setPointerCapture(event.pointerId)
     setSelectedNodeId(nodeId)
   }
 
   const onNodePointerMove = (event: React.PointerEvent<SVGGElement>) => {
     const drag = dragRef.current
-    if (!drag) return
+    if (!drag || !dragLayout) return
     const x = Math.max(0, Math.min(360, event.clientX - drag.dx))
     const y = Math.max(0, Math.min(330, event.clientY - drag.dy))
-    patchGraph(current => ({
-      ...current,
-      layout: { ...current.layout, [drag.id]: { x, y } }
-    }))
+    setDragLayout(current => ({ ...current, [drag.id]: { x, y } }))
   }
 
   const onNodePointerUp = (event: React.PointerEvent<SVGGElement>) => {
+    const drag = dragRef.current
+    if (drag && dragLayout) {
+      // Commit the final layout once, revalidating the graph.
+      patchGraph(current => ({ ...current, layout: { ...current.layout, [drag.id]: dragLayout[drag.id] } }))
+    }
     dragRef.current = null
+    setDragLayout(null)
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
@@ -356,13 +364,42 @@ function DagScheduleEditor({
   }
 
   const templatesDisabled = agents.length === 0
+  const [fireflyTemplates, setFireflyTemplates] = React.useState<Array<{ id: string; name: string }>>([])
+  React.useEffect(() => {
+    let cancelled = false
+    void window.electronAPI?.firefly?.listTemplates?.()
+      .then(list => {
+        if (!cancelled && Array.isArray(list)) {
+          setFireflyTemplates(list.map(t => ({ id: t.id, name: t.name })))
+        }
+      })
+      .catch(() => { /* ignore */ })
+    return () => { cancelled = true }
+  }, [])
+
+  const applyFireflyTemplate = (templateId: string) => {
+    const kind = fireflyTemplateToScheduleKind(templateId)
+    if (kind) applyTemplate(kind)
+  }
 
   return (
     <div className="wb-custom-schedule">
-      <div className="wb-template-buttons">
+      <div className="wb-template-buttons" role="group" aria-label={tr('调度模板', 'Schedule templates')}>
         <button onClick={() => applyTemplate('five')} disabled={templatesDisabled}>{tr('五角色', 'Five-role')}</button>
         <button onClick={() => applyTemplate('parallel')} disabled={templatesDisabled}>{tr('并行评审', 'Parallel review')}</button>
         <button onClick={() => applyTemplate('executor')} disabled={templatesDisabled}>{tr('执行门禁', 'Executor gate')}</button>
+        {fireflyTemplates.map(t => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => applyFireflyTemplate(t.id)}
+            disabled={templatesDisabled}
+            title={t.id}
+            aria-label={tr(`应用模板 ${t.name}`, `Apply template ${t.name}`)}
+          >
+            {t.name}
+          </button>
+        ))}
       </div>
       {templatesDisabled && (
         <div className="wb-muted-box">{tr('没有可用本地 Agent 时不能套用调度模板。请先在路由设置里配置 CLI。', 'Configure a usable local CLI agent before applying schedule templates.')}</div>
@@ -378,8 +415,8 @@ function DagScheduleEditor({
             </marker>
           </defs>
           {graph.edges.map(edge => {
-            const from = graph.layout[edge.from] || { x: 0, y: 0 }
-            const to = graph.layout[edge.to] || { x: 0, y: 0 }
+            const from = layout[edge.from] || { x: 0, y: 0 }
+            const to = layout[edge.to] || { x: 0, y: 0 }
             return (
               <g key={edge.id} className="wb-dag-edge">
                 <path d={`M ${from.x + 142} ${from.y + 34} C ${from.x + 188} ${from.y + 34}, ${to.x - 34} ${to.y + 34}, ${to.x + 8} ${to.y + 34}`} markerEnd="url(#dag-arrow)" />
@@ -388,7 +425,7 @@ function DagScheduleEditor({
             )
           })}
           {graph.nodes.map((node, index) => {
-            const point = graph.layout[node.id] || { x: 28 + index * 24, y: 32 + index * 84 }
+            const point = layout[node.id] || { x: 28 + index * 24, y: 32 + index * 84 }
             const selected = selectedNode?.id === node.id
             return (
               <g
@@ -544,13 +581,41 @@ function CustomScheduleEditor({
     if (next) setSchedule({ ...next, preset: lockedPreset })
   }
   const templatesDisabled = agents.length === 0
+  const [fireflyTemplates, setFireflyTemplates] = React.useState<Array<{ id: string; name: string }>>([])
+  React.useEffect(() => {
+    let cancelled = false
+    void window.electronAPI?.firefly?.listTemplates?.()
+      .then(list => {
+        if (!cancelled && Array.isArray(list)) {
+          setFireflyTemplates(list.map(t => ({ id: t.id, name: t.name })))
+        }
+      })
+      .catch(() => { /* ignore */ })
+    return () => { cancelled = true }
+  }, [])
+  const applyFireflyTemplate = (templateId: string) => {
+    const kind = fireflyTemplateToScheduleKind(templateId)
+    if (kind) applyTemplate(kind)
+  }
 
   return (
     <div className="wb-custom-schedule">
-      <div className="wb-template-buttons">
+      <div className="wb-template-buttons" role="group" aria-label={tr('调度模板', 'Schedule templates')}>
         <button onClick={() => applyTemplate('five')} disabled={templatesDisabled}>{tr('五角色模板', 'Five-role')}</button>
         <button onClick={() => applyTemplate('parallel')} disabled={templatesDisabled}>{tr('并行审查', 'Parallel review')}</button>
         <button onClick={() => applyTemplate('executor')} disabled={templatesDisabled}>{tr('执行门禁', 'Executor gate')}</button>
+        {fireflyTemplates.map(t => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => applyFireflyTemplate(t.id)}
+            disabled={templatesDisabled}
+            title={t.id}
+            aria-label={tr(`应用模板 ${t.name}`, `Apply template ${t.name}`)}
+          >
+            {t.name}
+          </button>
+        ))}
       </div>
       {templatesDisabled && (
         <div className="wb-muted-box">{tr('没有可用本地 Agent 时不能套用调度模板。请先在路由设置里配置 CLI。', 'Configure a usable local CLI agent before applying schedule templates.')}</div>
@@ -657,6 +722,14 @@ function relativeEventTime(ts: number): string {
   if (diff < 60_000) return tr('刚刚', 'now')
   if (diff < 3_600_000) return `${Math.round(diff / 60_000)}${tr('分钟前', 'm ago')}`
   return `${Math.round(diff / 3_600_000)}${tr('小时前', 'h ago')}`
+}
+
+/** Map Wave4 Firefly built-in template ids to local schedule template kinds. */
+function fireflyTemplateToScheduleKind(templateId: string): 'five' | 'parallel' | 'executor' | null {
+  if (templateId === 'firefly-five-role') return 'five'
+  if (templateId === 'pair-review') return 'parallel'
+  if (templateId === 'solo-tdd') return 'executor'
+  return null
 }
 
 function LocalAgentPicker({ agent, onChange }: { agent: LocalAgentStatus; onChange: (agents: LocalAgentStatus[]) => void }) {

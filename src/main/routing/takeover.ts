@@ -201,7 +201,7 @@ export function claudeApply(modelRef: string, proxyOrigin: string): TakeoverStat
     ANTHROPIC_BASE_URL: proxyOrigin,
     ANTHROPIC_AUTH_TOKEN: getLocalToken(),
     ANTHROPIC_MODEL: modelRef,
-    ANTHROPIC_SMALL_FAST_MODEL: env.ANTHROPIC_SMALL_FAST_MODEL || modelRef
+    ANTHROPIC_SMALL_FAST_MODEL: modelRef
   }
   atomicWrite(path, JSON.stringify(j, null, 2) + '\n')
   return claudeStatus()

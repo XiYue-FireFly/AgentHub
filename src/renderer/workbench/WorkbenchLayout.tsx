@@ -87,6 +87,19 @@ interface WorkbenchLayoutProps {
   setMotion: (m: MotionLevel) => void
 }
 
+// W-L3: Shallow equality check to avoid expensive JSON.stringify for schedule comparison
+function isShallowEqual<T>(a: T, b: T): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false
+  const keysA = Object.keys(a as Record<string, unknown>)
+  const keysB = Object.keys(b as Record<string, unknown>)
+  if (keysA.length !== keysB.length) return false
+  for (const key of keysA) {
+    if ((a as Record<string, unknown>)[key] !== (b as Record<string, unknown>)[key]) return false
+  }
+  return true
+}
+
 export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const view = useWorkbenchUiStore(state => state.view)
   const setView = useWorkbenchUiStore(state => state.setView)
@@ -103,6 +116,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const commandPaletteOpen = useWorkbenchUiStore(state => state.commandPaletteOpen)
   const setCommandPaletteOpen = useWorkbenchUiStore(state => state.setCommandPaletteOpen)
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot>({ threads: [], turns: [], runs: [], activeThreadId: null })
+  const [allSnapshot, setAllSnapshot] = useState<WorkbenchSnapshot>({ threads: [], turns: [], runs: [], activeThreadId: null })
   const [selectedThreadId, setSelectedThreadIdState] = useState<string | null>(null)
   const [allThreads, setAllThreads] = useState<WorkbenchThread[]>([])
   const [events, setEvents] = useState<RuntimeEvent[]>([])
@@ -110,7 +124,13 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [approvals, setApprovals] = useState<ApprovalItem[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([])
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const workspaceIdRef = useRef<string | null>(null)
   const [pendingActiveThreadId, setPendingActiveThreadId] = useState<string | null>(null)
+  const pendingActiveThreadIdRef = useRef<string | null>(null)
+
+  // Sync refs with state
+  useEffect(() => { workspaceIdRef.current = workspaceId }, [workspaceId])
+  useEffect(() => { pendingActiveThreadIdRef.current = pendingActiveThreadId }, [pendingActiveThreadId])
   const emptyWorkspaceRetryRef = useRef(0)
   const [mode, setMode] = useState<DispatchPreset>('lead-workers')
   const [targetAgent, setTargetAgent] = useState<string | null>(null)
@@ -349,6 +369,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         ? persistedThreadId
         : snap.threads[0]?.id ?? null
     setSnapshot({ ...snap, activeThreadId: nextVisibleThreadId })
+    setAllSnapshot(allSnap)
     setAllThreads(allSnap.threads)
     setWorkspaces(wsList)
     setWorkspaceId(resolvedWorkspaceId)
@@ -436,7 +457,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.runtime.onEvent(event => {
-      const isPendingThreadEvent = pendingActiveThreadId !== null && event.threadId === loadingThreadIdRef.current
+      const isPendingThreadEvent = pendingActiveThreadIdRef.current !== null && event.threadId === loadingThreadIdRef.current
       const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current
       appendApprovalFromRuntimeEvent(event)
       const runtimeAgentStatus = runtimeAgentStatusFromEvent(event)
@@ -468,7 +489,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         appendTaskRuntimeEvents(event.threadId, [event])
       }
 
-      if (pendingActiveThreadId) {
+      if (pendingActiveThreadIdRef.current) {
         if (snapshotRefreshTimer.current) {
           clearTimeout(snapshotRefreshTimer.current)
           snapshotRefreshTimer.current = null
@@ -480,15 +501,18 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       snapshotRefreshTimer.current = setTimeout(() => {
         if (event.threadId === selectedThreadIdRef.current) {
-          window.electronAPI.runtime.snapshot(workspaceId).then(next => {
+          window.electronAPI.runtime.snapshot(workspaceIdRef.current).then(next => {
             setSnapshot(prev => preserveSelectedSnapshot(next, prev))
           }).catch(() => {})
         } else {
-          window.electronAPI.runtime.snapshot(workspaceId).then(next => {
+          window.electronAPI.runtime.snapshot(workspaceIdRef.current).then(next => {
             setSnapshot(prev => preserveSelectedSnapshot(next, prev))
           }).catch(() => {})
         }
-        window.electronAPI.runtime.snapshot(undefined).then(snap => setAllThreads(snap.threads)).catch(() => {})
+        window.electronAPI.runtime.snapshot(undefined).then(snap => {
+          setAllSnapshot(snap)
+          setAllThreads(snap.threads)
+        }).catch(() => {})
         snapshotRefreshTimer.current = null
       }, immediate ? 0 : 400)
     })
@@ -497,7 +521,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       clearRuntimeEventBuffer()
     }
-  }, [activeThreadId, pendingActiveThreadId, workspaceId, props.onRuntimeAgentStatus, syncSddPlanTodoForRuntimeEvent, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
+  }, [props.onRuntimeAgentStatus, syncSddPlanTodoForRuntimeEvent, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
 
   const onApprovalDecide = useCallback((item: ApprovalItem, approved: boolean, remember: boolean) => {
     if (remember) {
@@ -533,8 +557,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     [events, visibleThreadId, activeThreadId]
   )
   const runtimeTasks = useMemo(
-    () => deriveTaskItems(snapshot, taskEventsByThread),
-    [snapshot, taskEventsByThread]
+    () => deriveTaskItems(allSnapshot, taskEventsByThread),
+    [allSnapshot, taskEventsByThread]
   )
 
   const connectionSummary = useMemo(
@@ -560,7 +584,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     if (props.providers.length > 0) return
     const timer = window.setTimeout(() => props.providerActions.onReload(), 350)
     return () => window.clearTimeout(timer)
-  }, [props.providers.length, props.providerActions])
+  }, [props.providers.length, props.providerActions.onReload])
 
   const applyRoutingSelectionPatch = useCallback((patch: WorkbenchRoutingSelectionPatch) => {
     if (patch.targetAgent !== undefined) setTargetAgent(patch.targetAgent)
@@ -579,7 +603,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     if (usable.length === 0 || customScheduleHasRunnableSteps(smartSchedule)) return
     const next = defaultSmartFiveRoleSchedule(usable)
     // MED-28: Stricter termination — skip if generated schedule is identical to current
-    if (JSON.stringify(next) === JSON.stringify(smartSchedule)) return
+    if (isShallowEqual(next, smartSchedule)) return
     setSmartScheduleState(next)
     window.electronAPI.store.set(SMART_SCHEDULE_STORE_KEY, next).catch(() => {})
   }, [localAgents, smartSchedule])
@@ -602,7 +626,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [setView])
 
   const ensureTaskEventsLoaded = useCallback(() => {
-    const unloadedThreadIds = snapshot.threads
+    const unloadedThreadIds = allSnapshot.threads
       .map(thread => thread.id)
       .filter(threadId => !fullyLoadedTaskThreadIds.current.has(threadId))
     if (unloadedThreadIds.length === 0) return
@@ -619,7 +643,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         return next
       })
     }).catch(() => {})
-  }, [snapshot.threads])
+  }, [allSnapshot.threads])
 
   useEffect(() => {
     if (view === 'tasks') ensureTaskEventsLoaded()
@@ -631,7 +655,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   }, [loadWorkbench, workspaceId])
 
   const deleteRuntimeTask = useCallback(async (id: string) => {
-    const ok = await styledConfirm({ message: tr('删除这条任务历史？对应的运行详情也会从当前会话记录中移除。', 'Delete this task history? Its run details will also be removed from the current conversation.'), danger: true })
+    const ok = await styledConfirm({ message: tr('从任务页隐藏这条任务卡片？对话内容和运行详情会保留。', 'Hide this task card from the task page? Conversation content and run details will be kept.'), danger: true })
     if (!ok) return
     await window.electronAPI.tasks.delete(id).catch(() => false)
     fullyLoadedTaskThreadIds.current.clear()
@@ -639,10 +663,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     loadWorkbench(workspaceId).catch(() => {})
   }, [loadWorkbench, workspaceId])
 
-  const clearCompletedRuntimeTasks = useCallback(async () => {
-    const ok = await styledConfirm({ message: tr('清理所有已结束的任务历史？对应的运行详情也会从当前会话记录中移除。', 'Clear all finished task history? Matching run details will also be removed from the current conversation.'), danger: true })
+  const clearCompletedRuntimeTasks = useCallback(async (targetWorkspaceId: string | null = workspaceId) => {
+    const ok = await styledConfirm({ message: tr('清理当前工作目录已结束的任务卡片？对话内容和运行详情会保留。', 'Hide finished task cards for the current workspace? Conversation content and run details will be kept.'), danger: true })
     if (!ok) return
-    await window.electronAPI.tasks.clearCompleted().catch(() => false)
+    await window.electronAPI.tasks.clearCompleted(targetWorkspaceId).catch(() => false)
     fullyLoadedTaskThreadIds.current.clear()
     setTaskEventsByThread({})
     loadWorkbench(workspaceId).catch(() => {})
@@ -691,6 +715,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       clearRuntimeEventBuffer()
       if (selectThreadGenRef.current !== gen) return // stale — newer call before final writes
       setSnapshot({ ...snap, activeThreadId: selected })
+      setAllSnapshot(allSnap)
       setAllThreads(allSnap.threads)
       if (selected) fullyLoadedTaskThreadIds.current.add(selected)
       if (selected) {
@@ -713,6 +738,9 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       setActiveGoal(goal)
       shouldStickToBottom.current = true
       setView('chat')
+    } catch (e: any) {
+      // W-M3: Capture selectThread failures so the UI shows an error instead of hanging in "switching".
+      setSendError(e?.message || tr('切换对话失败。', 'Failed to switch thread.'))
     } finally {
       if (selectThreadGenRef.current === gen) {
         setPendingActiveThreadId(null)
@@ -934,12 +962,18 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
   }
 
+  // W-M8: keep a stable ref to the latest sendPrompt so dispatchThreadTodo does not need
+  // sendPrompt in its dependency array (avoids re-creating dispatchThreadTodo every render and
+  // causing unnecessary re-renders of children receiving it as a prop).
+  const sendPromptRef = useRef(sendPrompt)
+  sendPromptRef.current = sendPrompt
+
   const dispatchThreadTodo = useCallback(async (todo: ThreadTodo) => {
     if (!activeThreadId || sending || dispatchingTodoId) return
     setDispatchingTodoId(todo.id)
     try {
       const gitBaseline = await getSddPlanDispatchGitBaseline(workspaceId, todo)
-      const result = await sendPrompt(todo.content, [], { targetAgent, mode: 'auto' })
+      const result = await sendPromptRef.current(todo.content, [], { targetAgent, mode: 'auto' })
       const turnId = result?.turn?.id
       if (!turnId) return
       const nextSource = { ...(todo.source || { kind: 'manual' as const }), threadId: activeThreadId, ...gitBaseline, turnId }
@@ -973,12 +1007,15 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     } finally {
       setDispatchingTodoId(null)
     }
-  }, [activeThreadId, dispatchingTodoId, refreshThreadTodos, sendPrompt, sending, syncSddPlanTodoForRuntimeEvent, targetAgent, workspaceId])
+  }, [activeThreadId, dispatchingTodoId, refreshThreadTodos, sending, syncSddPlanTodoForRuntimeEvent, targetAgent, workspaceId])
 
   const cancelAgent = async (turnId: string, agentId: string) => {
     await window.electronAPI.turns.cancelAgent(turnId, agentId).catch(() => false)
     const next = await window.electronAPI.runtime.snapshot(workspaceId).catch(() => snapshot)
     setSnapshot(prev => preserveSelectedSnapshot(next, prev))
+    const allNext = await window.electronAPI.runtime.snapshot(undefined).catch(() => allSnapshot)
+    setAllSnapshot(allNext)
+    setAllThreads(allNext.threads)
   }
 
   const resolveGuard = async (requestId: string, approved: boolean) => {
@@ -1269,6 +1306,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           selectThread={selectThread}
           createThread={createThread}
           createThreadInWorkspace={createThreadInWorkspace}
+          openSetup={openSetup}
           renameThread={renameThread}
           deleteThread={deleteThread}
           search={search}
@@ -1300,6 +1338,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           targetAgent={targetAgent}
           agents={props.agents}
           localAgents={localAgents}
+          onLocalAgentsChanged={setLocalAgents}
           sending={sending}
           sendPrompt={sendPrompt}
           cancelLatest={cancelLatest}
@@ -1315,6 +1354,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           cancelAgent={cancelAgent}
           resolveGuard={resolveGuard}
           createThread={createThread}
+          selectThread={selectThread}
           handleThreadScroll={handleThreadScroll}
           threadScrollRef={threadScrollRef}
           search={search}

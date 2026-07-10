@@ -34,7 +34,11 @@ export function ApprovalsTab() {
     }
   }, [])
 
-  useEffect(() => { load().catch(() => {}) }, [load])
+  useEffect(() => {
+    let alive = true
+    load().catch(() => {})
+    return () => { alive = false }
+  }, [load])
 
   const setPreset = async (preset: ApprovalPreset) => {
     await window.electronAPI.agentic.setApprovalPreset(preset)

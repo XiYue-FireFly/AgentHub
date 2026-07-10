@@ -303,9 +303,23 @@ function isSimilar(a: string, b: string): boolean {
   if (a === b) return true
   if (a.length === 0 || b.length === 0) return false
 
+  // Tokenize: use bigrams for better CJK support
+  const tokenize = (text: string): Set<string> => {
+    const tokens = new Set<string>()
+    // Add word tokens (split by whitespace)
+    for (const word of text.split(/\s+/)) {
+      if (word) tokens.add(word)
+    }
+    // Add character bigrams for CJK support
+    for (let i = 0; i < text.length - 1; i++) {
+      tokens.add(text.substring(i, i + 2))
+    }
+    return tokens
+  }
+
   // 使用 Jaccard 相似度
-  const setA = new Set(a.split(/\s+/))
-  const setB = new Set(b.split(/\s+/))
+  const setA = tokenize(a)
+  const setB = tokenize(b)
   const intersection = new Set([...setA].filter(x => setB.has(x)))
   const union = new Set([...setA, ...setB])
 

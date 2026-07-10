@@ -7,10 +7,13 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, lstatSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { join, basename, dirname, isAbsolute, relative, sep } from 'node:path'
+import { join, basename, dirname, isAbsolute, relative, sep, normalize } from 'node:path'
 import { homedir } from 'node:os'
 import { promisify } from 'node:util'
+import { isPathInsideBase } from '../ipc/path-guards'
+import { loadTrustStore, verifyPluginSignature } from './plugin-signature'
 
 export interface PluginManifest {
   name: string
@@ -28,12 +31,33 @@ export interface PluginManifest {
   }
 }
 
+/** Wave4 P1: content integrity against SHA256SUMS (if present). */
+export type PluginIntegrityStatus = 'ok' | 'mismatch' | 'missing' | 'unsigned' | 'error'
+
+export interface PluginIntegrity {
+  status: PluginIntegrityStatus
+  message?: string
+  checkedFiles?: number
+  failedFiles?: string[]
+}
+
+/** Wave4+: publisher signature over SHA256SUMS. */
+export type PluginSignatureStatus = 'none' | 'ok' | 'untrusted' | 'invalid' | 'error'
+
+export interface PluginSignatureInfo {
+  status: PluginSignatureStatus
+  publisher?: string
+  message?: string
+}
+
 export interface PluginEntry {
   id: string
   manifest: PluginManifest
   path: string
   enabled: boolean
   source: 'local' | 'global'
+  integrity?: PluginIntegrity
+  signature?: PluginSignatureInfo
 }
 
 export interface PluginRepositoryPreset {
@@ -226,7 +250,8 @@ function readPluginSkillContent(pluginRoot: string, skillPath: string): string |
     const realRoot = realpathSync(pluginRoot)
     const fullPath = isAbsolute(skillPath) ? skillPath : join(pluginRoot, skillPath)
     const realSkillPath = realpathSync(fullPath)
-    if (!realSkillPath.startsWith(realRoot)) return undefined
+    // F-N3: use isPathInsideBase instead of startsWith (sibling prefix escape)
+    if (!isPathInsideBase(realSkillPath, realRoot)) return undefined
     const stat = statSync(realSkillPath)
     if (!stat.isFile() || stat.size > 256 * 1024) return undefined
     return readFileSync(realSkillPath, 'utf-8').slice(0, 24000)
@@ -256,13 +281,13 @@ function readManifestEntry(pluginDir: string, source: 'local' | 'global', entryN
   try {
     const manifest: PluginManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'))
     if (!manifest.name || !manifest.version) return null
-    return {
+    return withIntegrity({
       id: `${source}::${entryName}`,
       manifest,
       path: pluginDir,
       enabled: true,
       source
-    }
+    })
   } catch {
     return null
   }
@@ -277,7 +302,7 @@ function readCodexStyleEntry(pluginDir: string, source: 'local' | 'global', entr
   const name = displayName || pluginMeta?.interface?.displayName || pluginMeta?.name || titleFromId(entryName)
   const description = pluginMeta?.interface?.shortDescription || pluginMeta?.description || `Codex-style plugin repository with ${skillFiles.length} skill${skillFiles.length === 1 ? '' : 's'}.`
 
-  return {
+  return withIntegrity({
     id: `${source}::${entryName}`,
     manifest: {
       name,
@@ -291,7 +316,7 @@ function readCodexStyleEntry(pluginDir: string, source: 'local' | 'global', entr
     path: pluginDir,
     enabled: true,
     source
-  }
+  })
 }
 
 function readCodexPackageEntries(pluginDir: string, source: 'local' | 'global', entryName: string): PluginEntry[] {
@@ -310,7 +335,7 @@ function readCodexPackageEntry(packageRoot: string, source: 'local' | 'global', 
   if (skillFiles.length === 0) return null
   const name = pluginMeta?.interface?.displayName || pluginMeta?.name || titleFromId(entryName)
   const description = pluginMeta?.interface?.shortDescription || pluginMeta?.description || `Codex-style plugin package with ${skillFiles.length} skill${skillFiles.length === 1 ? '' : 's'}.`
-  return {
+  return withIntegrity({
     id: `${source}::${entryName}`,
     manifest: {
       name,
@@ -324,6 +349,160 @@ function readCodexPackageEntry(packageRoot: string, source: 'local' | 'global', 
     path: packageRoot,
     enabled: true,
     source
+  })
+}
+
+const MAX_INTEGRITY_ENTRIES = 512
+const MAX_INTEGRITY_FILE_BYTES = 8 * 1024 * 1024
+const MAX_INTEGRITY_TOTAL_BYTES = 64 * 1024 * 1024
+
+/**
+ * Verify plugin directory against SHA256SUMS when present.
+ * No SHA256SUMS → unsigned (allowed for legacy plugins).
+ * Present and fail → mismatch/missing/error; caller disables the plugin.
+ *
+ * When SHA256SUMS exists, every SKILL.md under the plugin must appear in the
+ * checksum list so unlisted skill content cannot be loaded after a partial sums file.
+ */
+export function verifyPluginIntegrity(pluginDir: string): PluginIntegrity {
+  const sumsPath = join(pluginDir, 'SHA256SUMS')
+  if (!existsSync(sumsPath)) {
+    return { status: 'unsigned', message: 'No SHA256SUMS file; integrity not enforced', checkedFiles: 0 }
+  }
+
+  let content: string
+  try {
+    content = readFileSync(sumsPath, 'utf-8')
+  } catch (err: any) {
+    return { status: 'error', message: `Failed to read SHA256SUMS: ${err?.message || err}` }
+  }
+
+  const lines = content.split(/\r?\n/)
+  const failedFiles: string[] = []
+  const listedRelPaths = new Set<string>()
+  let checkedFiles = 0
+  let totalBytes = 0
+  let entryCount = 0
+
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    entryCount += 1
+    if (entryCount > MAX_INTEGRITY_ENTRIES) {
+      return {
+        status: 'error',
+        message: `SHA256SUMS exceeds ${MAX_INTEGRITY_ENTRIES} entries`,
+        checkedFiles,
+        failedFiles: failedFiles.slice(0, 32)
+      }
+    }
+    // Formats: "<hex>  <path>" or "<hex> *<path>" (GNU coreutils)
+    const match = line.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/)
+    if (!match) {
+      failedFiles.push(`(invalid line: ${line.slice(0, 80)})`)
+      continue
+    }
+    const expected = match[1].toLowerCase()
+    const relPath = match[2].trim().replace(/^\.\//, '').split(/[/\\]+/).join('/')
+    if (!relPath || relPath.includes('..') || relPath.startsWith('/') || /^[a-zA-Z]:/.test(relPath)) {
+      failedFiles.push(relPath || '(empty path)')
+      continue
+    }
+    const filePath = join(pluginDir, ...relPath.split('/'))
+    const normalized = normalize(filePath)
+    if (!isPathInsideBase(normalized, pluginDir)) {
+      failedFiles.push(relPath)
+      continue
+    }
+    listedRelPaths.add(relPath)
+    checkedFiles += 1
+    if (!existsSync(filePath)) {
+      failedFiles.push(relPath)
+      continue
+    }
+    try {
+      const st = statSync(filePath)
+      if (!st.isFile()) {
+        failedFiles.push(relPath)
+        continue
+      }
+      if (st.size > MAX_INTEGRITY_FILE_BYTES) {
+        failedFiles.push(relPath)
+        continue
+      }
+      totalBytes += st.size
+      if (totalBytes > MAX_INTEGRITY_TOTAL_BYTES) {
+        return {
+          status: 'error',
+          message: `SHA256SUMS total file size exceeds ${MAX_INTEGRITY_TOTAL_BYTES} bytes`,
+          checkedFiles,
+          failedFiles: failedFiles.slice(0, 32)
+        }
+      }
+      const actual = createHash('sha256').update(readFileSync(filePath)).digest('hex')
+      if (actual !== expected) failedFiles.push(relPath)
+    } catch {
+      failedFiles.push(relPath)
+    }
+  }
+
+  // Require loadable skill content to be covered by the sums file when present.
+  try {
+    for (const skillFile of findSkillFiles(pluginDir)) {
+      const rel = relativePluginPath(pluginDir, skillFile)
+      if (!listedRelPaths.has(rel)) {
+        failedFiles.push(rel)
+      }
+    }
+    const manifestPath = join(pluginDir, 'manifest.json')
+    if (existsSync(manifestPath) && !listedRelPaths.has('manifest.json')) {
+      failedFiles.push('manifest.json')
+    }
+  } catch {
+    /* best effort coverage check */
+  }
+
+  if (checkedFiles === 0 && failedFiles.length === 0) {
+    return { status: 'error', message: 'SHA256SUMS is empty or has no valid entries', checkedFiles: 0 }
+  }
+  if (failedFiles.length > 0) {
+    const missing = failedFiles.filter(f => {
+      if (f.startsWith('(')) return false
+      return !existsSync(join(pluginDir, ...f.split('/')))
+    })
+    const status: PluginIntegrityStatus = missing.length === failedFiles.length ? 'missing' : 'mismatch'
+    return {
+      status,
+      message: status === 'missing'
+        ? `Missing ${failedFiles.length} file(s) listed in SHA256SUMS`
+        : `Integrity check failed for ${failedFiles.length} file(s)`,
+      checkedFiles,
+      failedFiles: failedFiles.slice(0, 32)
+    }
+  }
+  return { status: 'ok', message: `Verified ${checkedFiles} file(s)`, checkedFiles }
+}
+
+function withIntegrity(entry: PluginEntry): PluginEntry {
+  const integrity = verifyPluginIntegrity(entry.path)
+  const integrityBlocked = integrity.status === 'mismatch' || integrity.status === 'missing' || integrity.status === 'error'
+
+  let signature: PluginSignatureInfo
+  try {
+    const result = verifyPluginSignature(entry.path, loadTrustStore())
+    signature = { status: result.status, publisher: result.publisher, message: result.message }
+  } catch {
+    signature = { status: 'error', message: 'Signature check failed to run' }
+  }
+
+  // Signature invalid/error disables; untrusted/none allowed (integrity still applies)
+  const signatureBlocked = signature.status === 'invalid' || signature.status === 'error'
+  const blocked = integrityBlocked || signatureBlocked
+  return {
+    ...entry,
+    integrity,
+    signature,
+    enabled: blocked ? false : entry.enabled
   }
 }
 
@@ -353,7 +532,7 @@ function findSkillFiles(root: string, maxDepth = 7): string[] {
       if (stat.isSymbolicLink()) {
         try {
           const realPath = realpathSync(full)
-          if (!realPath.startsWith(realRoot)) continue // skip symlinks escaping root
+          if (!isPathInsideBase(realPath, realRoot)) continue // skip symlinks escaping root
           stat = statSync(full)
         } catch {
           continue

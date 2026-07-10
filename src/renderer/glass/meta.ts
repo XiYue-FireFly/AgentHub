@@ -236,6 +236,9 @@ export interface TokenUsage {
 
 export interface TaskItem {
   id: string
+  threadId?: string
+  threadTitle?: string
+  workspaceId?: string | null
   text: string
   mode: DispatchMode
   status: TaskUIStatus

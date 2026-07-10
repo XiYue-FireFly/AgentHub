@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import React, { useState } from 'react'
-import { fireEvent, render, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TerminalPanel } from '../TerminalPanel'
 
 vi.mock('@xterm/xterm', () => ({
@@ -45,6 +45,11 @@ function TerminalWorkspaceHarness() {
 }
 
 describe('TerminalPanel', () => {
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+  })
+
   it('remembers latest tab state when switching workspaces', async () => {
     ;(globalThis as any).ResizeObserver = ResizeObserverMock
     ;(globalThis as any).requestAnimationFrame = (callback: FrameRequestCallback) => {
@@ -73,5 +78,34 @@ describe('TerminalPanel', () => {
 
     fireEvent.click(view.getByText('workspace-a'))
     await waitFor(() => expect(view.getByText('Terminal 2')).toBeTruthy())
+  })
+
+  it('does not dispose PTY when switching terminal tabs (F-W3)', async () => {
+    ;(globalThis as any).ResizeObserver = ResizeObserverMock
+    ;(globalThis as any).requestAnimationFrame = (callback: FrameRequestCallback) => {
+      callback(0)
+      return 0
+    }
+    const dispose = vi.fn()
+    ;(globalThis as any).electronAPI = {
+      terminalPty: {
+        create: vi.fn(async () => ({ ok: true })),
+        resize: vi.fn(),
+        write: vi.fn(),
+        dispose,
+        onData: vi.fn(() => () => {}),
+        onExit: vi.fn(() => () => {})
+      }
+    }
+
+    const view = render(<TerminalPanel workspaceRoot="E:/workspace-a" />)
+    await waitFor(() => expect(view.getAllByText('Terminal 1').length).toBeGreaterThan(0))
+    fireEvent.click(view.getByTitle(/New terminal|新建终端/))
+    await waitFor(() => expect(view.getAllByText('Terminal 2').length).toBeGreaterThan(0))
+    // Switch back to first tab without closing
+    fireEvent.click(view.getAllByText('Terminal 1')[0])
+    await waitFor(() => expect((globalThis as any).electronAPI.terminalPty.create).toHaveBeenCalled())
+    // Switching tabs should not kill PTY sessions (only tab close does)
+    expect(dispose).not.toHaveBeenCalled()
   })
 })

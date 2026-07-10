@@ -69,7 +69,9 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         partialize: (state) => ({
           view: state.view,
           settingsTab: state.settingsTab,
-          selectedThreadId: state.selectedThreadId,
+          // W-M9: selectedThreadId is persisted separately via localStorage in WorkbenchLayout
+          // (LAST_THREAD_STORE_KEY) and the store's setSelectedThreadId is never called, so
+          // persisting it here would only store a stale null. Removed to keep a single source of truth.
           mode: state.mode,
           thinking: state.thinking,
           customSchedule: state.customSchedule,

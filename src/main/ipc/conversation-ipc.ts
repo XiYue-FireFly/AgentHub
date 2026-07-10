@@ -13,7 +13,11 @@ export function registerConversationIpc(): void {
     return exportConversation(data, format, normalized)
   })
 
-  typedHandle("conversation:importFile", (_e, filePath) => importConversationFromFile(filePath))
+  typedHandle("conversation:importFile", (_e, filePath) => {
+    const home = app.getPath('home')
+    const normalized = resolvePathWithinAllowedBases(filePath, home, [home])
+    return importConversationFromFile(normalized)
+  })
   typedHandle("conversation:importJson", (_e, json) => importConversationFromJson(json))
   typedHandle("conversation:branch", (_e, conversation, index) => branchFromCheckpoint(conversation, index))
   typedHandle("conversation:summarize", (_e, conversation) => summarizeConversation(conversation))

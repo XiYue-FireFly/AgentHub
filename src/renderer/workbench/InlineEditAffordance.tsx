@@ -11,6 +11,7 @@
  */
 
 import React, { useState, useCallback } from 'react'
+import { tr } from '../glass/i18n'
 
 interface InlineEditAffordanceProps {
   code: string
@@ -19,11 +20,6 @@ interface InlineEditAffordanceProps {
   endLine?: number
   workspaceRoot?: string
   onApply?: (newCode: string) => void
-}
-
-function tr(zh: string, en: string): string {
-  const lang = typeof navigator !== 'undefined' && navigator.language?.startsWith('zh') ? 'zh' : 'en'
-  return lang === 'zh' ? zh : en
 }
 
 export function InlineEditAffordance({ code, filePath, startLine, endLine, workspaceRoot: _workspaceRoot, onApply }: InlineEditAffordanceProps) {

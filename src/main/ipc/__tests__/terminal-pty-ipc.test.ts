@@ -1,10 +1,15 @@
 import { EventEmitter } from 'node:events'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 type IpcHandler = (event: any, ...args: any[]) => any
 
 const handlers = new Map<string, IpcHandler>()
 const spawnedPtys: FakePty[] = []
+
+const workspaceMock = vi.hoisted(() => ({
+  roots: [] as string[]
+}))
 
 class FakeSender extends EventEmitter {
   sent: Array<{ channel: string; payload: any }> = []
@@ -63,7 +68,14 @@ vi.mock('electron', () => ({
   ipcMain: {
     handle: (channel: string, handler: IpcHandler) => handlers.set(channel, handler)
   },
-  BrowserWindow: class {}
+  BrowserWindow: class {},
+  app: {
+    getPath: (name: string) => (name === 'userData' ? 'C:/tmp-user-data' : `C:/${name}`),
+    isPackaged: false
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => false
+  }
 }))
 
 vi.mock('node-pty', () => ({
@@ -74,10 +86,17 @@ vi.mock('node-pty', () => ({
   })
 }))
 
+vi.mock('../../hub/workspace', () => ({
+  getWorkspaceManager: () => ({
+    list: () => workspaceMock.roots.map((rootPath, i) => ({ id: `ws-${i}`, rootPath }))
+  })
+}))
+
 describe('Terminal PTY IPC', () => {
   beforeEach(() => {
     handlers.clear()
     spawnedPtys.length = 0
+    workspaceMock.roots = []
     vi.resetModules()
   })
 
@@ -132,17 +151,30 @@ describe('Terminal PTY IPC', () => {
     const sender = new FakeSender()
     await create?.({ sender }, { sessionId: 'term-io', cwd: process.cwd() })
 
-    await write?.({}, { sessionId: 'term-io', data: 'echo ok\r' })
-    await resize?.({}, { sessionId: 'term-io', cols: 120, rows: 32 })
+    await write?.({ sender }, { sessionId: 'term-io', data: 'echo ok\r' })
+    await resize?.({ sender }, { sessionId: 'term-io', cols: 120, rows: 32 })
 
     expect(spawnedPtys[0].writes).toEqual(['echo ok\r'])
     expect(spawnedPtys[0].resizes).toEqual([{ cols: 120, rows: 32 }])
 
-    await dispose?.({}, 'term-io')
-    await write?.({}, { sessionId: 'term-io', data: 'after dispose\r' })
+    await dispose?.({ sender }, 'term-io')
+    await write?.({ sender }, { sessionId: 'term-io', data: 'after dispose\r' })
 
     expect(spawnedPtys[0].killed).toBe(true)
     expect(spawnedPtys[0].writes).toEqual(['echo ok\r'])
+  })
+
+  it('rejects write from a non-owner sender (F-N1)', async () => {
+    await setup()
+    const create = handlers.get('terminal:create')
+    const write = handlers.get('terminal:write')
+    const owner = new FakeSender()
+    const other = new FakeSender()
+    await create?.({ sender: owner }, { sessionId: 'term-own', cwd: process.cwd() })
+    await write?.({ sender: other }, { sessionId: 'term-own', data: 'hack\r' })
+    expect(spawnedPtys[0].writes).toEqual([])
+    await write?.({ sender: owner }, { sessionId: 'term-own', data: 'ok\r' })
+    expect(spawnedPtys[0].writes).toEqual(['ok\r'])
   })
 
   it('registers terminal lifecycle handlers', async () => {
@@ -153,5 +185,49 @@ describe('Terminal PTY IPC', () => {
       'terminal:resize',
       'terminal:write'
     ])
+  })
+
+  it('rejects cwd outside registered workspaces when workspaces exist', async () => {
+    workspaceMock.roots = [resolve(process.cwd(), 'fake-ws-root')]
+    await setup()
+    const create = handlers.get('terminal:create')
+    const sender = new FakeSender()
+    const outside = process.platform === 'win32' ? 'C:\\Windows\\System32' : '/etc'
+    const result = await create?.({ sender }, { sessionId: 'term-bad-cwd', cwd: outside })
+    expect(result).toEqual({ ok: false, message: 'cwd must be within a registered workspace' })
+    expect(spawnedPtys).toHaveLength(0)
+  })
+
+  it('allows cwd under process.cwd when no workspaces are registered', async () => {
+    workspaceMock.roots = []
+    await setup()
+    const create = handlers.get('terminal:create')
+    const sender = new FakeSender()
+    const result = await create?.({ sender }, { sessionId: 'term-dev-cwd', cwd: process.cwd() })
+    expect(result).toEqual({ ok: true })
+    expect(spawnedPtys).toHaveLength(1)
+  })
+
+  it('rejects cwd outside process.cwd when no workspaces are registered', async () => {
+    workspaceMock.roots = []
+    await setup()
+    const create = handlers.get('terminal:create')
+    const outside = process.platform === 'win32' ? 'C:\\Windows\\System32' : '/etc'
+    const result = await create?.({ sender: new FakeSender() }, {
+      sessionId: 'term-no-ws-outside',
+      cwd: outside
+    })
+    expect(result).toEqual({ ok: false, message: 'cwd must be within a registered workspace' })
+    expect(spawnedPtys).toHaveLength(0)
+  })
+
+  it('allows cwd inside a registered workspace root', async () => {
+    workspaceMock.roots = [process.cwd()]
+    await setup()
+    const create = handlers.get('terminal:create')
+    const sender = new FakeSender()
+    const result = await create?.({ sender }, { sessionId: 'term-ws-cwd', cwd: process.cwd() })
+    expect(result).toEqual({ ok: true })
+    expect(spawnedPtys).toHaveLength(1)
   })
 })

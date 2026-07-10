@@ -97,7 +97,16 @@ export class TerminalRuntime {
 function resolveTerminalShell(): { command: string; args: (command: string) => string[] } {
   const selected = readTerminalShell()
   if (process.platform !== "win32") {
-    if (selected === "powershell") return { command: "pwsh", args: command => ["-NoProfile", "-Command", command] }
+    if (selected === "powershell") {
+      // Check if pwsh is available
+      try {
+        const { execFileSync } = require('child_process')
+        execFileSync('pwsh', ['--version'], { timeout: 5000, stdio: 'pipe' })
+      } catch {
+        throw new Error("PowerShell (pwsh) is not installed. Please install it or switch to system shell.")
+      }
+      return { command: "pwsh", args: command => ["-NoProfile", "-Command", command] }
+    }
     if (selected !== "system") throw new Error(`Terminal shell "${selected}" is only supported on Windows.`)
     return { command: "/bin/sh", args: command => ["-lc", command] }
   }

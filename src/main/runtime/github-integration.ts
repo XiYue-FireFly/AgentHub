@@ -48,9 +48,9 @@ export async function checkGhCli(): Promise<{ available: boolean; authenticated:
 /**
  * List PRs for the current repository.
  */
-export async function listPullRequests(state: 'open' | 'closed' | 'all' = 'open', limit = 20): Promise<GitHubPr[]> {
+export async function listPullRequests(state: 'open' | 'closed' | 'all' = 'open', limit = 20, cwd?: string): Promise<GitHubPr[]> {
   try {
-    const output = await execGh(['pr', 'list', '--state', state, '--limit', String(limit), '--json', 'number,title,state,author,url,headRefName,createdAt,labels'])
+    const output = await execGh(['pr', 'list', '--state', state, '--limit', String(limit), '--json', 'number,title,state,author,url,headRefName,createdAt,labels'], cwd)
     const raw = JSON.parse(output)
     return (Array.isArray(raw) ? raw : []).map((pr: any) => ({
       number: pr.number,
@@ -68,9 +68,9 @@ export async function listPullRequests(state: 'open' | 'closed' | 'all' = 'open'
 /**
  * List Issues for the current repository.
  */
-export async function listIssues(state: 'open' | 'closed' | 'all' = 'open', limit = 20): Promise<GitHubIssue[]> {
+export async function listIssues(state: 'open' | 'closed' | 'all' = 'open', limit = 20, cwd?: string): Promise<GitHubIssue[]> {
   try {
-    const output = await execGh(['issue', 'list', '--state', state, '--limit', String(limit), '--json', 'number,title,state,author,url,labels,createdAt'])
+    const output = await execGh(['issue', 'list', '--state', state, '--limit', String(limit), '--json', 'number,title,state,author,url,labels,createdAt'], cwd)
     const raw = JSON.parse(output)
     return (Array.isArray(raw) ? raw : []).map((issue: any) => ({
       number: issue.number,
@@ -86,12 +86,24 @@ export async function listIssues(state: 'open' | 'closed' | 'all' = 'open', limi
 
 /**
  * Get the current branch and check for an associated PR.
+ * @param cwd optional workspace root so git/gh run in the project repo (not Electron process.cwd)
  */
-export async function getCurrentBranchPr(): Promise<{ branch: string; pr?: GitHubPr }> {
+export async function getCurrentBranchPr(cwd?: string): Promise<{ branch: string; pr?: GitHubPr }> {
   try {
-    const branch = (await execGh(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+    // Use git directly instead of gh (gh doesn't have a 'git' subcommand)
+    const branch = await new Promise<string>((resolve, reject) => {
+      execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        timeout: 10000,
+        encoding: 'utf-8',
+        windowsHide: true,
+        ...(cwd ? { cwd } : {})
+      }, (err, stdout) => {
+        if (err) reject(err)
+        else resolve(stdout.trim())
+      })
+    })
     try {
-      const output = await execGh(['pr', 'view', '--json', 'number,title,state,author,url,headRefName,createdAt,labels'])
+      const output = await execGh(['pr', 'view', '--json', 'number,title,state,author,url,headRefName,createdAt,labels'], cwd)
       const pr = JSON.parse(output)
       return {
         branch,
@@ -110,9 +122,14 @@ export async function getCurrentBranchPr(): Promise<{ branch: string; pr?: GitHu
   } catch { return { branch: '' } }
 }
 
-function execGh(args: string[]): Promise<string> {
+function execGh(args: string[], cwd?: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('gh', args, { timeout: 15000, encoding: 'utf-8', windowsHide: true }, (err, stdout, stderr) => {
+    execFile('gh', args, {
+      timeout: 15000,
+      encoding: 'utf-8',
+      windowsHide: true,
+      ...(cwd ? { cwd } : {})
+    }, (err, stdout, stderr) => {
       if (err) reject(new Error(stderr?.trim() || err.message))
       else resolve(stdout)
     })

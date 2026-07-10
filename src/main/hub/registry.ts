@@ -101,4 +101,11 @@ export class AgentRegistry extends EventEmitter {
       info.status = "offline"
     }
   }
+
+  forceKillAll(): void {
+    for (const [, info] of this.agents) {
+      try { info.adapter.stop() } catch {}
+      info.status = "offline"
+    }
+  }
 }

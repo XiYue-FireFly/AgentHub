@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { deriveTaskItems } from '../utils/taskItems'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const baseThread = {
   id: 'thread-1',
@@ -85,6 +87,9 @@ describe('deriveTaskItems', () => {
     expect(tasks).toHaveLength(1)
     expect(tasks[0]).toMatchObject({
       id: 'turn-1',
+      threadId: 'thread-1',
+      threadTitle: 'Thread',
+      workspaceId: 'ws-1',
       text: 'Build the feature',
       mode: 'lead-workers',
       status: 'completed',
@@ -143,5 +148,46 @@ describe('deriveTaskItems', () => {
 
     expect(tasks[1].results).toEqual({ orchestrate: 'final answer' })
     expect(tasks[0].errors).toEqual({ orchestrate: 'planner failed' })
+  })
+
+  it('filters hidden turns and internal run-only outputs from task cards', () => {
+    const snapshot: WorkbenchSnapshot = {
+      threads: [baseThread],
+      turns: [
+        { id: 'turn-1', threadId: 'thread-1', prompt: 'Visible', mode: 'firefly-custom', status: 'completed', taskIds: [], createdAt: 10, completedAt: 12 },
+        { id: 'turn-2', threadId: 'thread-1', prompt: 'Hidden', mode: 'auto', status: 'completed', taskIds: [], createdAt: 20, completedAt: 22 }
+      ],
+      runs: [],
+      hiddenTaskTurnIds: ['turn-2'],
+      activeThreadId: 'thread-1'
+    }
+
+    const tasks = deriveTaskItems(snapshot, {
+      'thread-1': [
+        event({ threadId: 'thread-1', turnId: 'turn-1', kind: 'turn:summary', agentId: 'budget-guard', payload: { content: 'guard' } }),
+        event({ threadId: 'thread-1', turnId: 'turn-1', kind: 'agent:done', agentId: 'claude', payload: { content: 'internal review', visibility: 'run' } }),
+        event({ threadId: 'thread-1', turnId: 'turn-1', kind: 'agent:done', agentId: 'claude', payload: { content: 'final answer', visibility: 'chat' } })
+      ]
+    })
+
+    expect(tasks.map(task => task.id)).toEqual(['turn-1'])
+    expect(tasks[0].agents).toEqual(['claude'])
+    expect(tasks[0].results).toEqual({ claude: 'final answer' })
+  })
+})
+
+describe('TasksScreen workspace grouping wiring', () => {
+  it('renders workspace groups and passes workspace scoped clearing through WorkbenchMainContent', () => {
+    const tasksScreen = readFileSync(join(process.cwd(), 'src/renderer/screens/Tasks.tsx'), 'utf8')
+    const mainContent = readFileSync(join(process.cwd(), 'src/renderer/workbench/WorkbenchMainContent.tsx'), 'utf8')
+    const layout = readFileSync(join(process.cwd(), 'src/renderer/workbench/WorkbenchLayout.tsx'), 'utf8')
+
+    expect(tasksScreen).toContain('groupTasksByWorkspace')
+    expect(tasksScreen).toContain('onClearCompleted(group.workspaceId)')
+    expect(tasksScreen).toContain('隐藏任务不会删除对话内容')
+    expect(mainContent).toContain('workspaces={workspaces}')
+    expect(layout).toContain('allSnapshot')
+    expect(layout).toContain('deriveTaskItems(allSnapshot, taskEventsByThread)')
+    expect(layout).toContain('window.electronAPI.tasks.clearCompleted(targetWorkspaceId)')
   })
 })

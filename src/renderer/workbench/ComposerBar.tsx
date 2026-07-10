@@ -189,17 +189,22 @@ export function ComposerBar({
     return () => window.clearTimeout(timer)
   }, [providers.length, onRefreshProviders])
 
+  // F-W6: only push a notification when the warning text changes (avoid inbox spam while typing)
+  const lastBudgetWarnRef = useRef<string | null>(null)
+
   useEffect(() => {
+    let alive = true
     const prompt = text.trim()
     if (!prompt && attachments.length === 0) {
       setBudgetEstimate(null)
       setBudgetEstimateLoading(false)
-      return
+      lastBudgetWarnRef.current = null
+      return () => { alive = false }
     }
     const timer = window.setTimeout(() => {
       const quickSchedule = quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds) || undefined
       const selectedSchedule = quickSchedule || (!targetAgent && !(modelSelection?.source === 'provider') ? scheduleForMode?.(mode) : undefined)
-      setBudgetEstimateLoading(true)
+      if (alive) setBudgetEstimateLoading(true)
       window.electronAPI.budget.estimateDispatch({
         workspaceId,
         prompt: prompt || 'Please analyze the attached content.',
@@ -208,11 +213,31 @@ export function ComposerBar({
         modelSelection: modelSelection || undefined,
         attachments,
         customSchedule: selectedSchedule
-      }).then(setBudgetEstimate)
-        .catch(() => setBudgetEstimate(null))
-        .finally(() => setBudgetEstimateLoading(false))
+      }).then(result => {
+        if (!alive) return
+        setBudgetEstimate(result)
+        const warn = result?.check?.warning ?? null
+        if (!warn) {
+          lastBudgetWarnRef.current = null
+          return
+        }
+        if (warn === lastBudgetWarnRef.current) return
+        lastBudgetWarnRef.current = warn
+        if (typeof window.electronAPI.notifications?.push === 'function') {
+          void window.electronAPI.notifications.push({
+            title: tr('预算提醒', 'Budget warning'),
+            body: warn,
+            category: 'system'
+          }).catch(() => {})
+        }
+      })
+        .catch(() => { if (alive) setBudgetEstimate(null) })
+        .finally(() => { if (alive) setBudgetEstimateLoading(false) })
     }, 450)
-    return () => window.clearTimeout(timer)
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
   }, [text, attachments, quickRole, readyAgentIds, targetAgent, modelSelection, scheduleForMode, mode, workspaceId])
 
   useEffect(() => {
@@ -317,21 +342,29 @@ export function ComposerBar({
     setActiveAddIndex(0)
   }, [addQuery])
 
+  // G2-MH5: stable refs so parent re-renders (new onSend identity) don't cancel the queue timer
+  const onSendRef = useRef(onSend)
+  onSendRef.current = onSend
+  const queueRef = useRef(queue)
+  queueRef.current = queue
+
   // Process queue when sending becomes false
   useEffect(() => {
     if (sending || queue.length === 0) return
-    const next = queue[0]
-    setQueue(prev => prev.slice(1))
+    const next = queueRef.current[0]
+    if (!next) return
     setText(next.text)
     setAttachments(next.attachments)
     // Defer to next tick so state updates propagate
     const timer = setTimeout(() => {
       if (next.text.trim()) {
-        onSend(next.text.trim(), next.attachments, next.overrides)
+        onSendRef.current(next.text.trim(), next.attachments, next.overrides)
       }
+      // Remove from queue after sending to avoid triggering effect re-run
+      setQueue(prev => prev.slice(1))
     }, 50)
     return () => clearTimeout(timer)
-  }, [sending, queue, onSend])
+  }, [sending, queue.length])
 
   const send = async () => {
     const prompt = text.trim() || (attachments.length ? tr('请分析我附加的内容。', 'Please analyze the attached content.') : '')
@@ -683,7 +716,7 @@ export function ComposerBar({
                 providers={providers}
               />
             )}
-            <button className="wb-icon-button" title={tr('添加文件或图片', 'Attach file or image')} disabled={sending} onClick={pickAttachments}>
+            <button className="wb-icon-button" title={tr('添加文件或图片', 'Attach file or image')} aria-label={tr('添加文件或图片', 'Attach file or image')} disabled={sending} onClick={pickAttachments}>
               <Icon d={IC.plus} size={17} />
             </button>
             <div className="wb-approval-mode-host" ref={approvalPickerRef}>
@@ -845,8 +878,8 @@ export function ComposerBar({
               </span>
             )}
             {sending
-              ? <button className="wb-send stop" onClick={onCancel} title={tr('停止', 'Stop')}><Icon d={IC.stop} size={15} /></button>
-              : <button className="wb-send" disabled={budgetBlocked || (!text.trim() && attachments.length === 0 && queue.length === 0)} onClick={send} title={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
+              ? <button className="wb-send stop" onClick={onCancel} title={tr('停止', 'Stop')} aria-label={tr('停止', 'Stop')}><Icon d={IC.stop} size={15} /></button>
+              : <button className="wb-send" disabled={budgetBlocked || (!text.trim() && attachments.length === 0 && queue.length === 0)} onClick={send} title={tr('发送', 'Send')} aria-label={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
           </div>
         </div>
 
@@ -1102,22 +1135,17 @@ function ContextCapacityIndicator({
   modelSelection: ModelSelection
   providers: ProviderDef[]
 }) {
-  const [capacity, setCapacity] = useState<{ usedRatio: number; tone: string } | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    const estimate = () => {
-      const provider = providers.find(p => p.id === modelSelection.providerId)
-      const model = provider?.models?.find(m => m.id === modelSelection.modelId)
-      const windowTokens = model?.contextWindow || 128_000
-      // Simple text-based estimation
-      const textTokens = Math.ceil((text.length + attachments.reduce((sum, a) => sum + (a.text?.length || 0), 0)) / 4)
-      const usedRatio = Math.min(1, textTokens / windowTokens)
-      const tone = usedRatio > 0.85 ? 'danger' : usedRatio > 0.7 ? 'warn' : 'ok'
-      if (alive) setCapacity({ usedRatio, tone })
-    }
-    estimate()
-    return () => { alive = false }
+  // W-M4b: useMemo instead of effect+setState — derived value recomputed only when inputs change,
+  // no extra render pass per keystroke.
+  const capacity = useMemo<{ usedRatio: number; tone: string } | null>(() => {
+    const provider = providers.find(p => p.id === modelSelection.providerId)
+    const model = provider?.models?.find(m => m.id === modelSelection.modelId)
+    const windowTokens = model?.contextWindow || 128_000
+    // Simple text-based estimation
+    const textTokens = Math.ceil((text.length + attachments.reduce((sum, a) => sum + (a.text?.length || 0), 0)) / 4)
+    const usedRatio = Math.min(1, textTokens / windowTokens)
+    const tone = usedRatio > 0.85 ? 'danger' : usedRatio > 0.7 ? 'warn' : 'ok'
+    return { usedRatio, tone }
   }, [text, attachments, modelSelection, providers])
 
   if (!capacity) return null

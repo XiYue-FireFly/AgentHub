@@ -3,16 +3,12 @@
  */
 
 import React, { useCallback, useState } from 'react'
+import { tr } from '../glass/i18n'
 
 interface PromptEnhancerProps {
   text: string
   onEnhanced: (enhanced: string) => void
   disabled?: boolean
-}
-
-function tr(zh: string, en: string): string {
-  const lang = typeof navigator !== 'undefined' && navigator.language?.startsWith('zh') ? 'zh' : 'en'
-  return lang === 'zh' ? zh : en
 }
 
 export function PromptEnhancer({ text, onEnhanced, disabled }: PromptEnhancerProps) {

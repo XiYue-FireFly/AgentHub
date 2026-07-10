@@ -120,7 +120,7 @@ function normalizeAssistantMarkdown(content: string): string {
 function looksLikeTableStart(lines: string[], index: number): boolean {
   const current = lines[index]?.trim()
   const next = lines[index + 1]?.trim()
-  return !!current && !!next && current.includes('|') && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(next)
+  return !!current && !!next && current.includes('|') && /^\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?$/.test(next)
 }
 
 function consumeTable(lines: string[], start: number): { html: string; consumed: number } {

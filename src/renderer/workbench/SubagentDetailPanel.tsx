@@ -54,17 +54,17 @@ function summarizeAgentRun(agentId: string, turnId: string, events: RuntimeEvent
     }
     if (event.kind === 'agent:start') {
       summary.status = 'running'
-      summary.startTime = event.ts || Date.now()
+      summary.startTime = event.createdAt || Date.now()
     }
     if (event.kind === 'agent:done') {
       summary.status = 'completed'
-      summary.endTime = event.ts || Date.now()
+      summary.endTime = event.createdAt || Date.now()
       if (event.payload?.content) summary.outputContent = String(event.payload.content)
       if (event.payload?.durationMs) summary.durationMs = event.payload.durationMs
     }
     if (event.kind === 'agent:error') {
       summary.status = 'failed'
-      summary.endTime = event.ts || Date.now()
+      summary.endTime = event.createdAt || Date.now()
       if (event.payload?.error) summary.errors.push(String(event.payload.error))
     }
     if (event.kind === 'agent:delta') {
@@ -80,7 +80,7 @@ function summarizeAgentRun(agentId: string, turnId: string, events: RuntimeEvent
       summary.toolCalls.push({
         name: step.tool || step.kind || 'activity',
         detail: step.label || step.detail || '',
-        timestamp: event.ts || Date.now()
+        timestamp: event.createdAt || Date.now()
       })
     }
   }

@@ -12,6 +12,7 @@ import { tr } from './i18n'
 export function Titlebar({ search, onSearch, hubRunning }:
   { search: string; onSearch: (v: string) => void; hubRunning: boolean }) {
   const win = window.electronAPI?.win
+  if (!win) return null
   const dots: Array<{ c: string; title: string; act: () => void }> = [
     { c: '#ec6a5e', title: tr('关闭', 'Close'), act: () => win?.close() },
     { c: '#f4bf4f', title: tr('最小化', 'Minimize'), act: () => win?.minimize() },

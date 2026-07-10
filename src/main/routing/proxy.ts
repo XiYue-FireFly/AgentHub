@@ -21,11 +21,22 @@ import * as http from "http"
 import { EventEmitter } from "events"
 import { URL } from "url"
 import type { AddressInfo } from "net"
+import { timingSafeEqual } from "node:crypto"
 import { getProviderManager, isProviderRuntimeUsable } from "../providers/manager"
 import { buildProviderClient, ProviderClient } from "../providers/client"
 import { ChatCompletionMessage, ChatCompletionRequest, ProviderDefinition, ModelDefinition, ThinkingConfig } from "../providers/types"
 import { createLogger } from '../logger'
 import { getLocalToken } from '../store'
+
+/** F-N5: constant-time token compare aligned with HubServer */
+function tokensEqual(provided: string, expected: string): boolean {
+  if (!provided || !expected || provided.length !== expected.length) return false
+  try {
+    return timingSafeEqual(Buffer.from(provided, 'utf-8'), Buffer.from(expected, 'utf-8'))
+  } catch {
+    return false
+  }
+}
 
 const log = createLogger('Proxy')
 
@@ -147,7 +158,7 @@ export class LocalProxy extends EventEmitter {
       const apiKeyHeader = typeof req.headers["x-api-key"] === "string" ? req.headers["x-api-key"] : ""
       const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i)
       const providedToken = bearerMatch?.[1] || apiKeyHeader
-      if (!providedToken || providedToken !== getLocalToken()) {
+      if (!providedToken || !tokensEqual(providedToken, getLocalToken())) {
         res.writeHead(401, { "content-type": "application/json" })
         res.end(JSON.stringify({ error: { message: "unauthorized: invalid or missing token" } }))
         return
@@ -476,6 +487,7 @@ export class LocalProxy extends EventEmitter {
             emitter.thinking(delta)
           },
           onToolCallDelta: (tc) => {
+            if (settled) return
             arm(IDLE_MS)
             if (noStream) return
             if (!started) { started = true; emitter.begin() }

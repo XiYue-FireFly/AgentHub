@@ -11,6 +11,8 @@ import { useSddDraftStore } from '../sdd-draft-store'
 import { saveDraftToDisk, parseRequirementBlocks } from '../sdd-draft-actions'
 import { diffHistoryVersions, getHistorySummary, restoreFromHistory, type DraftHistorySummary } from '../sdd-draft-history'
 import { SddTracePanel } from './SddTracePanel'
+import { SddModelSelect } from './SddAssistantPanel'
+import type { ProviderDef } from '../../glass/meta'
 
 const SDD_AUTOSAVE_MS = 650
 
@@ -188,7 +190,7 @@ function SddHistoryPanel({ draftId, workspaceRoot }: { draftId: string; workspac
   useEffect(() => {
     refresh()
     setStatus(null)
-  }, [draftId, workspaceRoot, content])
+  }, [draftId, workspaceRoot])
 
   const selectedEntry = selectedVersion ? entries.find(entry => entry.version === selectedVersion) : undefined
   const latestVersion = entries.at(-1)?.version
@@ -292,15 +294,24 @@ function SddHistoryPanel({ draftId, workspaceRoot }: { draftId: string; workspac
 // ============================================================
 
 interface SddDraftEditorProps {
+  providers?: ProviderDef[]
+  modelSelection?: ModelSelection | null
+  onModelSelectionChange?: (selection: ModelSelection | null) => void
   onOpenAssistant?: () => void
   onNext?: () => void
   onVerify?: () => void
+  onSendToChat?: () => void
+  onSyncToTodo?: () => void
   onClose?: () => void
   nextDisabled?: boolean
   verifyDisabled?: boolean
+  sendToChatDisabled?: boolean
+  syncToTodoDisabled?: boolean
+  syncingTodo?: boolean
+  syncTodoStatus?: { tone: 'muted' | 'success' | 'warning' | 'error'; text: string } | null
 }
 
-export function SddDraftEditor({ onOpenAssistant, onNext, onVerify, onClose, nextDisabled, verifyDisabled }: SddDraftEditorProps) {
+export function SddDraftEditor({ providers, modelSelection, onModelSelectionChange, onOpenAssistant, onNext, onVerify, onSendToChat, onSyncToTodo, onClose, nextDisabled, verifyDisabled, sendToChatDisabled, syncToTodoDisabled, syncingTodo, syncTodoStatus }: SddDraftEditorProps) {
   const {
     activeDraft,
     content,
@@ -332,7 +343,7 @@ export function SddDraftEditor({ onOpenAssistant, onNext, onVerify, onClose, nex
         saveTimerRef.current = null
       }
     }
-  }, [activeDraft, content, saveStatus])
+  }, [activeDraft?.id, content, saveStatus])
 
   // 解析需求块
   useEffect(() => {
@@ -342,10 +353,17 @@ export function SddDraftEditor({ onOpenAssistant, onNext, onVerify, onClose, nex
     return () => clearTimeout(timer)
   }, [content])
 
-  // 清理
+  // 清理：卸载时刷盘 dirty，避免 G2-MH7 丢键入
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+      }
+      const snap = useSddDraftStore.getState()
+      if (snap.activeDraft && snap.saveStatus === 'dirty') {
+        void saveDraftToDisk()
+      }
     }
   }, [])
 
@@ -378,10 +396,42 @@ export function SddDraftEditor({ onOpenAssistant, onNext, onVerify, onClose, nex
           <span className={`sdd-editor-status ${status.className}`}>
             {status.text}
           </span>
+          <SddModelSelect
+            providers={providers}
+            modelSelection={modelSelection}
+            onModelSelectionChange={onModelSelectionChange}
+          />
           {onOpenAssistant && (
             <button className="sdd-toolbar-btn" onClick={onOpenAssistant} title={tr('AI 助手', 'AI Assistant')}>
               <span>✨</span>
             </button>
+          )}
+          {onSendToChat && (
+            <button
+              className="sdd-toolbar-btn sdd-toolbar-btn-primary"
+              onClick={onSendToChat}
+              disabled={sendToChatDisabled || readOnly}
+              title={tr('把完整需求文档发送到当前对话，让 Agent 按文档开发', 'Send the full requirement document to the current chat for agent implementation')}
+            >
+              <Icon d={IC.chat} size={14} />
+              <span>{tr('加入对话开发', 'Send doc to chat')}</span>
+            </button>
+          )}
+          {onSyncToTodo && (
+            <button
+              className="sdd-toolbar-btn"
+              onClick={onSyncToTodo}
+              disabled={syncToTodoDisabled || syncingTodo || readOnly}
+              title={tr('把当前需求文档里的 - [ ] 清单同步到当前会话 Todo', 'Sync checklist items from this requirement document to the current thread todos')}
+            >
+              <Icon d={IC.check} size={14} />
+              <span>{syncingTodo ? tr('同步中', 'Syncing') : tr('同步 Todo', 'Sync Todo')}</span>
+            </button>
+          )}
+          {onSyncToTodo && syncTodoStatus && (
+            <span className={`sdd-toolbar-status ${syncTodoStatus.tone}`} role="status" aria-live="polite">
+              {syncTodoStatus.text}
+            </span>
           )}
           {onVerify && (
             <button

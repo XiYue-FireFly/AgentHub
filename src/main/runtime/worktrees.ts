@@ -57,8 +57,11 @@ export async function removeWorktree(id: string, force = false): Promise<boolean
     try { await runGit(parent.rootPath, ["worktree", "remove", force ? "--force" : "", item.path].filter(Boolean)) } catch { /* remove manually below */ }
   }
   if (existsSync(item.path) && force) rmSync(item.path, { recursive: true, force: true })
-  state.items = state.items.filter(wt => wt.id !== id)
-  write(state)
+  // Only remove from state if worktree directory no longer exists or force is true
+  if (!existsSync(item.path) || force) {
+    state.items = state.items.filter(wt => wt.id !== id)
+    write(state)
+  }
   return true
 }
 
@@ -110,5 +113,10 @@ function isInside(targetPath: string, rootPath: string): boolean {
   const root = resolve(rootPath)
   const target = resolve(targetPath)
   const sep = process.platform === 'win32' ? '\\' : '/'
-  return target === root || target.startsWith(root.endsWith(sep) ? root : root + sep)
+  const rootPrefix = root.endsWith(sep) ? root : root + sep
+  // On Windows, paths are case-insensitive
+  if (process.platform === 'win32') {
+    return target.toLowerCase() === root.toLowerCase() || target.toLowerCase().startsWith(rootPrefix.toLowerCase())
+  }
+  return target === root || target.startsWith(rootPrefix)
 }

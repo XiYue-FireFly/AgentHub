@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useEffect } from 'react'
+import { tr } from '../glass/i18n'
 
 interface ContextBlock {
   id: string
@@ -23,11 +24,6 @@ interface ContextLedgerProps {
   threadId: string | null
   turnId?: string
   compact?: boolean
-}
-
-function tr(zh: string, en: string): string {
-  const lang = typeof navigator !== 'undefined' && navigator.language?.startsWith('zh') ? 'zh' : 'en'
-  return lang === 'zh' ? zh : en
 }
 
 const KIND_ICONS: Record<string, string> = {

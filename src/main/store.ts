@@ -60,6 +60,8 @@ class AppStore {
   private initialized: boolean = false
   private initFailed: boolean = false
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+  /** Serialize async write/rename so concurrent save/flush cannot interleave. */
+  private saveChain: Promise<void> = Promise.resolve()
 
   init(): void {
     if (this.initialized || this.initFailed) return
@@ -84,36 +86,36 @@ class AppStore {
     }
   }
 
+  /** Enqueue a persist of the current in-memory snapshot. Always serial. */
+  private enqueuePersist(): Promise<void> {
+    this.saveChain = this.saveChain.then(async () => {
+      try {
+        const tmp = this.filePath + '.tmp'
+        // Snapshot at write time so the last queued persist wins with latest data
+        await fs.promises.writeFile(tmp, JSON.stringify(this.data, null, 2))
+        await fs.promises.rename(tmp, this.filePath)
+      } catch (e: any) {
+        log.error(`[Store] Persist failed (${this.filePath}):`, e?.message || String(e))
+      }
+    })
+    return this.saveChain
+  }
+
   private save(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => {
-      try {
-        const tmp = this.filePath + '.tmp'
-        // WARNING: writeFileSync blocks the main thread. Switching to fs.promises
-        // requires changing set() and all downstream callers to be asynchronous,
-        // which risks race conditions and breaks the synchronous get/set API contract.
-        fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2))
-        fs.renameSync(tmp, this.filePath)
-      } catch (e: any) {
-        log.error(`[Store] Save failed (${this.filePath}):`, e?.message || String(e))
-      }
       this.saveTimer = null
+      void this.enqueuePersist()
     }, 200)
   }
 
-  flush(): void {
+  async flush(): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
-      try {
-        const tmp = this.filePath + '.tmp'
-        // WARNING: writeFileSync blocks the main thread.
-        fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2))
-        fs.renameSync(tmp, this.filePath)
-      } catch (e: any) {
-        log.error(`[Store] Flush failed (${this.filePath}):`, e?.message || String(e))
-      }
     }
+    // Always await the chain so in-flight writes finish; enqueue a fresh snapshot last
+    await this.enqueuePersist()
   }
 
   get(key: string, defaultValue?: any): any {

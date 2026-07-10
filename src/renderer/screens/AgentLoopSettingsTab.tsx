@@ -83,7 +83,11 @@ export function AgentLoopSettingsTab() {
     }
   }, [])
 
-  useEffect(() => { refresh().catch(() => {}) }, [refresh])
+  useEffect(() => {
+    let alive = true
+    refresh().catch(() => {})
+    return () => { alive = false }
+  }, [refresh])
 
   // 只显示已安装的 Agent
   const availableAgents = useMemo(() => {

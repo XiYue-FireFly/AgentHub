@@ -38,6 +38,22 @@ describe("WorkbenchRuntimeStore", () => {
     expect(runtime.eventsSince(thread.id, 1).some(e => e.kind === "turn:status")).toBe(true)
   })
 
+  it("auto-titles New chat / 新对话 placeholders on first turn (IT-1)", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const en = runtime.createThread({ title: "New chat" })
+    const zh = runtime.createThread({ title: "新对话" })
+    const named = runtime.createThread({ title: "My notes" })
+
+    expect(runtime.createTurn({ threadId: en.id, prompt: "Explain React hooks", mode: "auto" }).thread.title)
+      .toBe("Explain React hooks")
+    expect(runtime.createTurn({ threadId: zh.id, prompt: "修复登录 bug", mode: "auto" }).thread.title)
+      .toBe("修复登录 bug")
+    expect(runtime.createTurn({ threadId: named.id, prompt: "other prompt", mode: "auto" }).thread.title)
+      .toBe("My notes")
+  })
+
   it("allows personal threads and turns without a workspace", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
@@ -198,7 +214,7 @@ describe("WorkbenchRuntimeStore", () => {
     expect(reviewStatus?.payload).toMatchObject({ status: "failed", scheduleRole: "reviewer", scheduleStepId: "reviewer" })
   })
 
-  it("deletes a runtime task by turn id for the renderer task history", async () => {
+  it("hides a runtime task card by turn id without deleting conversation data", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
@@ -208,24 +224,29 @@ describe("WorkbenchRuntimeStore", () => {
     runtime.setTurnStatus(turn.id, "completed", { taskId: "task-1" })
 
     expect(runtime.deleteTask(turn.id)).toBe(true)
-    expect(runtime.snapshot("ws-1").turns).toHaveLength(0)
-    expect(runtime.snapshot("ws-1").runs).toHaveLength(0)
-    expect(runtime.eventsSince(thread.id, 0)).toHaveLength(0)
+    expect(runtime.snapshot("ws-1").turns).toHaveLength(1)
+    expect(runtime.snapshot("ws-1").runs).toHaveLength(1)
+    expect(runtime.eventsSince(thread.id, 0).length).toBeGreaterThan(0)
+    expect(runtime.snapshot("ws-1").hiddenTaskTurnIds).toEqual([turn.id])
   })
 
-  it("clears completed runtime turns even when they have no backend task id", async () => {
+  it("hides completed runtime task cards for one workspace only", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
     const done = runtime.createTurn({ prompt: "done", mode: "custom", workspaceId: "ws-1" }).turn
     const failed = runtime.createTurn({ prompt: "failed", mode: "custom", workspaceId: "ws-1" }).turn
     const running = runtime.createTurn({ prompt: "running", mode: "custom", workspaceId: "ws-1" }).turn
+    const other = runtime.createTurn({ prompt: "other", mode: "custom", workspaceId: "ws-2" }).turn
 
     runtime.setTurnStatus(done.id, "completed")
     runtime.setTurnStatus(failed.id, "failed")
+    runtime.setTurnStatus(other.id, "completed")
 
-    expect(runtime.clearCompletedTasks().sort()).toEqual([done.id, failed.id].sort())
-    expect(runtime.snapshot("ws-1").turns.map(turn => turn.id)).toEqual([running.id])
+    expect(runtime.clearCompletedTasks("ws-1").sort()).toEqual([done.id, failed.id].sort())
+    expect(runtime.snapshot("ws-1").turns.map(turn => turn.id)).toEqual([done.id, failed.id, running.id])
+    expect(runtime.snapshot("ws-1").hiddenTaskTurnIds?.sort()).toEqual([done.id, failed.id].sort())
+    expect(runtime.snapshot("ws-2").hiddenTaskTurnIds).toEqual([])
   })
 
   it("prunes old stream deltas before completion events", async () => {

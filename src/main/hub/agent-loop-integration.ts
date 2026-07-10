@@ -79,17 +79,14 @@ export class AgentLoopIntegration extends EventEmitter {
   ): Promise<AgentLoopDispatchResult> {
     const { threadId, turnId, workspacePath, signal, mode, singleAgentId, apiConfig } = options
 
-    // 根据模式配置 AgentLoop
-    if (mode === 'single' || singleAgentId || apiConfig) {
-      // 单 Agent 模式：重新创建 AgentLoop 实例
-      this.agentLoop = createAgentLoop({
-        maxSteps: options.maxSteps || 10,
-        timeoutMs: options.timeoutMs || 120000,
-        enableDelegation: false, // 单 agent 模式不启用委托
-        mode: 'single',
-        singleAgentId
-      }, this.providerManager)
-    }
+    // 根据模式配置 AgentLoop - 每次 dispatch 都重建实例
+    this.agentLoop = createAgentLoop({
+      maxSteps: options.maxSteps || 10,
+      timeoutMs: options.timeoutMs || 120000,
+      enableDelegation: mode !== 'single',
+      mode: mode === 'single' ? 'single' : 'auto',
+      singleAgentId
+    }, this.providerManager)
 
     // 获取可用的 Agents
     const availableAgents = this.getAvailableAgents()

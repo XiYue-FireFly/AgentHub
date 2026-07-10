@@ -7,14 +7,16 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Icon, IC } from '../../glass/ui'
 import { tr } from '../../glass/i18n'
+import type { ProviderDef } from '../../glass/meta'
 import { styledConfirm } from '../../lib/confirm'
-import { useSddDraftStore } from '../sdd-draft-store'
+import { useSddDraftStore, type SddRequirementBlock } from '../sdd-draft-store'
 import { listDrafts, createNewDraft, deleteDraft, loadDraft, saveDraftToDisk, parseRequirementBlocks, persistPlanTrace, applyVerifyVerdicts } from '../sdd-draft-actions'
 import { buildAssistantPrompt } from '../sdd-assistant-prompt'
 import { previewAssistantRequirementResponse } from '../sdd-assistant-apply'
 import { recordAiHistory } from '../sdd-draft-history'
 import { buildPlanPrompt } from '../sdd-plan-prompt'
 import { buildVerifyEvidenceSummary, buildVerifyPrompt, hashVerifyContent, parseVerifyResponse, type VerifyDraftSnapshot } from '../sdd-verify-prompt'
+import { buildRequirementDocumentChatPrompt } from '../sdd-chat-dispatch'
 import { SddDraftEditor } from './SddDraftEditor'
 import { SddAssistantPanel } from './SddAssistantPanel'
 
@@ -23,12 +25,27 @@ interface SddRequirementsListProps {
   threadId?: string | null
   threadTodos?: ThreadTodo[]
   events?: RuntimeEvent[]
+  providers?: ProviderDef[]
+  modelSelection?: ModelSelection | null
+  onModelSelectionChange?: (selection: ModelSelection | null) => void
   onThreadTodosChanged?: (threadId: string) => void | Promise<void>
+  onSendRequirementToChat?: (prompt: string, modelSelection?: ModelSelection | null) => Promise<unknown>
+  onRequirementSentToChat?: () => void
 }
 
 const PLAN_GENERATION_TRIGGER_MESSAGE = 'Generate an implementation plan from the current requirement document.'
 const VERIFY_TRIGGER_MESSAGE = 'Review completed implementation evidence and verify acceptance criteria for this requirement document.'
+const ASSISTANT_WIDTH_KEY = 'sdd.assistantPanelWidth'
+const ASSISTANT_DEFAULT_WIDTH = 420
+const ASSISTANT_MIN_WIDTH = 360
+const ASSISTANT_MAX_WIDTH = 780
 type AssistantRequestMode = 'chat' | 'plan' | 'verify'
+type ToolbarStatusTone = 'muted' | 'success' | 'warning' | 'error'
+
+interface ToolbarStatus {
+  tone: ToolbarStatusTone
+  text: string
+}
 
 interface AssistantRequirementApplyContext {
   kind: 'requirement-apply'
@@ -60,7 +77,71 @@ function isAssistantRequirementApplyContext(value: unknown): value is AssistantR
     typeof context.nextContent === 'string'
 }
 
-export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodos = [], events = [], onThreadTodosChanged }: SddRequirementsListProps) {
+function clampAssistantWidth(width: number): number {
+  if (!Number.isFinite(width)) return ASSISTANT_DEFAULT_WIDTH
+  return Math.min(ASSISTANT_MAX_WIDTH, Math.max(ASSISTANT_MIN_WIDTH, Math.round(width)))
+}
+
+function readAssistantPanelWidth(): number {
+  try {
+    return clampAssistantWidth(Number(localStorage.getItem(ASSISTANT_WIDTH_KEY)) || ASSISTANT_DEFAULT_WIDTH)
+  } catch {
+    return ASSISTANT_DEFAULT_WIDTH
+  }
+}
+
+function buildRequirementTodoMarkdown(blocks: SddRequirementBlock[]): string {
+  const lines: string[] = []
+  for (const block of blocks) {
+    for (const criterion of block.acceptanceCriteria) {
+      const text = criterion.text.trim()
+      if (!text) continue
+      const marker = criterion.checked ? 'x' : ' '
+      lines.push(`- [${marker}] ${block.id}: ${text} (covers: ${block.id})`)
+    }
+  }
+  return lines.join('\n')
+}
+
+function parseRequirementTodoBlocksFromMarkdown(markdown: string): SddRequirementBlock[] {
+  const blocks: SddRequirementBlock[] = []
+  let current: SddRequirementBlock | null = null
+  const lines = markdown.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim()
+    const blockMatch = trimmed.match(/^###\s+(R-\d+):\s+(.+?)(?:\s+\{(\w+)\})?\s*$/i)
+    if (blockMatch) {
+      current = {
+        id: blockMatch[1].toUpperCase(),
+        title: blockMatch[2].trim(),
+        status: 'draft',
+        description: '',
+        acceptanceCriteria: [],
+        lineNumber: index + 1
+      }
+      blocks.push(current)
+      continue
+    }
+    if (!current) continue
+    const criterionMatch = trimmed.match(/^[-*]\s+\[([ xX])\]\s+(.+)$/)
+    if (!criterionMatch) continue
+    current.acceptanceCriteria.push({
+      checked: criterionMatch[1].toLowerCase() === 'x',
+      text: criterionMatch[2].trim()
+    })
+  }
+  return blocks.filter(block => block.acceptanceCriteria.length > 0)
+}
+
+function selectRequirementTodoBlocks(parsedBlocks: SddRequirementBlock[], fallbackBlocks: SddRequirementBlock[], markdown: string): SddRequirementBlock[] {
+  if (parsedBlocks.length > 0) return parsedBlocks
+  const markdownBlocks = parseRequirementTodoBlocksFromMarkdown(markdown)
+  if (markdownBlocks.length > 0) return markdownBlocks
+  const hasChecklistMarkers = /^\s*[-*]\s+\[[ xX]\]\s+.+$/m.test(markdown)
+  return hasChecklistMarkers ? fallbackBlocks : []
+}
+
+export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodos = [], events = [], providers = [], modelSelection = null, onModelSelectionChange, onThreadTodosChanged, onSendRequirementToChat, onRequirementSentToChat }: SddRequirementsListProps) {
   const [drafts, setDrafts] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
@@ -70,12 +151,75 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [assistantMode, setAssistantMode] = useState<AssistantRequestMode>('chat')
   const [assistantTriggerNonce, setAssistantTriggerNonce] = useState(0)
+  const [assistantWidth, setAssistantWidth] = useState(readAssistantPanelWidth)
+  const [assistantResizing, setAssistantResizing] = useState(false)
+  const [syncingDocumentTodo, setSyncingDocumentTodo] = useState(false)
+  const [syncDocumentTodoStatus, setSyncDocumentTodoStatus] = useState<ToolbarStatus | null>(null)
+  const assistantResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const autoVerifyTriggeredRef = useRef<Set<string>>(new Set())
   const autoVerifySeenEventKeysRef = useRef<Set<string>>(new Set())
   const autoVerifyBaselineKeyRef = useRef<string | null>(null)
 
   const activeDraft = useSddDraftStore((s) => s.activeDraft)
+
+  // Clear seen event keys when draft changes to prevent memory leak
+  useEffect(() => {
+    autoVerifySeenEventKeysRef.current.clear()
+    autoVerifyTriggeredRef.current.clear()
+  }, [activeDraft?.id])
   const draftContent = useSddDraftStore((s) => s.content)
+
+  const saveAssistantWidth = useCallback((nextWidth: number) => {
+    const clamped = clampAssistantWidth(nextWidth)
+    setAssistantWidth(clamped)
+    try { localStorage.setItem(ASSISTANT_WIDTH_KEY, String(clamped)) } catch { /* noop */ }
+  }, [])
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const active = assistantResizeRef.current
+      if (!active) return
+      event.preventDefault()
+      saveAssistantWidth(active.startWidth + active.startX - event.clientX)
+    }
+    const handlePointerUp = () => {
+      if (!assistantResizeRef.current) return
+      assistantResizeRef.current = null
+      setAssistantResizing(false)
+    }
+    window.addEventListener('pointermove', handlePointerMove, { passive: false })
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [saveAssistantWidth])
+
+  const startAssistantResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    assistantResizeRef.current = {
+      startX: event.clientX,
+      startWidth: assistantWidth
+    }
+    setAssistantResizing(true)
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }, [assistantWidth])
+
+  const handleAssistantResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return
+    event.preventDefault()
+    if (event.key === 'Home') {
+      saveAssistantWidth(ASSISTANT_MIN_WIDTH)
+      return
+    }
+    if (event.key === 'End') {
+      saveAssistantWidth(ASSISTANT_MAX_WIDTH)
+      return
+    }
+    saveAssistantWidth(assistantWidth + (event.key === 'ArrowLeft' ? 24 : -24))
+  }, [assistantWidth, saveAssistantWidth])
 
   const triggerVerification = useCallback(() => {
     if (!draftContent) return
@@ -84,6 +228,67 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
     setAssistantTriggerNonce(value => value + 1)
     setAssistantOpen(true)
   }, [assistantMode, assistantOpen, draftContent])
+
+  const handleSendRequirementToChat = useCallback(async () => {
+    const store = useSddDraftStore.getState()
+    const draft = store.activeDraft
+    if (!draft || !onSendRequirementToChat) return
+    const saved = await saveDraftToDisk()
+    if (!saved) throw new Error('Failed to save draft before sending it to chat')
+    await parseRequirementBlocks()
+    const latest = useSddDraftStore.getState()
+    const latestDraft = latest.activeDraft ?? draft
+    const prompt = buildRequirementDocumentChatPrompt({
+      draft: latestDraft,
+      content: latest.content,
+      blocks: latest.requirementBlocks
+    })
+    await onSendRequirementToChat(prompt, modelSelection)
+    onRequirementSentToChat?.()
+  }, [modelSelection, onRequirementSentToChat, onSendRequirementToChat])
+
+  const handleSyncDocumentTodos = useCallback(async () => {
+    if (syncingDocumentTodo) return
+    if (!threadId) {
+      setSyncDocumentTodoStatus({ tone: 'warning', text: tr('需要先打开一个会话。', 'Open a thread first.') })
+      return
+    }
+    const draft = useSddDraftStore.getState().activeDraft
+    if (!draft) return
+    setSyncingDocumentTodo(true)
+    setSyncDocumentTodoStatus({ tone: 'muted', text: tr('同步中...', 'Syncing...') })
+    try {
+      const saved = await saveDraftToDisk()
+      if (!saved) throw new Error('Failed to save draft before syncing todos')
+      const previousBlocks = useSddDraftStore.getState().requirementBlocks
+      await parseRequirementBlocks()
+      const latest = useSddDraftStore.getState()
+      const latestDraft = latest.activeDraft ?? draft
+      const source = {
+        workspaceRoot: latestDraft.workspaceRoot,
+        draftId: latestDraft.id,
+        relativePath: latestDraft.relativePath
+      }
+      const requirementBlocks = selectRequirementTodoBlocks(latest.requirementBlocks, previousBlocks, latest.content)
+      const todoMarkdown = buildRequirementTodoMarkdown(requirementBlocks)
+      const todoCount = todoMarkdown ? todoMarkdown.split('\n').filter(Boolean).length : 0
+      await window.electronAPI.todos.syncFromMarkdown(threadId, todoMarkdown, source)
+      await onThreadTodosChanged?.(threadId)
+      setSyncDocumentTodoStatus({
+        tone: todoCount > 0 ? 'success' : 'warning',
+        text: todoCount > 0
+          ? tr(`已同步 ${todoCount} 个 Todo`, `Synced ${todoCount} todos`)
+          : tr('没有解析到 Todo，请检查文档是否包含 - [ ] 清单', 'No todos parsed. Use - [ ] checklist items in the document.')
+      })
+    } catch (error: any) {
+      setSyncDocumentTodoStatus({
+        tone: 'error',
+        text: error?.message || tr('同步 Todo 失败', 'Sync Todo failed')
+      })
+    } finally {
+      setSyncingDocumentTodo(false)
+    }
+  }, [onThreadTodosChanged, syncingDocumentTodo, threadId])
 
   // Load drafts
   const refreshDrafts = useCallback(async () => {
@@ -267,7 +472,10 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
 
     const result = await window.electronAPI.ai.quickComplete({
       prompt: userPrompt,
-      systemPrompt
+      systemPrompt,
+      providerId: modelSelection?.source === 'provider' ? modelSelection.providerId : undefined,
+      modelId: modelSelection?.source === 'provider' ? modelSelection.modelId : undefined,
+      workspaceRoot: requestDraft.workspaceRoot
     })
     if (!result?.ok) throw new Error(result?.error || 'AI request failed')
     const content = result.content || ''
@@ -313,13 +521,25 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
       throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
     }
 
+    const previousBlocks = latest.requirementBlocks
     recordAiHistory(latestDraft, latest.content, 'assistant requirement writeback')
     latest.setContent(applyContext.nextContent)
     const saved = await saveDraftToDisk()
     if (!saved) throw new Error('Failed to save assistant requirement update')
     await parseRequirementBlocks()
+    if (threadId) {
+      const afterApply = useSddDraftStore.getState()
+      const requirementBlocks = selectRequirementTodoBlocks(afterApply.requirementBlocks, previousBlocks, afterApply.content)
+      const todoMarkdown = buildRequirementTodoMarkdown(requirementBlocks)
+      await window.electronAPI.todos.syncFromMarkdown(threadId, todoMarkdown, {
+        workspaceRoot: latestDraft.workspaceRoot,
+        draftId: latestDraft.id,
+        relativePath: latestDraft.relativePath
+      })
+      await onThreadTodosChanged?.(threadId)
+    }
     if (workspaceRoot) await refreshDrafts()
-  }, [refreshDrafts, workspaceRoot])
+  }, [onThreadTodosChanged, refreshDrafts, threadId, workspaceRoot])
 
   const handleSyncPlanTodos = useCallback(async (planMarkdown: string): Promise<ThreadTodo[]> => {
     if (!threadId) throw new Error(tr('需要先打开一个会话。', 'Open a thread first.'))
@@ -363,11 +583,23 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
 
   // 如果正在编辑，显示编辑器
   if (view === 'editor' && activeDraft) {
+    const requirementsLayoutStyle = assistantOpen
+      ? ({ '--sdd-assistant-width': `${assistantWidth}px` } as React.CSSProperties)
+      : undefined
+
     return (
-      <div className={`sdd-requirements-full ${assistantOpen ? 'sdd-with-assistant' : ''}`}>
+      <div
+        className={`sdd-requirements-full ${assistantOpen ? 'sdd-with-assistant' : ''} ${assistantResizing ? 'sdd-assistant-resizing' : ''}`}
+        style={requirementsLayoutStyle}
+      >
         <SddDraftEditor
+          providers={providers}
+          modelSelection={modelSelection}
+          onModelSelectionChange={onModelSelectionChange}
           onClose={handleBack}
           onOpenAssistant={() => setAssistantOpen(!assistantOpen)}
+          onSendToChat={onSendRequirementToChat ? handleSendRequirementToChat : undefined}
+          onSyncToTodo={handleSyncDocumentTodos}
           onNext={() => {
             // 触发计划生成：切换到计划模式并打开 AI 助手面板
             if (!draftContent) return
@@ -380,11 +612,33 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
           }}
           nextDisabled={!draftContent}
           verifyDisabled={!draftContent}
+          sendToChatDisabled={!draftContent}
+          syncToTodoDisabled={!draftContent}
+          syncingTodo={syncingDocumentTodo}
+          syncTodoStatus={syncDocumentTodoStatus}
         />
+        {assistantOpen && (
+          <div
+            className="sdd-assistant-resize-handle"
+            role="separator"
+            aria-label={tr('Resize requirements AI panel', 'Resize requirements AI panel')}
+            aria-orientation="vertical"
+            aria-valuemin={ASSISTANT_MIN_WIDTH}
+            aria-valuemax={ASSISTANT_MAX_WIDTH}
+            aria-valuenow={assistantWidth}
+            tabIndex={0}
+            title={tr('拖拽调整需求 AI 面板宽度', 'Drag to resize Requirements AI panel')}
+            onPointerDown={startAssistantResize}
+            onKeyDown={handleAssistantResizeKeyDown}
+          />
+        )}
         {assistantOpen && (
           <SddAssistantPanel
             draftId={activeDraft.id}
             workspaceRoot={activeDraft.workspaceRoot}
+            providers={providers}
+            modelSelection={modelSelection}
+            onModelSelectionChange={onModelSelectionChange}
             initialMessage={
               assistantMode === 'plan'
                 ? PLAN_GENERATION_TRIGGER_MESSAGE
@@ -417,7 +671,8 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   }
 
   return (
-    <div className="sdd-requirements-list">
+    <div className="sdd-requirements-full sdd-list-mode">
+      <div className="sdd-requirements-list">
       {/* Header */}
       <div className="sdd-requirements-header">
         <div className="sdd-requirements-title">
@@ -519,6 +774,7 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
             </div>
           </div>
         ))}
+      </div>
       </div>
     </div>
   )

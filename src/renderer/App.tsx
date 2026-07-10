@@ -43,7 +43,13 @@ function AppInner() {
   const [localAgents, setLocalAgents] = useState<LocalAgentStatus[]>([])
   const [appearance, setAppearance] = useState(readAppearanceLocal)
   const [motion, setMotion] = useState<MotionLevel>(() => {
-    try { return readAppearanceLocal().motion || (localStorage.getItem('ah-motion') as MotionLevel) || 'rich' } catch { return 'rich' }
+    try {
+      const appearanceMotion = readAppearanceLocal().motion
+      if (appearanceMotion && ['off', 'subtle', 'rich'].includes(appearanceMotion)) return appearanceMotion
+      const stored = localStorage.getItem('ah-motion')
+      if (stored && ['off', 'subtle', 'rich'].includes(stored)) return stored as MotionLevel
+      return 'rich'
+    } catch { return 'rich' }
   })
 
   const configRequestId = useRef(0)
@@ -60,7 +66,7 @@ function AppInner() {
   const applyProviderConfig = useCallback((cfg: any) => {
     if (!cfg) return
     const nextProviders = Array.isArray(cfg.providers) ? cfg.providers : []
-    setProviders(current => nextProviders.length > 0 ? nextProviders : current)
+    setProviders(nextProviders)  // Always update, even if empty array
     setBindings(cfg.routing?.bindings ?? [])
     setFallbackChain(cfg.routing?.fallbackChain ?? [])
   }, [])
@@ -89,12 +95,19 @@ function AppInner() {
     return () => window.removeEventListener('agenthub:appearance-change', handler)
   }, [])
 
+  const appearanceRef = useRef({ appearance, motion })
+  appearanceRef.current = { appearance, motion }
+
   useEffect(() => {
     const next = { ...appearance, motion }
     applyAppearance(next)
     try { localStorage.setItem('ah-motion', motion) } catch { /* noop */ }
-    return subscribeSystemTheme(next, () => applyAppearance(next))
-  }, [appearance, motion])
+    // Subscribe once, use ref for latest values in callback
+    return subscribeSystemTheme(next, () => {
+      const { appearance: currentAppearance, motion: currentMotion } = appearanceRef.current
+      applyAppearance({ ...currentAppearance, motion: currentMotion })
+    })
+  }, [])
 
   /* ---------- 数据加载 ---------- */
   const clearConfigRetryTimer = useCallback(() => {
@@ -106,14 +119,13 @@ function AppInner() {
   const loadConfig = useCallback(async () => {
     const requestId = ++configRequestId.current
     clearConfigRetryTimer()
-    const retryLoadConfig = () => {
+    const scheduleRetry = () => {
       const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
       if (retryDelay === null) {
         setConfigLoadError('主进程配置暂未就绪，请检查应用日志或点击重试。')
         return
       }
       setConfigLoadError(null)
-      configEmptyRetryCount.current += 1
       configRetryTimer.current = window.setTimeout(() => {
         configRetryTimer.current = null
         if (requestId === configRequestId.current) loadConfig().catch(() => {})
@@ -121,7 +133,7 @@ function AppInner() {
     }
     try {
       const cfg = await window.electronAPI.providers.get().catch(error => {
-        retryLoadConfig()
+        scheduleRetry()
         throw error
       })
       if (requestId !== configRequestId.current) return
@@ -131,17 +143,9 @@ function AppInner() {
         setConfigLoadError(null)
         return
       }
-      const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
-      if (retryDelay !== null) {
-        setConfigLoadError(null)
-        configEmptyRetryCount.current += 1
-        configRetryTimer.current = window.setTimeout(() => {
-          configRetryTimer.current = null
-          if (requestId === configRequestId.current) loadConfig().catch(() => {})
-        }, retryDelay)
-      } else {
-        setConfigLoadError('主进程配置暂未就绪，请检查应用日志或点击重试。')
-      }
+      // Increment counter only once when config is empty
+      configEmptyRetryCount.current += 1
+      scheduleRetry()
     } catch { /* main 进程未就绪 */ }
   }, [applyProviderConfig, clearConfigRetryTimer])
 
@@ -206,6 +210,7 @@ function AppInner() {
 
   useEffect(() => {
     const off = window.electronAPI?.app?.onDeepLink?.((link) => {
+      if (!link) return
       if (link.action || link.params?.agent) refreshStatus()
     })
     return off
@@ -214,36 +219,40 @@ function AppInner() {
   /* ---------- 派发 ---------- */
   /* ---------- 设置操作 ---------- */
   const onSetEnabled = useCallback(async (id: string, enabled: boolean) => {
+    // Capture snapshot before optimistic update to ensure correct rollback
     const prev = providersRef.current
     setProviders(ps => ps.map(p => p.id === id ? { ...p, enabled } : p))
     try { applyProviderConfig(await window.electronAPI.providers.setEnabled(id, enabled)) }
-    catch { setProviders(prev) }
+    catch { setProviders(() => prev) }
     refreshStatus()
   }, [applyProviderConfig, refreshStatus])
 
   const onSetKey = useCallback(async (id: string, key: string) => {
+    // Capture snapshot before optimistic update to ensure correct rollback
     const prev = providersRef.current
     setProviders(ps => ps.map(p => p.id === id ? { ...p, apiKey: key, enabled: p.enabled || !!key } : p))
     try { applyProviderConfig(await window.electronAPI.providers.setKey(id, key)) }
-    catch { setProviders(prev) }
+    catch { setProviders(() => prev) }
     refreshStatus()
   }, [applyProviderConfig, refreshStatus])
 
   const onSetBinding = useCallback(async (b: BindingDef) => {
+    // Capture snapshot before optimistic update to ensure correct rollback
     const prev = bindingsRef.current
     setBindings(bs => bs.some(x => x.agentId === b.agentId) ? bs.map(x => x.agentId === b.agentId ? b : x) : [...bs, b])
     try {
       await window.electronAPI.routing.setBinding(b)
     }
-    catch { setBindings(prev) }
+    catch { setBindings(() => prev) }
     refreshStatus()
   }, [refreshStatus])
 
   const onSetFallback = useCallback(async (chain: string[]) => {
+    // Capture snapshot before optimistic update to ensure correct rollback
     const prev = fallbackChainRef.current
     setFallbackChain(chain)
     try { await window.electronAPI.routing.setFallback(chain) }
-    catch { setFallbackChain(prev) }
+    catch { setFallbackChain(() => prev) }
   }, [])
 
   const onUpsertProvider = useCallback(async (p: any) => {
@@ -258,7 +267,13 @@ function AppInner() {
 
   const onReorderProvidersForClaude = useCallback(async (orderedIds: string[]) => {
     const byId = new Map(providers.map(provider => [provider.id, provider]))
-    setProviders(orderedIds.map(id => byId.get(id)).filter(Boolean) as ProviderDef[])
+    const reordered = orderedIds.map(id => byId.get(id)).filter((p): p is ProviderDef => !!p)
+    if (reordered.length !== orderedIds.length) {
+      // Some IDs were not found, reload config to get consistent state
+      loadConfig()
+      return
+    }
+    setProviders(reordered)
     try { applyProviderConfig(await window.electronAPI.providers.reorderForClaude(orderedIds)) }
     catch { loadConfig() }
   }, [applyProviderConfig, loadConfig, providers])

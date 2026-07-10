@@ -38,7 +38,7 @@ export function installAppMenu(options: {
       label: "Help",
       submenu: [
         { label: "Open homepage", click: () => void shell.openExternal("https://agenthub.dev") },
-        { label: "Open releases", click: () => void shell.openExternal("https://github.com/XiYue-FireFly/AgengHub/releases") }
+        { label: "Open releases", click: () => void shell.openExternal("https://github.com/XiYue-FireFly/AgentHub/releases") }
       ]
     }
   ]

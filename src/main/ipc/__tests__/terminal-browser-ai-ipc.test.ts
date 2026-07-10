@@ -90,6 +90,13 @@ describe('terminal AI browser and quick complete IPC runtime validation', () => 
       ok: false,
       error: 'Invalid IPC payload: input.timeoutMs must be at least 1000'
     })
+    expect(electronMock.handlers.get('ai:quickComplete')?.({}, {
+      prompt: 'Hello',
+      workspaceRoot: 123
+    })).toEqual({
+      ok: false,
+      error: 'Invalid IPC payload: input.workspaceRoot must be a string'
+    })
 
     expect(handler).not.toHaveBeenCalled()
   })
@@ -155,7 +162,7 @@ describe('terminal AI browser and quick complete IPC runtime validation', () => 
     typedHandle('browser:extractText', extractHandler)
     typedHandle('browser:analyzePrompt', analyzeHandler)
 
-    const quickInput = { prompt: 'Hello', systemPrompt: '', providerId: 'openai', modelId: 'gpt-5.4', timeoutMs: 30000 }
+    const quickInput = { prompt: 'Hello', systemPrompt: '', providerId: 'openai', modelId: 'gpt-5.4', timeoutMs: 30000, workspaceRoot: 'E:/Agent/AgentHub-v123-main' }
     const captureInput = { url: 'https://example.com', title: 'Example', text: '', headings: [], links: [], forms: [], capturedAt: 1 }
 
     await expect(electronMock.handlers.get('terminalAi:buildPrompt')?.({}, 'Explain this', terminalContext)).resolves.toBe('prompt')

@@ -39,9 +39,9 @@ const fsMock = vi.hoisted(() => ({
 }))
 
 const workspaceFilesMock = vi.hoisted(() => ({
-  listWorkspaceFiles: vi.fn(() => [{ relativePath: 'README.md' }]),
-  searchWorkspaceFiles: vi.fn(() => [{ relativePath: 'README.md' }]),
-  readFilePreview: vi.fn(() => ({ ok: true, content: 'preview' }))
+  listWorkspaceFiles: vi.fn(async () => [{ relativePath: 'README.md' }]),
+  searchWorkspaceFiles: vi.fn(async () => [{ relativePath: 'README.md' }]),
+  readFilePreview: vi.fn(async () => ({ ok: true, content: 'preview' }))
 }))
 
 const worktreesMock = vi.hoisted(() => ({
@@ -178,13 +178,13 @@ describe('workspace IPC file path trust', () => {
     workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
     await setup()
 
-    expect(electronMock.handlers.get('workspaceFiles:list')?.({}, otherRoot, 10)).toEqual([])
-    expect(electronMock.handlers.get('workspaceFiles:search')?.({}, otherRoot, 'readme', 10)).toEqual([])
+    expect(await electronMock.handlers.get('workspaceFiles:list')?.({}, otherRoot, 10)).toEqual([])
+    expect(await electronMock.handlers.get('workspaceFiles:search')?.({}, otherRoot, 'readme', 10)).toEqual([])
     expect(workspaceFilesMock.listWorkspaceFiles).not.toHaveBeenCalled()
     expect(workspaceFilesMock.searchWorkspaceFiles).not.toHaveBeenCalled()
 
-    expect(electronMock.handlers.get('workspaceFiles:list')?.({}, root, 10)).toEqual([{ relativePath: 'README.md' }])
-    expect(electronMock.handlers.get('workspaceFiles:search')?.({}, root, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
+    expect(await electronMock.handlers.get('workspaceFiles:list')?.({}, root, 10)).toEqual([{ relativePath: 'README.md' }])
+    expect(await electronMock.handlers.get('workspaceFiles:search')?.({}, root, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
     expect(workspaceFilesMock.listWorkspaceFiles).toHaveBeenCalledWith(root, 10)
     expect(workspaceFilesMock.searchWorkspaceFiles).toHaveBeenCalledWith(root, 'readme', 10)
   })
@@ -195,8 +195,8 @@ describe('workspace IPC file path trust', () => {
     workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
     await setup()
 
-    expect(electronMock.handlers.get('workspaceFiles:list')?.({}, srcDir, 10)).toEqual([{ relativePath: 'README.md' }])
-    expect(electronMock.handlers.get('workspaceFiles:search')?.({}, srcDir, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
+    expect(await electronMock.handlers.get('workspaceFiles:list')?.({}, srcDir, 10)).toEqual([{ relativePath: 'README.md' }])
+    expect(await electronMock.handlers.get('workspaceFiles:search')?.({}, srcDir, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
     expect(workspaceFilesMock.listWorkspaceFiles).toHaveBeenCalledWith(srcDir, 10)
     expect(workspaceFilesMock.searchWorkspaceFiles).toHaveBeenCalledWith(srcDir, 'readme', 10)
   })
@@ -247,6 +247,64 @@ describe('workspace IPC file path trust', () => {
       message: 'Invalid workspace path "missing": not found',
       code: 'WORKSPACE_PATH_INVALID'
     })
+  })
+
+  it('rejects writing sensitive files like .env in workspace (G2-MH2)', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    await setup()
+    const result = await electronMock.handlers.get('workspaceFiles:write')?.({}, root, '.env', 'SECRET=1')
+    expect(result).toEqual({ ok: false, error: 'Access denied: sensitive file' })
+    expect(fsMock.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects reading sensitive files like .env in workspace', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    await setup()
+
+    const read = electronMock.handlers.get('workspaceFiles:read')
+    const result = await read?.({}, root, '.env')
+
+    expect(result).toEqual({ ok: false, content: '', path: '', error: 'Access denied: sensitive file' })
+    expect(fsMock.readFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects reading sensitive files like id_rsa in workspace', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    await setup()
+
+    const read = electronMock.handlers.get('workspaceFiles:read')
+    const result = await read?.({}, root, '.ssh/id_rsa')
+
+    expect(result).toEqual({ ok: false, content: '', path: '', error: 'Access denied: sensitive file' })
+    expect(fsMock.readFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects previewing sensitive files like .env', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    workspaceMock.activeId = 'ws-1'
+    await setup()
+
+    const preview = electronMock.handlers.get('workspaceFiles:preview')
+    const result = await preview?.({}, resolve(root, '.env'), 50)
+
+    expect(result).toEqual({ ok: false, error: 'Access denied: sensitive file' })
+    expect(workspaceFilesMock.readFilePreview).not.toHaveBeenCalled()
+  })
+
+  it('allows reading non-sensitive files in workspace', async () => {
+    const root = resolve(process.cwd(), 'registered-workspace')
+    workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+    await setup()
+
+    const read = electronMock.handlers.get('workspaceFiles:read')
+    const result = await read?.({}, root, 'README.md')
+
+    expect(result).toEqual({ ok: true, content: 'file content', path: resolve(root, 'README.md') })
+    expect(fsMock.readFile).toHaveBeenCalled()
   })
 
   it('delegates worktree operations with arguments intact', async () => {

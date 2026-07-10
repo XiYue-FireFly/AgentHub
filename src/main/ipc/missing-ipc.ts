@@ -8,6 +8,7 @@
 
 import { shell, dialog, app } from 'electron'
 import { readFileSync, statSync } from 'node:fs'
+import * as fs from 'node:fs'
 import { getWorkspaceManager } from '../hub/workspace'
 import { getSkillManager } from '../skills/manager'
 import { BUILTIN_SKILLS } from '../skills/types'
@@ -19,10 +20,24 @@ import { takeoverStatus, takeoverApply, takeoverRestore } from '../routing/takeo
 import { getCachedLocalAgentStatuses } from '../runtime/local-agents'
 import { ProviderClient } from '../providers/client'
 import type { AgentRouteBinding, ThinkingConfig } from '../providers/types'
+import { workspaceContextPromptForRoot } from '../runtime/workspace-context'
+import { compactTextByTokenBudget } from '../runtime/token-economy'
+import { safeBrowserUrl } from '../security/webview-guards'
 import { resolvePathWithinAllowedBases } from './path-guards'
 import { assertRegisteredWorkspaceRoot } from './workspace-root-guard'
 import { isSensitiveTextFilePath } from './sensitive-files'
 import { typedHandle } from './typed-ipc'
+
+function isSafeOpenExternalUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false
+  if (safeBrowserUrl(url)) return true
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'mailto:'
+  } catch {
+    return false
+  }
+}
 
 interface MissingIpcDeps {
   dispatcher: any
@@ -47,8 +62,8 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
     return true
   })
 
-  typedHandle('tasks:clearCompleted', async () => {
-    runtimeStore?.clearCompletedTasks?.()
+  typedHandle('tasks:clearCompleted', async (_event, workspaceId) => {
+    runtimeStore?.clearCompletedTasks?.(workspaceId)
     if (dispatcher) dispatcher.clearCompleted?.()
     return true
   })
@@ -122,7 +137,7 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
 
   // --- App ---
   typedHandle('app:openExternal', async (_e, url) => {
-    if (url && (url.startsWith('http:') || url.startsWith('https:') || url.startsWith('mailto:'))) {
+    if (isSafeOpenExternalUrl(url)) {
       await shell.openExternal(url)
       return { ok: true }
     }
@@ -153,9 +168,10 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       const root = resolveAppBase(input?.workspaceRoot, ws?.rootPath)
       const userData = app.getPath('userData')
       resolved = resolvePathWithinAllowedBases(rawPath, root, [root, userData])
-      const st = statSync(resolved)
+      const st = await fs.promises.stat(resolved)
       if (st.size > 1_000_000) return { ok: false, path: resolved, error: 'File too large' }
-      return { ok: true, path: resolved, content: readFileSync(resolved, 'utf-8') }
+      const content = await fs.promises.readFile(resolved, 'utf-8')
+      return { ok: true, path: resolved, content }
     } catch (e: any) { return { ok: false, path: resolved, error: e?.message } }
   })
   typedHandle('app:pickFolder', async (_e, options) => {
@@ -244,8 +260,10 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       timeout = setTimeout(() => controller.abort(), input.timeoutMs || 30000)
       let content = ''
       let errorMessage = ''
+      const workspaceContext = compactTextByTokenBudget(workspaceContextPromptForRoot(input.workspaceRoot), 2_000).text
+      const prompt = compactTextByTokenBudget([workspaceContext, input.prompt].filter(Boolean).join('\n\n'), 12_000).text
       await client.stream({
-        messages: [{ role: 'user', content: input.prompt }],
+        messages: [{ role: 'user', content: prompt }],
         systemPrompt: input.systemPrompt,
         signal: controller.signal
       }, {

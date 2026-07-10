@@ -4,6 +4,7 @@ import { tr } from '../glass/i18n'
 import { WorkspaceItem } from './types'
 import { styledConfirm } from '../lib/confirm'
 import type { ViewMode } from './viewModes'
+import type { WorkbenchSettingsTabKey } from './NativeTitlebar'
 
 const PERSONAL_WORKSPACE_KEY = '__personal__'
 const SIDEBAR_WIDTH_KEY = 'agenthub.workbench.sidebarWidth.v1'
@@ -22,6 +23,7 @@ export function SessionSidebar({
   selectThread,
   createThread,
   createThreadInWorkspace,
+  openSetup,
   renameThread,
   deleteThread,
   search,
@@ -40,6 +42,7 @@ export function SessionSidebar({
   selectThread: (id: string | null) => void
   createThread: (workspaceId?: string | null) => void
   createThreadInWorkspace: (workspaceId: string) => void
+  openSetup: (tab?: WorkbenchSettingsTabKey) => void
   renameThread: (id: string, title: string) => Promise<void> | void
   deleteThread: (id: string) => void
   search: string
@@ -52,6 +55,12 @@ export function SessionSidebar({
   const [renaming, setRenaming] = useState<WorkbenchThread | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [renamingBusy, setRenamingBusy] = useState(false)
+  // W-L4: Tick state to refresh relativeTime labels periodically
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 60_000)
+    return () => clearInterval(timer)
+  }, [])
   const grouped = useMemo(() => groupThreadsByWorkspace(threads), [threads])
   const resizeHandlersRef = useRef<{ move: ((e: PointerEvent) => void) | null; up: ((e: PointerEvent) => void) | null }>({ move: null, up: null })
   const query = search.trim().toLowerCase()
@@ -192,10 +201,34 @@ export function SessionSidebar({
         <button className={view === 'requirements' ? 'active' : ''} onClick={() => setView('requirements')}>
           <Icon d={IC.file} size={16} /> {tr('需求', 'Requirements')}
         </button>
+        <button className={view === 'workflows' ? 'active' : ''} onClick={() => setView('workflows')}>
+          <Icon d={IC.broadcast} size={16} /> {tr('工作流', 'Workflows')}
+        </button>
         <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
           <Icon d={IC.gear} size={16} /> {tr('设置', 'Settings')}
         </button>
       </nav>
+
+      <div className="wb-feature-entrypoints" aria-label={tr('功能入口', 'Feature entrypoints')}>
+        <button type="button" onClick={() => openSetup('plugins')}>
+          <Icon d={IC.bolt} size={14} /> {tr('插件', 'Plugins')}
+        </button>
+        <button type="button" onClick={() => openSetup('models')}>
+          <Icon d={IC.brain} size={14} /> {tr('模型', 'Models')}
+        </button>
+        <button type="button" onClick={() => openSetup('usage')}>
+          <Icon d={IC.pulse} size={14} /> {tr('用量', 'Usage')}
+        </button>
+        <button type="button" onClick={() => openSetup('updates')}>
+          <Icon d={IC.refresh} size={14} /> {tr('更新', 'Updates')}
+        </button>
+        <button type="button" onClick={() => openSetup('diagnostics')}>
+          <Icon d={IC.pulse} size={14} /> {tr('诊断', 'Diagnostics')}
+        </button>
+        <button type="button" onClick={() => openSetup('agentLoop')}>
+          <Icon d={IC.bolt} size={14} /> {tr('Loop', 'Loop')}
+        </button>
+      </div>
 
       <div className="wb-sidebar-search">
         <Icon d={IC.search} size={14} />

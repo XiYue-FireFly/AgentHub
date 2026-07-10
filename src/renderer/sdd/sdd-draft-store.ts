@@ -145,6 +145,10 @@ export const useSddDraftStore = create<SddDraftState>()(
         markSaved: () => set((state) => {
           state.lastSavedContent = state.content
           state.saveStatus = 'saved'
+          // Keep partialized activeDraft in sync so rehydrate does not prefer a stale empty blob
+          if (state.activeDraft) {
+            state.activeDraft.content = state.content
+          }
         }),
 
         setSaveStatus: (status) => set((state) => {
@@ -190,11 +194,43 @@ export const useSddDraftStore = create<SddDraftState>()(
         name: 'sdd-draft-store',
         version: 1,
         partialize: (state) => ({
-          // 只持久化必要的状态
+          // Persist draft metadata + last known content snapshot.
+          // Live `content` is also restored on rehydrate from activeDraft.content
+          // to avoid empty-buffer autosave wiping disk (G2-MC1).
           activeDraft: state.activeDraft,
-          content: state.content,
           lastSavedContent: state.lastSavedContent,
+          // Never persist dirty/saving — rehydrate must not trigger empty overwrite
+          saveStatus: 'saved' as SddSaveStatus,
         }),
+        onRehydrateStorage: () => (state) => {
+          if (!state) return
+          if (state.activeDraft) {
+            // Prefer lastSavedContent (successful save snapshot). Do not use ?? on
+            // activeDraft.content — empty string would block fallback (G2-MC1 review).
+            const fromSaved = typeof state.lastSavedContent === 'string' ? state.lastSavedContent : ''
+            const fromDraft = typeof state.activeDraft.content === 'string' ? state.activeDraft.content : ''
+            const restored = fromSaved.length > 0 ? fromSaved : fromDraft
+            state.content = restored
+            state.lastSavedContent = restored
+            state.activeDraft.content = restored
+            state.saveStatus = 'saved'
+            // F-W4: schedule disk reload after rehydrate (avoid empty wipe race)
+            const draftId = state.activeDraft.id
+            const workspaceRoot = state.activeDraft.workspaceRoot
+            queueMicrotask(() => {
+              void import('./sdd-draft-actions').then(m => {
+                const cur = useSddDraftStore.getState()
+                if (cur.activeDraft?.id === draftId && cur.activeDraft.workspaceRoot === workspaceRoot && cur.saveStatus !== 'dirty') {
+                  void m.reloadActiveDraftFromDisk()
+                }
+              }).catch(() => {})
+            })
+          } else {
+            state.content = ''
+            state.lastSavedContent = ''
+            state.saveStatus = 'saved'
+          }
+        },
       }
     ),
     { name: 'sdd-draft-store' }

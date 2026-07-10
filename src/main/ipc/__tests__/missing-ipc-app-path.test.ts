@@ -19,7 +19,11 @@ const openTargetMock = vi.hoisted(() => ({
 
 const fsMock = vi.hoisted(() => ({
   statSync: vi.fn(() => ({ size: 10 })),
-  readFileSync: vi.fn(() => 'file content')
+  readFileSync: vi.fn(() => 'file content'),
+  promises: {
+    stat: vi.fn(async () => ({ size: 10 })),
+    readFile: vi.fn(async () => 'file content')
+  }
 }))
 
 vi.mock('electron', () => ({
@@ -62,6 +66,10 @@ describe('missing IPC app path workspace trust', () => {
     fsMock.statSync.mockReturnValue({ size: 10 })
     fsMock.readFileSync.mockClear()
     fsMock.readFileSync.mockReturnValue('file content')
+    fsMock.promises.stat.mockClear()
+    fsMock.promises.stat.mockResolvedValue({ size: 10 })
+    fsMock.promises.readFile.mockClear()
+    fsMock.promises.readFile.mockResolvedValue('file content')
     vi.resetModules()
   })
 
@@ -169,7 +177,7 @@ describe('missing IPC app path workspace trust', () => {
   it('returns resolved path with file-too-large errors', async () => {
     const registeredRoot = resolve(process.cwd(), 'registered-workspace')
     workspaceMock.workspaces = [{ id: 'ws-1', rootPath: registeredRoot }]
-    fsMock.statSync.mockReturnValue({ size: 1_000_001 })
+    fsMock.promises.stat.mockResolvedValue({ size: 1_000_001 })
 
     await setup()
 
@@ -181,7 +189,7 @@ describe('missing IPC app path workspace trust', () => {
       path: resolve(registeredRoot, 'large.log'),
       error: 'File too large'
     })
-    expect(fsMock.readFileSync).not.toHaveBeenCalled()
+    expect(fsMock.promises.readFile).not.toHaveBeenCalled()
   })
 
   it('keeps app openExternal protocol allowlist behavior', async () => {
@@ -191,8 +199,15 @@ describe('missing IPC app path workspace trust', () => {
       .resolves.toEqual({ ok: true })
     await expect(electronMock.handlers.get('app:openExternal')?.({}, 'file:///secret.txt'))
       .resolves.toEqual({ ok: false, error: 'Invalid URL scheme' })
-    expect(electronMock.openExternal).toHaveBeenCalledTimes(1)
+    await expect(electronMock.handlers.get('app:openExternal')?.({}, 'javascript:alert(1)'))
+      .resolves.toEqual({ ok: false, error: 'Invalid URL scheme' })
+    await expect(electronMock.handlers.get('app:openExternal')?.({}, 'not-a-url'))
+      .resolves.toEqual({ ok: false, error: 'Invalid URL scheme' })
+    await expect(electronMock.handlers.get('app:openExternal')?.({}, 'mailto:user@example.com'))
+      .resolves.toEqual({ ok: true })
+    expect(electronMock.openExternal).toHaveBeenCalledTimes(2)
     expect(electronMock.openExternal).toHaveBeenCalledWith('https://agenthub.dev')
+    expect(electronMock.openExternal).toHaveBeenCalledWith('mailto:user@example.com')
   })
 
   it('returns null for pickFolder and pickFiles when no window is available', async () => {

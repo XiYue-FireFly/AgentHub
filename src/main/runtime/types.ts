@@ -157,6 +157,7 @@ export interface WorkbenchSnapshot {
   threads: WorkbenchThread[]
   turns: WorkbenchTurn[]
   runs: AgentRunNode[]
+  hiddenTaskTurnIds?: string[]
   activeThreadId: string | null
 }
 

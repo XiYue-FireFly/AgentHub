@@ -106,10 +106,11 @@ export function parseCodexStreamJsonLine(line: string): ParsedActivity | null {
       }
     }
     if (obj.type === 'item.completed') {
-      const exitCode = typeof item.exit_code === 'number' ? item.exit_code : 0
+      const exitCode = typeof item.exit_code === 'number' ? item.exit_code : undefined
       return {
         steps: [{
           id: String(item.id || item.command || 'command'),
+          // exit_code 0 -> done; missing/non-zero exit_code -> error (avoid masking failures as green "done")
           status: exitCode === 0 ? 'done' : 'error',
           output: truncate(item.aggregated_output, 800).trim() || undefined
         }]

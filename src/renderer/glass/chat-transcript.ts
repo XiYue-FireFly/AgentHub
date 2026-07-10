@@ -41,12 +41,17 @@ export function curateAgentReply(text: string): string {
 }
 
 export function visibleSequentialReplies<T extends TranscriptReply>(replies: T[]): T[] {
-  const visible: T[] = []
+  const done: T[] = []
+  let firstPending: T | null = null
   for (const reply of replies) {
-    visible.push(reply)
-    if (!reply.done) break
+    if (reply.done) {
+      done.push(reply)
+    } else if (!firstPending) {
+      firstPending = reply
+    }
   }
-  return visible
+  // Show all done replies, then append the first pending reply if any
+  return firstPending ? [...done, firstPending] : done
 }
 
 function subtaskReply(subtask: OrchestrateSubtask): TranscriptReply {

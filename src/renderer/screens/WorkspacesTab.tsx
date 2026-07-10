@@ -37,7 +37,12 @@ export function WorkspacesTab() {
     setActiveId(active)
   }, [])
 
-  useEffect(() => { refresh().catch((err: any) => setError(err?.message || tr('加载工作目录失败', 'Failed to load workspaces'))) }, [refresh])
+  useEffect(() => {
+    let alive = true
+    refresh()
+      .catch((err: any) => { if (alive) setError(err?.message || tr('加载工作目录失败', 'Failed to load workspaces')) })
+    return () => { alive = false }
+  }, [refresh])
 
   const save = async () => {
     if (!editing?.name.trim() || !editing.rootPath.trim()) return

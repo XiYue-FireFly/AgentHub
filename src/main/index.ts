@@ -34,6 +34,8 @@ import { optimizePromptForDispatch } from "./runtime/prompt-optimizer"
 import { applyRouteDecisionToPlan, planDispatch } from "./runtime/dispatch-planner"
 import { estimateDispatchBudget } from "./runtime/budget-center"
 import { resolvePluginPreDispatchHooks } from "./runtime/plugin-contributions"
+import { workspaceContextPrompt } from "./runtime/workspace-context"
+import { compactChatMessages, compactTextByTokenBudget, estimateMessagesTokens } from "./runtime/token-economy"
 import { runPreDispatchHooks } from "./hooks/hook-engine"
 // keyboard-shortcuts imports moved to src/main/ipc/workflow-ipc.ts
 // diagnostics, backup imports moved to src/main/ipc/workflow-ipc.ts
@@ -78,6 +80,13 @@ let memoryLibrary: MemoryLibrary | null = null
 const runtimeStore = getWorkbenchRuntimeStore()
 const taskToTurn = new Map<string, string>()
 const IMAGE_DATA_URL_BYTES = 2 * 1024 * 1024
+const MODEL_HISTORY_MAX_TOKENS = 24_000
+const MODEL_CURRENT_MESSAGE_MAX_TOKENS = 12_000
+const ATTACHMENT_TEXT_MAX_TOKENS = 4_000
+
+function hasInlineTextAttachment(attachments?: WorkbenchAttachment[]): boolean {
+  return attachments?.some(att => !!att.text && !att.path) ?? false
+}
 
 function liveWorkbenchWindows(): BrowserWindow[] {
   return [...workbenchWindows].filter(win => !win.isDestroyed())
@@ -146,9 +155,16 @@ function attachmentContextBlock(attachments?: WorkbenchAttachment[]): string {
       lines.push("Use the local image path above as visual context. If the agent supports image input, inspect the image directly; otherwise reason from the filename/path and ask for clarification only if needed.")
       if (att.dataUrl) lines.push(`Inline preview data URL: ${att.dataUrl.slice(0, 8192)}${att.dataUrl.length > 8192 ? "...[truncated]" : ""}`)
     } else if (att.text) {
+      const content = att.path
+        ? compactTextByTokenBudget(att.text, ATTACHMENT_TEXT_MAX_TOKENS, {
+          headTokens: Math.floor(ATTACHMENT_TEXT_MAX_TOKENS * 0.72),
+          tailTokens: Math.floor(ATTACHMENT_TEXT_MAX_TOKENS * 0.18),
+          marker: `[... attachment content omitted by token economy; original ${att.text.length} chars. Use the file path above or ask for a narrower excerpt if needed ...]`
+        }).text
+        : att.text
       lines.push("Content:")
       lines.push("```")
-      lines.push(att.text)
+      lines.push(content)
       lines.push("```")
     }
     return lines.join("\n")
@@ -170,7 +186,8 @@ function finalAssistantContentForTurn(turn: WorkbenchTurn): string {
   const events = runtimeStore.eventsSince(turn.threadId, 0).filter(event => event.turnId === turn.id)
   const orchestrated = [...events].reverse().find(event => event.kind === "orchestrate" && event.payload?.kind === "orchestrate:final")
   if (orchestrated?.payload?.content) return String(orchestrated.payload.content).trim()
-  const done = events.filter(event => event.kind === "agent:done" && event.payload?.content && event.payload?.visibility !== "run")
+  const internalAgents = new Set(["prompt-optimizer", "budget-guard", "dispatch-planner", "router"])
+  const done = events.filter(event => event.kind === "agent:done" && event.payload?.content && event.payload?.visibility !== "run" && !internalAgents.has(event.agentId || ""))
   if (done.length === 0) return ""
   if (done.length === 1) return String(done[0].payload.content).trim()
   return done.map(event => {
@@ -192,15 +209,34 @@ function modelMessagesForTurn(threadId: string, currentPrompt: string, attachmen
     if (assistant) messages.push({ role: "assistant", content: assistant })
   }
   messages.push({ role: "user", content: promptWithAttachments(currentPrompt, attachments) })
-  return compactModelMessages(messages)
+  const preserveCurrentMessage = hasInlineTextAttachment(attachments)
+  return compactModelMessages(messages, MODEL_HISTORY_MAX_TOKENS, preserveCurrentMessage)
 }
 
-function compactModelMessages(messages: ChatCompletionMessage[], maxChars = 48_000): ChatCompletionMessage[] {
-  let total = messages.reduce((sum, message) => sum + message.content.length, 0)
-  const compacted = [...messages]
-  while (compacted.length > 1 && total > maxChars) {
-    const removed = compacted.shift()
-    total -= removed?.content.length || 0
+function compactModelMessages(messages: ChatCompletionMessage[], maxTokens = MODEL_HISTORY_MAX_TOKENS, preserveCurrentMessage = false): ChatCompletionMessage[] {
+  if (preserveCurrentMessage && messages.length > 0) {
+    const current = messages[messages.length - 1]
+    const currentTokens = estimateMessagesTokens([current])
+    const historyBudget = Math.max(0, maxTokens - currentTokens)
+    const history = messages.slice(0, -1)
+    const compactedHistory = historyBudget > 0
+      ? compactChatMessages(history, {
+        maxTokens: historyBudget,
+        keepRecentMessages: 3,
+        perHistoricalMessageTokens: 1_200,
+        currentMessageTokens: 2_000
+      }) as ChatCompletionMessage[]
+      : []
+    return [...compactedHistory, current]
+  }
+  const compacted = compactChatMessages(messages, {
+    maxTokens,
+    keepRecentMessages: 4,
+    perHistoricalMessageTokens: 1_600,
+    currentMessageTokens: MODEL_CURRENT_MESSAGE_MAX_TOKENS
+  }) as ChatCompletionMessage[]
+  while (compacted.length > 1 && estimateMessagesTokens(compacted) > maxTokens) {
+    compacted.shift()
   }
   return compacted
 }
@@ -563,10 +599,15 @@ async function initHub(): Promise<void> {
 
 typedHandle("turns:create", async (_event, payload) => {
   if (!dispatcher) {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
     await Promise.race([
       dispatcherReadyPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000))
-    ])
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000)
+      })
+    ]).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
   }
   const activeDispatcher = dispatcher!
   const mode = payload.mode || "auto"
@@ -604,6 +645,7 @@ typedHandle("turns:create", async (_event, payload) => {
   const dispatchMode = dispatchPlanBase.dispatchMode
   const scheduleForTurn = dispatchPlanBase.schedule
   const workspaceRoot = workspaceId ? getWorkspaceManager().getById(workspaceId)?.rootPath : null
+  const preserveCurrentMessage = hasInlineTextAttachment(attachments)
   const preDispatchOutcome = await runPreDispatchHooks(
     resolvePluginPreDispatchHooks({ workspaceRoot }),
     {
@@ -618,14 +660,15 @@ typedHandle("turns:create", async (_event, payload) => {
   const pluginContext = preDispatchOutcome.additionalContext.length
     ? ["[Plugin PreDispatch Context]", ...preDispatchOutcome.additionalContext].join("\n\n")
     : ""
-  const optimizedDispatchUserPrompt = [promptOptimization.optimizedPrompt, pluginContext].filter(Boolean).join("\n\n")
+  const workspaceContext = workspaceContextPrompt(workspaceId)
+  const optimizedDispatchUserPrompt = [promptOptimization.optimizedPrompt, workspaceContext, pluginContext].filter(Boolean).join("\n\n")
   const previewMessages = existingThread
     ? modelMessagesForTurn(existingThread.id, optimizedDispatchUserPrompt, attachments)
     : [{ role: "user" as const, content: promptWithAttachments(optimizedDispatchUserPrompt, attachments) }]
   const dispatchPrompt = previewMessages[previewMessages.length - 1]?.content || promptWithAttachments(optimizedDispatchUserPrompt, attachments)
   const budgetEstimate = estimateDispatchBudget({
     prompt: dispatchPrompt,
-    attachments,
+    attachments: [],
     customSchedule: scheduleForTurn,
     modelSelection: turnModelSelection,
     targetAgent: directTarget || null
@@ -698,7 +741,8 @@ typedHandle("turns:create", async (_event, payload) => {
         turnId: turn.id,
         threadId: thread.id,
         conversationText: dispatchPrompt,
-        messages
+        messages,
+        preserveCurrentMessage
       }
     )
     : !directTarget && scheduleForTurn
@@ -713,6 +757,7 @@ typedHandle("turns:create", async (_event, payload) => {
         isCancelled: () => runtimeStore.getTurn(turn.id)?.status === "cancelled",
         thinking: payload.thinking as ThinkingConfig | undefined,
         modelSelection: turnModelSelection,
+        preserveCurrentMessage,
         routeDecision,
         recentUserMessages: recentUserPrompts(thread.id, turn.id),
         emitMemoryCandidates
@@ -728,27 +773,34 @@ typedHandle("turns:create", async (_event, payload) => {
         turnId: turn.id,
         threadId: thread.id,
         conversationText: dispatchPrompt,
-        messages
+        messages,
+        preserveCurrentMessage
       }
     )
+  // Sanitize error messages to prevent leaking sensitive paths (M-L5)
+  const sanitizeError = (err: unknown): string | undefined => {
+    if (!err) return undefined
+    const msg = err instanceof Error ? err.message : String(err)
+    return msg.replace(/[A-Z]:\\[^\s]+/gi, '<path>').replace(/\/home\/[^\s]+/g, '<path>')
+  }
   void runner
     .then((task: any) => {
       if (runtimeStore.getTurn(turn.id)?.status === "cancelled") return
       if (scheduleForTurn && !("id" in task)) {
-        runtimeStore.setTurnStatus(turn.id, task.status, { error: task.error })
+        runtimeStore.setTurnStatus(turn.id, task.status, { error: sanitizeError(task.error) })
         return
       }
       taskToTurn.set(task.id, turn.id)
       runtimeStore.attachTask(turn.id, task.id)
       const status = task.status === "cancelled" ? "cancelled" : task.status === "failed" ? "failed" : "completed"
-      runtimeStore.setTurnStatus(turn.id, status, { taskId: task.id, error: task.error })
+      runtimeStore.setTurnStatus(turn.id, status, { taskId: task.id, error: sanitizeError(task.error) })
       if (status === "completed") {
         const content = Array.from(task.results.values()).join("\n\n")
         emitMemoryCandidates(thread.id, turn.id, payload.prompt, content)
       }
     })
     .catch((e: any) => {
-      runtimeStore.setTurnStatus(turn.id, "failed", { error: e?.message || String(e) })
+      runtimeStore.setTurnStatus(turn.id, "failed", { error: sanitizeError(e) })
     })
   return { thread, turn }
 })
@@ -784,10 +836,15 @@ typedHandle("turns:retry", async (_event, turnId) => {
   const thread = runtimeStore.getThread(turn.threadId)
   if (!thread) throw new Error(`Thread not found: ${turn.threadId}`)
   if (!dispatcher) {
+    let retryTimeoutId: ReturnType<typeof setTimeout> | null = null
     await Promise.race([
       dispatcherReadyPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000))
-    ])
+      new Promise((_, reject) => {
+        retryTimeoutId = setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000)
+      })
+    ]).finally(() => {
+      if (retryTimeoutId) clearTimeout(retryTimeoutId)
+    })
   }
   const activeDispatcher = dispatcher!
   const retryRequestedTargetAgent = turn.targetAgent || undefined
@@ -814,6 +871,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
     optimization: retryOptimization
   })
   const retryWorkspaceRoot = thread.workspaceId ? getWorkspaceManager().getById(thread.workspaceId)?.rootPath : null
+  const retryPreserveCurrentMessage = hasInlineTextAttachment(turn.attachments)
   const retryPreDispatchOutcome = await runPreDispatchHooks(
     resolvePluginPreDispatchHooks({ workspaceRoot: retryWorkspaceRoot }),
     {
@@ -828,12 +886,13 @@ typedHandle("turns:retry", async (_event, turnId) => {
   const retryPluginContext = retryPreDispatchOutcome.additionalContext.length
     ? ["[Plugin PreDispatch Context]", ...retryPreDispatchOutcome.additionalContext].join("\n\n")
     : ""
-  const retryOptimizedPrompt = [retryOptimization.optimizedPrompt, retryPluginContext].filter(Boolean).join("\n\n")
+  const retryWorkspaceContext = workspaceContextPrompt(thread.workspaceId)
+  const retryOptimizedPrompt = [retryOptimization.optimizedPrompt, retryWorkspaceContext, retryPluginContext].filter(Boolean).join("\n\n")
   const retryPreviewMessages = modelMessagesForTurn(thread.id, retryOptimizedPrompt, turn.attachments, turn.id)
   const retryPreviewPrompt = retryPreviewMessages[retryPreviewMessages.length - 1]?.content || promptWithAttachments(retryOptimizedPrompt, turn.attachments)
   const retryBudgetEstimate = estimateDispatchBudget({
     prompt: retryPreviewPrompt,
-    attachments: turn.attachments ?? [],
+    attachments: [],
     customSchedule: retryPlanBase.schedule,
     modelSelection: retryModelSelection,
     targetAgent: retryTargetAgent || null
@@ -897,6 +956,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
       conversationText: retryPrompt,
       messages: retryMessages,
       modelSelection: retryModelSelection,
+      preserveCurrentMessage: retryPreserveCurrentMessage,
       thinking: turn.thinking
     })
     : !retryTargetAgent && retrySchedule
@@ -911,6 +971,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
         messages: retryMessages,
         isCancelled: () => runtimeStore.getTurn(created.turn.id)?.status === "cancelled",
         thinking: turn.thinking,
+        preserveCurrentMessage: retryPreserveCurrentMessage,
         routeDecision: retryRouteDecision,
         recentUserMessages: recentUserPrompts(thread.id, created.turn.id),
         emitMemoryCandidates
@@ -922,6 +983,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
       conversationText: retryPrompt,
       messages: retryMessages,
       modelSelection: retryModelSelection,
+      preserveCurrentMessage: retryPreserveCurrentMessage,
       thinking: turn.thinking
     })
   void retryRunner
@@ -1079,7 +1141,8 @@ app.on("activate", () => {
 // to will-quit which natively supports event.preventDefault() + manual exit.
 app.on("before-quit", () => {
   (app as any).isQuitting = true
-  store.flush()
+  // Fire-and-forget flag only; durable flush happens in will-quit (G2-MH8)
+  void store.flush()
 })
 
 let willQuitCleanupStarted = false
@@ -1090,6 +1153,8 @@ app.on("will-quit", (event) => {
 
   const STOP_TIMEOUT_MS = 5000
   const cleanup = async (): Promise<void> => {
+    // G2-MH8: await config flush so in-flight set() is not lost on exit
+    try { await store.flush() } catch { /* non-critical */ }
     // Kill any still-running terminal children so we don't orphan shell processes.
     try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
     // 清理所有 PTY 终端会话
@@ -1101,6 +1166,8 @@ app.on("will-quit", (event) => {
       registry.stopAll().catch(() => {}),
       new Promise<void>(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))
     ])
+    // Force kill any remaining processes after timeout
+    try { registry.forceKillAll() } catch { /* noop */ }
     try { hub?.stop() } catch { /* noop */ }
     try { proxy.stop() } catch { /* noop */ }
   }

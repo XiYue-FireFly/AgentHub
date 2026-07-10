@@ -69,6 +69,15 @@ describe('MCP System Tools', () => {
       expect(info.arch).toBeDefined()
     })
 
+    it('should return hostname as string, not Promise', async () => {
+      const result = await executeSystemTool('system_info', { detailed: false }, ctx)
+      expect(result.ok).toBe(true)
+      const info = JSON.parse(result.output)
+      expect(typeof info.hostname).toBe('string')
+      expect(info.hostname).not.toBe('{}')
+      expect(info.hostname.length).toBeGreaterThan(0)
+    })
+
     it('should list directory', async () => {
       const result = await executeSystemTool('fs_list', { path: '.' }, ctx)
       expect(result.ok).toBe(true)
@@ -99,6 +108,53 @@ describe('MCP System Tools', () => {
       const result = await executeSystemTool('shell_exec', { command: 'echo hello' }, ctx)
       expect(result.ok).toBe(true)
       expect(result.output.trim()).toBe('hello')
+    })
+
+    it('should delete directory synchronously before returning success', async () => {
+      const { mkdirSync, existsSync, writeFileSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      const testDir = join(process.cwd(), 'test-tmp-delete-sync')
+
+      // Create test directory with file
+      mkdirSync(testDir, { recursive: true })
+      writeFileSync(join(testDir, 'file.txt'), 'test')
+
+      const result = await executeSystemTool('fs_delete', { path: testDir }, ctx)
+      expect(result.ok).toBe(true)
+      expect(existsSync(testDir)).toBe(false)  // Directory should be deleted immediately
+    })
+
+    it('rejects absolute paths outside the tool cwd', async () => {
+      const outside = process.platform === 'win32' ? 'C:\\Windows\\System32\\drivers\\etc\\hosts' : '/etc/hosts'
+      const result = await executeSystemTool('fs_read', { path: outside }, ctx)
+      expect(result.ok).toBe(false)
+      expect(result.error).toMatch(/escapes|outside/i)
+    })
+
+    it('rejects relative path traversal outside the tool cwd', async () => {
+      const result = await executeSystemTool('fs_read', { path: '../secret-outside.txt' }, ctx)
+      expect(result.ok).toBe(false)
+      expect(result.error).toMatch(/escapes|outside/i)
+    })
+
+    it('allows reading files inside the tool cwd', async () => {
+      const result = await executeSystemTool('fs_read', { path: 'package.json' }, ctx)
+      expect(result.ok).toBe(true)
+      expect(result.output).toContain('agenthub')
+    })
+
+    it('ignores caller-supplied env for shell_exec (G2-MH3)', async () => {
+      // Should still succeed with host env only; malicious env must not break echo
+      const result = await executeSystemTool(
+        'shell_exec',
+        {
+          command: process.platform === 'win32' ? 'echo hello' : 'echo hello',
+          env: { PATH: 'C:\\evil', NODE_OPTIONS: '--require evil', BASH_ENV: '/tmp/x' }
+        },
+        ctx
+      )
+      expect(result.ok).toBe(true)
+      expect(result.output.trim()).toMatch(/hello/)
     })
   })
 })

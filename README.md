@@ -17,7 +17,7 @@ AgentHub 是一个面向本地 AI 工作流的桌面工作台。它把本地 Age
 ## 系统要求
 
 - Windows 10 / 11 x64
-- Node.js 18+（本地开发需要）
+- Node.js 24+ / npm 11+（本地开发需要，与 package.json engines 一致）
 - 至少 4 GB RAM，推荐 8 GB+
 - 如需使用本地 Agent，请提前安装对应 CLI 或桌面端并完成登录
 
@@ -45,7 +45,7 @@ AgentHub 是一个面向本地 AI 工作流的桌面工作台。它把本地 Age
 ## 本地开发
 
 ```bash
-git clone https://github.com/XiYue-FireFly/AgengHub.git AgentHub
+git clone https://github.com/XiYue-FireFly/AgentHub.git AgentHub
 cd AgentHub
 npm install
 npm run dev

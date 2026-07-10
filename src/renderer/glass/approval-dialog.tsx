@@ -5,7 +5,7 @@
    可勾选「记住」把决定固化为该 agent 该工具的 allow/deny 覆盖。
    ============================================================ */
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Icon, IC, AgentMark } from './ui'
 import { AGENT_META } from './meta'
 import { tr } from './i18n'
@@ -27,6 +27,12 @@ export function ApprovalDialog({ items, onDecide }: {
   onDecide: (item: ApprovalItem, approved: boolean, remember: boolean) => void
 }) {
   const [remember, setRemember] = useState(false)
+
+  // Reset remember when approval items change
+  useEffect(() => {
+    setRemember(false)
+  }, [items[0]?.id])
+
   if (items.length === 0) return null
   const it = items[0]
   const meta = AGENT_META[it.agentId]
