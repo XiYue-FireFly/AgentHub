@@ -1,6 +1,6 @@
 # Multi-model Loop, Prompt Preparation, and Inline Decisions
 
-**Status:** Design decisions approved; implementation planning is blocked until the user reviews this written specification
+**Status:** Approved for implementation
 
 **Date:** 2026-07-10
 
@@ -148,6 +148,7 @@ type DecisionSource =
   | "router"
   | "tool"
   | "guard"
+  | "acp"
   | "multi-model-loop"
 
 type DecisionKind =
@@ -158,31 +159,22 @@ type DecisionKind =
 
 type DecisionOwner =
   | {
-      kind: "turn"
-      workspaceId?: string
+      type: "turn"
+      workspaceId: string | null
       threadId: string
       turnId: string
-      taskId?: string
-      agentId?: string
-      stepId?: string
+      webContentsId: number
     }
   | {
-      kind: "remote"
-      channel: "hub-websocket"
+      type: "hub"
       sessionId: string
-      taskId?: string
     }
 
 type DecisionState =
   | "queued"
   | "active"
   | "resolving"
-  | "selected"
-  | "submitted"
-  | "denied"
-  | "cancelled"
-  | "timeout"
-  | "stale"
+  | "terminal"
 
 interface DecisionOption {
   id: string
@@ -241,6 +233,10 @@ interface DecisionResolution {
   resolvedAt: number
 }
 ```
+
+`DecisionState` describes queue lifecycle only. The exact terminal outcome is
+stored in `DecisionResolution.status`, so durable records do not duplicate or
+diverge from their authoritative resolution.
 
 The Renderer submits only request IDs, option IDs, bounded custom text, and the remember flag. The main process looks up the original request, verifies that it is the active head of its owner queue, binds desktop IPC to the trusted sender window/workspace or remote resolution to the authenticated Hub session, validates option membership, cardinality, expiration, text limits, and policy, then maps IDs to the authoritative Prompt/tool/permission value. It never accepts a command, path, Prompt candidate, or permission payload merely because a client sent it back.
 
@@ -776,7 +772,7 @@ Prefer new files such as:
 
 - `src/main/runtime/decision-service.ts`
 - `src/main/runtime/thread-execution-coordinator.ts`
-- `src/main/runtime/prompt-preparation-core.ts`
+- `src/prompt-core/prompt-preparation-core.ts`
 - `src/main/runtime/prompt-preparation-service.ts`
 - `src/main/runtime/prompt-ingress-registry.ts`
 - `src/main/runtime/dispatch-envelope.ts`
