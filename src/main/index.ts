@@ -1,6 +1,7 @@
 import "./startup-paths"
 import { app, BrowserWindow, Tray, Menu, nativeImage, Notification } from "electron"
 import { join, resolve } from "path"
+import { pathToFileURL } from "url"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import { randomBytes } from "crypto"
 import { isProviderDirectSelection } from "../shared/utils"
@@ -8,7 +9,8 @@ import { HubServer } from "./hub/server"
 import { AgentRegistry } from "./hub/registry"
 import { EventPipeline } from "./hub/pipeline"
 import { KeywordRouter, RouteDecision } from "./hub/router"
-import { Dispatcher, StreamEvent } from "./hub/dispatcher"
+import { Dispatcher } from "./hub/dispatcher"
+import { installTaskTurnTracking } from "./hub/task-turn-tracking"
 import { store } from "./store"
 import { detectAgentsAsync } from "./hub/agent-detector"
 import { getProviderManager } from "./providers/manager"
@@ -21,6 +23,15 @@ import { optionalWorkbenchWorkspace } from "./runtime/workspace-helpers"
 import { ChatCompletionMessage, ThinkingConfig } from "./providers/types"
 // --- /AgentHub skills + native agentic ---
 import { getWorkbenchRuntimeStore } from "./runtime/store"
+import { RuntimeProducerTracker } from "./runtime/producer-tracker"
+import {
+  createSharedRuntimeDisposeForShutdown,
+  drainRuntimeProducersForShutdown,
+  finalizeRuntimePersistenceForShutdown,
+  runShutdownStepWithDeadline
+} from "./runtime/shutdown-quiescence"
+import { createWillQuitHandler } from "./runtime/will-quit"
+import { DecisionService } from "./runtime/decision-service"
 import { ModelSelection, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
 import { refreshLocalAgentStatusCache } from "./runtime/local-agents"
 import { resolveGuardApproval, cancelGuardApprovalsForTurn, clearAllGuardApprovals } from "./runtime/guard-approval-service"
@@ -78,7 +89,9 @@ const dispatcherReadyPromise = new Promise<void>(resolve => {
 const proxy = getLocalProxy()
 let memoryLibrary: MemoryLibrary | null = null
 const runtimeStore = getWorkbenchRuntimeStore()
-const taskToTurn = new Map<string, string>()
+const decisionService = new DecisionService({ runtimeStore })
+const runtimeProducers = new RuntimeProducerTracker()
+let stopTaskTurnTracking: (() => Promise<void>) | null = null
 const IMAGE_DATA_URL_BYTES = 2 * 1024 * 1024
 const MODEL_HISTORY_MAX_TOKENS = 24_000
 const MODEL_CURRENT_MESSAGE_MAX_TOKENS = 12_000
@@ -297,7 +310,7 @@ function routeStatsFromHistory(): Record<string, { success: number; failure: num
   return result
 }
 
-function makeRouteDecision(threadId: string, turnId: string, prompt: string, agentIds?: string[]): RouteDecision {
+async function makeRouteDecision(threadId: string, turnId: string, prompt: string, agentIds?: string[]): Promise<RouteDecision> {
   const decision = router.routeWeighted({
     text: prompt,
     recentUserMessages: recentUserPrompts(threadId, turnId),
@@ -305,7 +318,7 @@ function makeRouteDecision(threadId: string, turnId: string, prompt: string, age
     memories: memory().selectContextEntries(prompt, { limit: 24, tokenBudget: 8_000 }),
     stats: routeStatsFromHistory()
   })
-  runtimeStore.appendSystemEvent(threadId, turnId, "route:decision", "router", {
+  await runtimeStore.appendSystemEvent(threadId, turnId, "route:decision", "router", {
     ...decision,
     privacy: "router received recent user prompts only; assistant/main outputs were excluded"
   })
@@ -314,10 +327,10 @@ function makeRouteDecision(threadId: string, turnId: string, prompt: string, age
 
 // Guard-verdict lifecycle is now in runtime/guard-approval-service.ts.
 
-function emitMemoryCandidates(threadId: string, turnId: string, prompt: string, content: string) {
+async function emitMemoryCandidates(threadId: string, turnId: string, prompt: string, content: string): Promise<void> {
   const candidates = memory().importConversation(`turn:${turnId}`, [`User: ${prompt}`, content ? `Assistant: ${content}` : ""].filter(Boolean).join("\n\n"), { includeRaw: false })
   for (const candidate of candidates.slice(0, 5)) {
-    runtimeStore.appendSystemEvent(threadId, turnId, "memory:candidate", "memory", {
+    await runtimeStore.appendSystemEvent(threadId, turnId, "memory:candidate", "memory", {
       id: candidate.id,
       category: candidate.category,
       title: candidate.title,
@@ -387,6 +400,8 @@ function showWindowsNotification(title: string, body: string): void {
 
 function createWindow(): BrowserWindow {
   const isDevRenderer = Boolean(process.env.ELECTRON_RENDERER_URL)
+  const rendererEntryPath = join(__dirname, "../renderer/index.html")
+  const trustedRendererUrl = process.env.ELECTRON_RENDERER_URL || pathToFileURL(rendererEntryPath).href
   const iconPath = appAssetPath(process.platform === "win32" ? "icon.ico" : "icon.png")
   windowLog.info(`create renderer=${process.env.ELECTRON_RENDERER_URL || "file"} dev=${isDevRenderer}`)
   const win = new BrowserWindow({
@@ -411,7 +426,7 @@ function createWindow(): BrowserWindow {
   })
   workbenchWindows.add(win)
   lastFocusedWindow = win
-  installWebviewGuards(win.webContents)
+  installWebviewGuards(win.webContents, trustedRendererUrl)
   let hasShownMainWindow = isDevRenderer
   const revealMainWindow = (): void => {
     if (win.isDestroyed()) return
@@ -463,9 +478,9 @@ function createWindow(): BrowserWindow {
     if (lastFocusedWindow === win) lastFocusedWindow = liveWorkbenchWindows()[0] ?? null
   })
   if (process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL)
+    win.loadURL(trustedRendererUrl)
   } else {
-    win.loadFile(join(__dirname, "../renderer/index.html"))
+    win.loadFile(rendererEntryPath)
   }
   return win
 }
@@ -517,8 +532,20 @@ async function initHub(): Promise<void> {
     }
   })
   dispatcher = new Dispatcher(registry, pipeline, (taskText = "") => memory().selectContextEntries(taskText, { limit: 12, tokenBudget: 4_000 }))
+  stopTaskTurnTracking = installTaskTurnTracking(dispatcher, runtimeStore)
   dispatcherReadyResolve?.()
   hub = new HubServer(registry)
+
+  // HubServer mints every client ID; DecisionService treats that same opaque ID
+  // as the trusted Hub decision session and never accepts a client-supplied alias.
+  hub.on("client:connected", ({ id: sessionId }) => {
+    decisionService.openHubSession(sessionId)
+  })
+  hub.on("client:disconnected", ({ sessionId }) => {
+    void decisionService.closeHubSession(sessionId).catch(error => {
+      hubLog.error("[hub] Decision session cleanup failed:", error)
+    })
+  })
 
   hub.on("client:message", async ({ clientId: _clientId, message }) => {
     try {
@@ -562,22 +589,6 @@ async function initHub(): Promise<void> {
     }
   })
 
-  dispatcher.on("task:created", (task) => {
-    const turnId = (task as any).__turnId
-    if (turnId) {
-      taskToTurn.set(task.id, turnId)
-      runtimeStore.attachTask(turnId, task.id)
-    }
-  })
-
-  dispatcher.on("stream", (event: StreamEvent) => {
-    const turnId = taskToTurn.get(event.taskId)
-    if (turnId) {
-      runtimeStore.appendStreamEvent(turnId, event)
-      ;(event as any).__runtimeTurnId = turnId
-    }
-  })
-
   try {
     await detectAgentsAsync()
     hubLog.info("Initial agent detection complete")
@@ -597,7 +608,7 @@ async function initHub(): Promise<void> {
 
 // Hub, threads, runtime, context, git:query handlers moved to ipc/hub-threads-ipc.ts
 
-typedHandle("turns:create", async (_event, payload) => {
+typedHandle("turns:create", (_event, payload) => runtimeProducers.run(async () => {
   if (!dispatcher) {
     let timeoutId: ReturnType<typeof setTimeout> | null = null
     await Promise.race([
@@ -676,7 +687,7 @@ typedHandle("turns:create", async (_event, payload) => {
   if (!budgetEstimate.check.allowed) {
     throw new Error(budgetEstimate.check.reason || "Budget guardrail blocked this dispatch.")
   }
-  const { thread, turn } = runtimeStore.createTurn({
+  const { thread, turn } = await runtimeStore.createTurn({
     threadId: payload.threadId ?? null,
     workspaceId,
     prompt: payload.prompt,
@@ -697,7 +708,7 @@ typedHandle("turns:create", async (_event, payload) => {
     }),
     customSchedule: scheduleForTurn
   })
-  runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "prompt-optimizer", {
+  await runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "prompt-optimizer", {
     intent: promptOptimization.intent,
     matchedSkills: promptOptimization.matchedSkills,
     matchedPlugins: promptOptimization.matchedPlugins,
@@ -706,7 +717,7 @@ typedHandle("turns:create", async (_event, payload) => {
       warnings: preDispatchOutcome.warnings
     }
   })
-  runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "budget-guard", {
+  await runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "budget-guard", {
     totalTokens: budgetEstimate.totalTokens,
     estimatedRequests: budgetEstimate.estimatedRequests,
     estimatedCostUsd: budgetEstimate.estimatedCostUsd,
@@ -714,10 +725,10 @@ typedHandle("turns:create", async (_event, payload) => {
     warning: budgetEstimate.check.warning
   })
   const routeDecision = !directRun && dispatchPlanBase.routeAgentIds?.length
-    ? makeRouteDecision(thread.id, turn.id, optimizedDispatchUserPrompt, dispatchPlanBase.routeAgentIds)
+    ? await makeRouteDecision(thread.id, turn.id, optimizedDispatchUserPrompt, dispatchPlanBase.routeAgentIds)
     : undefined
   const dispatchPlan = applyRouteDecisionToPlan(dispatchPlanBase, routeDecision)
-  runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "dispatch-planner", {
+  await runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "dispatch-planner", {
     strategy: dispatchPlan.strategy,
     requestedMode: mode,
     effectiveMode: dispatchPlan.effectiveMode,
@@ -783,53 +794,58 @@ typedHandle("turns:create", async (_event, payload) => {
     const msg = err instanceof Error ? err.message : String(err)
     return msg.replace(/[A-Z]:\\[^\s]+/gi, '<path>').replace(/\/home\/[^\s]+/g, '<path>')
   }
-  void runner
-    .then((task: any) => {
-      if (runtimeStore.getTurn(turn.id)?.status === "cancelled") return
+  const createSettlement = runner
+    .then(async (task: any) => {
       if (scheduleForTurn && !("id" in task)) {
-        runtimeStore.setTurnStatus(turn.id, task.status, { error: sanitizeError(task.error) })
+        await runtimeStore.transitionTurnStatus(turn.id, ["running"], task.status, {
+          error: sanitizeError(task.error)
+        })
         return
       }
-      taskToTurn.set(task.id, turn.id)
-      runtimeStore.attachTask(turn.id, task.id)
       const status = task.status === "cancelled" ? "cancelled" : task.status === "failed" ? "failed" : "completed"
-      runtimeStore.setTurnStatus(turn.id, status, { taskId: task.id, error: sanitizeError(task.error) })
-      if (status === "completed") {
+      const settled = await runtimeStore.transitionTurnStatus(turn.id, ["running"], status, {
+        taskId: task.id,
+        error: sanitizeError(task.error)
+      })
+      if (status === "completed" && settled) {
         const content = Array.from(task.results.values()).join("\n\n")
-        emitMemoryCandidates(thread.id, turn.id, payload.prompt, content)
+        await emitMemoryCandidates(thread.id, turn.id, payload.prompt, content)
       }
     })
-    .catch((e: any) => {
-      runtimeStore.setTurnStatus(turn.id, "failed", { error: sanitizeError(e) })
+    .catch(async (e: any) => {
+      try {
+        await runtimeStore.transitionTurnStatus(turn.id, ["running"], "failed", {
+          error: sanitizeError(e)
+        })
+      } catch (persistError) {
+        console.error("[runtime-store] Failed to persist Turn failure", persistError)
+      }
     })
+  void runtimeProducers.track(createSettlement)
   return { thread, turn }
-})
-typedHandle("turns:cancel", (_event, turnId) => {
+}))
+typedHandle("turns:cancel", async (_event, turnId) => {
   const snapshot = runtimeStore.snapshot()
   const turn = snapshot.turns.find(t => t.id === turnId)
   if (!turn) return false
+  const cancellation = runtimeStore.cancelTurn(turnId, { reason: "Cancelled by user." })
   cancelGuardApprovalsForTurn(turnId)
-  for (const taskId of turn.taskIds) dispatcher?.cancel(taskId)
-  runtimeStore.setTurnStatus(turnId, "cancelled")
-  return true
+  const dispatcherCancelled = dispatcher?.cancelTurn(turnId) ?? false
+  return (await cancellation) || dispatcherCancelled
 })
-typedHandle("turns:cancelAgent", (_event, turnId, agentId) => {
+typedHandle("turns:cancelAgent", async (_event, turnId, agentId) => {
   const snapshot = runtimeStore.snapshot()
   const turn = snapshot.turns.find(t => t.id === turnId)
   if (!turn) return false
-  let cancelled = false
-  for (const taskId of turn.taskIds) cancelled = !!dispatcher?.cancelAgent(taskId, agentId) || cancelled
-  if (cancelled) {
-    runtimeStore.setRunStatus(turnId, agentId, "cancelled", { error: "已暂停该 Agent。" })
-    // LOW-03: Re-fetch snapshot to get updated run statuses after cancel
-    const freshSnapshot = runtimeStore.snapshot()
-    const remainingRunning = freshSnapshot.runs.filter(run => run.turnId === turnId && run.agentId !== agentId && run.status === "running")
-    if (turn.targetAgent === agentId || remainingRunning.length === 0) runtimeStore.setTurnStatus(turnId, "cancelled")
-  }
-  return cancelled
+  const runtimeCancellation = runtimeStore.cancelAgentRun(turnId, agentId, {
+    error: "Agent cancelled by user."
+  })
+  const dispatcherCancelled = dispatcher?.cancelAgentForTurn(turnId, agentId) ?? false
+  const runtimeCancelled = await runtimeCancellation
+  return runtimeCancelled || dispatcherCancelled
 })
 typedHandle("turns:resolveGuard", (_event, requestId, approved) => resolveGuardApproval(requestId, approved))
-typedHandle("turns:retry", async (_event, turnId) => {
+typedHandle("turns:retry", (_event, turnId) => runtimeProducers.run(async () => {
   const snapshot = runtimeStore.snapshot()
   const turn = snapshot.turns.find(t => t.id === turnId)
   if (!turn) throw new Error(`Turn not found: ${turnId}`)
@@ -900,7 +916,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
   if (!retryBudgetEstimate.check.allowed) {
     throw new Error(retryBudgetEstimate.check.reason || "Budget guardrail blocked this dispatch.")
   }
-  const created = runtimeStore.createTurn({
+  const created = await runtimeStore.createTurn({
     threadId: thread.id,
     workspaceId: thread.workspaceId,
     prompt: turn.prompt,
@@ -912,7 +928,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
     contextProjection: turn.contextProjection,
     customSchedule: retryPlanBase.schedule
   })
-  runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "prompt-optimizer", {
+  await runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "prompt-optimizer", {
     intent: retryOptimization.intent,
     matchedSkills: retryOptimization.matchedSkills,
     matchedPlugins: retryOptimization.matchedPlugins,
@@ -921,7 +937,7 @@ typedHandle("turns:retry", async (_event, turnId) => {
       warnings: retryPreDispatchOutcome.warnings
     }
   })
-  runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "budget-guard", {
+  await runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "budget-guard", {
     totalTokens: retryBudgetEstimate.totalTokens,
     estimatedRequests: retryBudgetEstimate.estimatedRequests,
     estimatedCostUsd: retryBudgetEstimate.estimatedCostUsd,
@@ -929,10 +945,10 @@ typedHandle("turns:retry", async (_event, turnId) => {
     warning: retryBudgetEstimate.check.warning
   })
   const retryRouteDecision = !retryDirectRun && retryPlanBase.routeAgentIds?.length
-    ? makeRouteDecision(thread.id, created.turn.id, retryOptimizedPrompt, retryPlanBase.routeAgentIds)
+    ? await makeRouteDecision(thread.id, created.turn.id, retryOptimizedPrompt, retryPlanBase.routeAgentIds)
     : undefined
   const retryPlan = applyRouteDecisionToPlan(retryPlanBase, retryRouteDecision)
-  runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "dispatch-planner", {
+  await runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "dispatch-planner", {
     strategy: retryPlan.strategy,
     requestedMode: turn.mode,
     effectiveMode: retryPlan.effectiveMode,
@@ -986,27 +1002,36 @@ typedHandle("turns:retry", async (_event, turnId) => {
       preserveCurrentMessage: retryPreserveCurrentMessage,
       thinking: turn.thinking
     })
-  void retryRunner
-    .then((task: any) => {
-      if (runtimeStore.getTurn(created.turn.id)?.status === "cancelled") return
+  const retrySettlement = retryRunner
+    .then(async (task: any) => {
       if (retrySchedule && !("id" in task)) {
-        runtimeStore.setTurnStatus(created.turn.id, task.status, { error: task.error })
+        await runtimeStore.transitionTurnStatus(created.turn.id, ["running"], task.status, {
+          error: task.error
+        })
         return
       }
-      taskToTurn.set(task.id, created.turn.id)
-      runtimeStore.attachTask(created.turn.id, task.id)
       const status = task.status === "cancelled" ? "cancelled" : task.status === "failed" ? "failed" : "completed"
-      runtimeStore.setTurnStatus(created.turn.id, status, { taskId: task.id, error: task.error })
-      if (status === "completed") {
+      const settled = await runtimeStore.transitionTurnStatus(created.turn.id, ["running"], status, {
+        taskId: task.id,
+        error: task.error
+      })
+      if (status === "completed" && settled) {
         const content = Array.from(task.results.values()).join("\n\n")
-        emitMemoryCandidates(thread.id, created.turn.id, turn.prompt, content)
+        await emitMemoryCandidates(thread.id, created.turn.id, turn.prompt, content)
       }
     })
-    .catch((e: any) => {
-      runtimeStore.setTurnStatus(created.turn.id, "failed", { error: e?.message || String(e) })
+    .catch(async (e: any) => {
+      try {
+        await runtimeStore.transitionTurnStatus(created.turn.id, ["running"], "failed", {
+          error: e?.message || String(e)
+        })
+      } catch (persistError) {
+        console.error("[runtime-store] Failed to persist retried Turn failure", persistError)
+      }
     })
+  void runtimeProducers.track(retrySettlement)
   return created
-})
+}))
 
 // IPC handlers for localAgents, localModels, settings, goals, schedules, commands,
 // ecc, terminal, tasks, worktrees, todos, updates, browser, usage, hub, store,
@@ -1085,6 +1110,7 @@ if (initialDeepLink) pendingDeepLink = parseDeepLink(initialDeepLink)
 
 app.whenReady().then(async () => {
   if (process.platform === "win32") app.setAppUserModelId("dev.agenthub.desktop")
+  await decisionService.sweepOrphans()
   registerProviderIpc({ providerMgr, registerAgentsFromBindings })
   registerModelsIpc({ providerMgr })
   providerMgr.unlockSecrets()   // app ready 后解密落盘的 apiKey 到内存（safeStorage 此时可用）
@@ -1110,6 +1136,7 @@ app.whenReady().then(async () => {
     hub,
     router,
     proxy,
+    runtimeProducers,
     getMainWindow: getActiveWorkbenchWindow,
     getActiveWindow: getActiveWorkbenchWindow,
     openWorkbench
@@ -1141,36 +1168,63 @@ app.on("activate", () => {
 // to will-quit which natively supports event.preventDefault() + manual exit.
 app.on("before-quit", () => {
   (app as any).isQuitting = true
-  // Fire-and-forget flag only; durable flush happens in will-quit (G2-MH8)
-  void store.flush()
 })
 
-let willQuitCleanupStarted = false
+let handleWillQuit: ReturnType<typeof createWillQuitHandler> | null = null
 app.on("will-quit", (event) => {
-  if (willQuitCleanupStarted) return
-  willQuitCleanupStarted = true
-  event.preventDefault()
+  if (!handleWillQuit) {
+    const STOP_TIMEOUT_MS = 5000
+    const runtimeDispose = createSharedRuntimeDisposeForShutdown(
+      reason => runtimeStore.dispose({ interruptReason: reason })
+    )
+    const cleanup = async (): Promise<void> => {
+      const decisionShutdownPromise = decisionService.shutdown()
+      runtimeProducers.close()
+      const decisionShutdown = await runShutdownStepWithDeadline(
+        () => decisionShutdownPromise,
+        STOP_TIMEOUT_MS
+      )
+      if (decisionShutdown.status === "rejected") {
+        logShutdownFailure("[AgentHub] Decision service shutdown failed", decisionShutdown.error)
+      } else if (decisionShutdown.status === "timed-out") {
+        logShutdownFailure("[AgentHub] Decision service shutdown deadline exceeded", decisionShutdown.error)
+      }
+      try { hub?.stop() } catch { /* noop */ }
+      try { proxy.stop() } catch { /* noop */ }
+      // Kill any still-running terminal children so we don't orphan shell processes.
+      try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
+      // 清理所有 PTY 终端会话
+      try { disposeAllTerminalSessions() } catch { /* non-critical */ }
+      // 清理所有待处理的 guard approvals，避免 Promise 和 timer 泄漏
+      try { clearAllGuardApprovals() } catch { /* non-critical */ }
+      await drainRuntimeProducersForShutdown({
+        dispatcher,
+        registry,
+        runtimeProducers,
+        stopTaskTurnTracking,
+        timeoutMs: STOP_TIMEOUT_MS,
+        finalTimeoutMs: STOP_TIMEOUT_MS,
+        finalizationTimeoutMs: STOP_TIMEOUT_MS,
+        interruptRuntimeWork: reason => runtimeDispose.interrupt(reason),
+        onFailure: logShutdownFailure
+      })
+      // G2-MH8: final config flush must happen after the runtime actor has durably drained.
+      await finalizeRuntimePersistenceForShutdown({
+        dispose: () => runtimeDispose.finalize("Application shutdown"),
+        flush: () => store.flush(),
+        timeoutMs: STOP_TIMEOUT_MS,
+        onFailure: logShutdownFailure
+      })
+    }
 
-  const STOP_TIMEOUT_MS = 5000
-  const cleanup = async (): Promise<void> => {
-    // G2-MH8: await config flush so in-flight set() is not lost on exit
-    try { await store.flush() } catch { /* non-critical */ }
-    // Kill any still-running terminal children so we don't orphan shell processes.
-    try { getTerminalRuntime().dispose() } catch { /* non-critical */ }
-    // 清理所有 PTY 终端会话
-    try { disposeAllTerminalSessions() } catch { /* non-critical */ }
-    // 清理所有待处理的 guard approvals，避免 Promise 和 timer 泄漏
-    try { clearAllGuardApprovals() } catch { /* non-critical */ }
-    // registry.stopAll 可能卡在 stdio agent 不响应；加超时防止阻塞退出
-    await Promise.race([
-      registry.stopAll().catch(() => {}),
-      new Promise<void>(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))
-    ])
-    // Force kill any remaining processes after timeout
-    try { registry.forceKillAll() } catch { /* noop */ }
-    try { hub?.stop() } catch { /* noop */ }
-    try { proxy.stop() } catch { /* noop */ }
+    const logShutdownFailure = (message: string, error: unknown): void => {
+      try { console.error(message, error) } catch { /* logging must not reject shutdown */ }
+    }
+    handleWillQuit = createWillQuitHandler({
+      cleanup,
+      exit: () => app.exit(0),
+      onFailure: logShutdownFailure
+    })
   }
-
-  cleanup().finally(() => app.exit(0))
+  void handleWillQuit(event)
 })

@@ -381,7 +381,7 @@ export interface WorkbenchThreadLike {
   title: string
   createdAt: number
   updatedAt: number
-  lastTurnStatus?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  lastTurnStatus?: import('./turn-status').WorkbenchTurnStatus
 }
 
 export interface ThreadCreateInputLike {
@@ -530,7 +530,7 @@ export interface RuntimeModelSelectionLike {
   source?: 'provider' | 'local-cli'
 }
 
-export type WorkbenchTurnStatusLike = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type WorkbenchTurnStatusLike = import('./turn-status').WorkbenchTurnStatus
 
 export interface WorkbenchTurnLike {
   id: string
@@ -3058,6 +3058,10 @@ export interface IpcContract {
     args: []
     result: AgenticApprovalConfigLike
   }
+  'agentic:getPendingApprovalIds': {
+    args: []
+    result: string[]
+  }
   'agentic:setApprovalPreset': {
     args: [preset: AgenticApprovalPresetLike]
     result: AgenticApprovalConfigLike
@@ -3627,7 +3631,7 @@ export interface IpcContract {
     result: SddDraft | null
   }
   'sdd:updateDraft': {
-    args: [workspaceRoot: string, draftId: string, content: string]
+    args: [workspaceRoot: string, draftId: string, content: string, designContext?: SddDesignContext]
     result: void
   }
   'sdd:updateDesignContext': {
@@ -5290,12 +5294,23 @@ function validateTerminalResize(args: readonly unknown[]): string | null {
   )
 }
 
+function validateSddDesignContext(value: unknown, label: string, options: { optional?: boolean } = {}): string | null {
+  const recordIssue = validateRecord(value, label, options)
+  if (recordIssue || value === undefined || value === null) return recordIssue
+  const record = value as Record<string, unknown>
+  return (
+    validateEnum(record.designType, `${label}.designType`, ['brand', 'product'], { optional: true }) ||
+    validateString(record.brandColor, `${label}.brandColor`, { optional: true, allowEmpty: true }) ||
+    validateStringArray(record.tone, `${label}.tone`, { optional: true })
+  )
+}
+
 function validateSddDraftArgs(args: readonly unknown[], options: { draftId?: boolean; content?: boolean; designContext?: boolean; trace?: boolean; planMarkdown?: boolean; history?: boolean } = {}): string | null {
   return (
     validateString(args[0], 'workspaceRoot') ||
     (options.draftId ? validateString(args[1], 'draftId') : null) ||
     (options.content ? validateString(args[2], 'content', { allowEmpty: true }) : null) ||
-    (options.designContext ? validateRecord(args[2], 'designContext') : null) ||
+    (options.designContext ? validateSddDesignContext(args[2], 'designContext') : null) ||
     (options.trace ? validateRecord(args[2], 'trace') : null) ||
     (options.planMarkdown ? validateString(args[2], 'planMarkdown', { optional: true, allowEmpty: true }) : null) ||
     (options.history ? validateSddHistoryEntries(args[2]) : null)
@@ -6779,6 +6794,9 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
   'agentic:getApprovalConfig': {
     validate: validateNoArgs
   },
+  'agentic:getPendingApprovalIds': {
+    validate: validateNoArgs
+  },
   'agentic:setApprovalPreset': {
     validate: args => validateEnum(args[0], 'preset', AGENTIC_APPROVAL_PRESETS)
   },
@@ -7316,7 +7334,7 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
     validate: args => validateSddDraftArgs(args, { draftId: true })
   },
   'sdd:updateDraft': {
-    validate: args => validateSddDraftArgs(args, { draftId: true, content: true })
+    validate: args => validateSddDraftArgs(args, { draftId: true, content: true }) || validateSddDesignContext(args[3], 'designContext', { optional: true })
   },
   'sdd:updateDesignContext': {
     validate: args => validateSddDraftArgs(args, { draftId: true, designContext: true })

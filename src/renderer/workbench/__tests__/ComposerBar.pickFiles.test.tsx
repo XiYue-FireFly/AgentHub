@@ -16,7 +16,7 @@ const baseSchedule: SchedulePreview = {
 function installElectronApi(pickFiles: ReturnType<typeof vi.fn>) {
   ;(window as any).electronAPI = {
     agentic: {
-      getApprovalConfig: vi.fn().mockResolvedValue({ default: { write: 'allow', exec: 'ask' } })
+      getApprovalConfig: vi.fn().mockResolvedValue({ preset: 'custom', default: { write: 'allow', exec: 'ask' } })
     },
     app: {
       pickFiles

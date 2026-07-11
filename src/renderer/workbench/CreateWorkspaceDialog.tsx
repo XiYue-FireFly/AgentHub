@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
+import React, { useId, useRef, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { defaultDialogPath, rememberDialogPath } from '../appearance'
+import { useModalFocus } from '../hooks/useModalFocus'
 
 interface CreateWorkspaceDialogProps {
   activeWorkspaceRoot?: string | null
@@ -17,6 +18,14 @@ export function CreateWorkspaceDialog({
   const [draft, setDraft] = useState({ name: '', rootPath: '' })
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
+  const titleId = useId()
+  const descriptionId = useId()
+  const requestClose = () => {
+    if (!submitting) onClose()
+  }
+  useModalFocus({ containerRef: dialogRef, initialFocusRef: nameRef, onEscape: requestClose })
 
   const pickProjectFolder = async () => {
     const picked = await window.electronAPI.app.pickFolder({ defaultPath: defaultDialogPath('folder', activeWorkspaceRoot) })
@@ -46,18 +55,27 @@ export function CreateWorkspaceDialog({
   }
 
   return (
-    <div className="wb-modal-backdrop" onMouseDown={onClose}>
-      <div className="wb-project-modal" onMouseDown={event => event.stopPropagation()}>
+    <div className="wb-modal-backdrop" onMouseDown={requestClose}>
+      <div
+        className="wb-project-modal"
+        onMouseDown={event => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        ref={dialogRef}
+        tabIndex={-1}
+      >
         <div className="wb-project-modal-head">
           <div>
-            <strong>{tr('添加工作目录', 'Add working folder')}</strong>
-            <span>{tr('选择一个本地目录。绑定后文件、Git、终端和工作树会使用这个目录。', 'Choose a local folder for files, Git, terminal, and worktrees.')}</span>
+            <strong id={titleId}>{tr('添加工作目录', 'Add working folder')}</strong>
+            <span id={descriptionId}>{tr('选择一个本地目录。绑定后文件、Git、终端和工作树会使用这个目录。', 'Choose a local folder for files, Git, terminal, and worktrees.')}</span>
           </div>
-          <button onClick={onClose}><Icon d={IC.x} size={14} /></button>
+          <button onClick={requestClose} disabled={submitting} aria-label={tr('关闭添加目录对话框', 'Close add folder dialog')}><Icon d={IC.x} size={14} /></button>
         </div>
         <label>
           {tr('目录名称', 'Folder name')}
-          <input value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} placeholder={tr('给这个目录起个名字', 'Name this folder')} />
+          <input ref={nameRef} value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} placeholder={tr('给这个目录起个名字', 'Name this folder')} />
         </label>
         <label>
           {tr('本地目录', 'Local folder')}
@@ -68,7 +86,7 @@ export function CreateWorkspaceDialog({
         </label>
         {error && <div className="wb-project-error">{error}</div>}
         <div className="wb-project-modal-actions">
-          <button onClick={onClose} disabled={submitting}>{tr('取消', 'Cancel')}</button>
+          <button onClick={requestClose} disabled={submitting}>{tr('取消', 'Cancel')}</button>
           <button className="primary" onClick={submitProject} disabled={submitting}>{tr('添加工作目录', 'Add folder')}</button>
         </div>
       </div>

@@ -59,7 +59,7 @@ describe('webview guards', () => {
       })
     }
 
-    installWebviewGuards(contents as any)
+    installWebviewGuards(contents as any, 'file:///C:/AgentHub/out/renderer/index.html')
 
     const preventDefault = vi.fn()
     const preferences: any = { preload: 'unsafe.js', nodeIntegration: true }
@@ -75,5 +75,78 @@ describe('webview guards', () => {
     expect(openHandlers[0]?.({ url: 'file:///secret.txt' })).toEqual({ action: 'deny' })
     expect(electronMock.openExternal).toHaveBeenCalledWith('https://example.com')
     expect(electronMock.openExternal).not.toHaveBeenCalledWith('file:///secret.txt')
+  })
+
+  it('pins top-level navigation and redirects to the trusted renderer boundary', async () => {
+    const { installWebviewGuards } = await import('../webview-guards')
+    const createContents = (trustedRendererUrl: string) => {
+      const listeners = new Map<string, (...args: any[]) => void>()
+      const contents = {
+        on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+          listeners.set(event, handler)
+        }),
+        setWindowOpenHandler: vi.fn()
+      }
+
+      installWebviewGuards(contents as any, trustedRendererUrl)
+      return listeners
+    }
+
+    const production = createContents('file:///C:/AgentHub/out/renderer/index.html')
+    const allowProduction = vi.fn()
+    production.get('will-navigate')?.({
+      preventDefault: allowProduction,
+      url: 'file:///C:/AgentHub/out/renderer/index.html#thread-1',
+      isMainFrame: true
+    })
+    expect(allowProduction).not.toHaveBeenCalled()
+
+    for (const url of [
+      'https://example.com/phishing',
+      'file:///C:/AgentHub/out/renderer/other.html',
+      'file:///C:/Users/test/.ssh/id_rsa'
+    ]) {
+      const preventDefault = vi.fn()
+      production.get('will-navigate')?.({ preventDefault, url, isMainFrame: true })
+      expect(preventDefault, url).toHaveBeenCalledOnce()
+    }
+
+    const preventRedirect = vi.fn()
+    production.get('will-redirect')?.({
+      preventDefault: preventRedirect,
+      url: 'https://example.com/redirected',
+      isMainFrame: true
+    })
+    expect(preventRedirect).toHaveBeenCalledOnce()
+
+    const development = createContents('http://127.0.0.1:5173/')
+    const allowSameOrigin = vi.fn()
+    development.get('will-navigate')?.({
+      preventDefault: allowSameOrigin,
+      url: 'http://127.0.0.1:5173/workbench?mode=dev',
+      isMainFrame: true
+    })
+    expect(allowSameOrigin).not.toHaveBeenCalled()
+
+    for (const url of [
+      'http://localhost:5173/',
+      'http://127.0.0.1:4173/',
+      'https://127.0.0.1:5173/',
+      'blob:http://127.0.0.1:5173/attacker-controlled-document',
+      'data:text/html,<script>alert(1)</script>',
+      'javascript:alert(1)'
+    ]) {
+      const preventDefault = vi.fn()
+      development.get('will-navigate')?.({ preventDefault, url, isMainFrame: true })
+      expect(preventDefault, url).toHaveBeenCalledOnce()
+    }
+
+    const allowSubframe = vi.fn()
+    development.get('will-redirect')?.({
+      preventDefault: allowSubframe,
+      url: 'https://example.com/embedded',
+      isMainFrame: false
+    })
+    expect(allowSubframe).not.toHaveBeenCalled()
   })
 })

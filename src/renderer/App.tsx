@@ -8,9 +8,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { AGENT_IDS, AgentUIStatus, BindingDef, ProviderDef } from './glass/meta'
 import type { MotionLevel } from './screens/Settings'
-import { useLang } from './glass/i18n'
+import { setLang, useLang } from './glass/i18n'
 import { WorkbenchLayout } from './workbench/WorkbenchLayout'
-import { applyAppearance, loadAppearance, readAppearanceLocal, subscribeSystemTheme } from './appearance'
+import { applyAppearance, loadAppearance, normalizeAppearance, readAppearanceLocal, subscribeSystemTheme } from './appearance'
 import { isEmptyProviderConfig, nextEmptyProviderConfigRetryDelayMs } from './provider-config-load-policy'
 
 type AgentMap = Record<string, { status: AgentUIStatus }>
@@ -55,13 +55,11 @@ function AppInner() {
   const configRequestId = useRef(0)
   const configEmptyRetryCount = useRef(0)
   const configRetryTimer = useRef<number | null>(null)
-  const providersRef = useRef<ProviderDef[]>([])
-  const bindingsRef = useRef<BindingDef[]>([])
-  const fallbackChainRef = useRef<string[]>([])
-
-  useEffect(() => { providersRef.current = providers }, [providers])
-  useEffect(() => { bindingsRef.current = bindings }, [bindings])
-  useEffect(() => { fallbackChainRef.current = fallbackChain }, [fallbackChain])
+  const configMutationRevision = useRef(0)
+  const configMutationResourceRevisions = useRef(new Map<string, number>())
+  const pendingConfigMutationRevisions = useRef(new Set<number>())
+  const configMutationReloadNeeded = useRef(false)
+  const mountedRef = useRef(false)
 
   const applyProviderConfig = useCallback((cfg: any) => {
     if (!cfg) return
@@ -86,8 +84,9 @@ function AppInner() {
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const next = (event as CustomEvent).detail
-      if (!next) return
+      const detail = (event as CustomEvent<unknown>).detail
+      if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return
+      const next = normalizeAppearance(detail)
       setAppearance(next)
       setMotion(next.motion)
     }
@@ -95,19 +94,13 @@ function AppInner() {
     return () => window.removeEventListener('agenthub:appearance-change', handler)
   }, [])
 
-  const appearanceRef = useRef({ appearance, motion })
-  appearanceRef.current = { appearance, motion }
-
   useEffect(() => {
     const next = { ...appearance, motion }
     applyAppearance(next)
+    if (next.language === 'zh' || next.language === 'en') setLang(next.language)
     try { localStorage.setItem('ah-motion', motion) } catch { /* noop */ }
-    // Subscribe once, use ref for latest values in callback
-    return subscribeSystemTheme(next, () => {
-      const { appearance: currentAppearance, motion: currentMotion } = appearanceRef.current
-      applyAppearance({ ...currentAppearance, motion: currentMotion })
-    })
-  }, [])
+    return subscribeSystemTheme(next, () => applyAppearance(next))
+  }, [appearance, motion])
 
   /* ---------- 数据加载 ---------- */
   const clearConfigRetryTimer = useCallback(() => {
@@ -117,9 +110,12 @@ function AppInner() {
   }, [])
 
   const loadConfig = useCallback(async () => {
+    if (!mountedRef.current) return
     const requestId = ++configRequestId.current
+    const mutationRevision = configMutationRevision.current
     clearConfigRetryTimer()
     const scheduleRetry = () => {
+      if (!mountedRef.current) return
       const retryDelay = nextEmptyProviderConfigRetryDelayMs(configEmptyRetryCount.current)
       if (retryDelay === null) {
         setConfigLoadError('主进程配置暂未就绪，请检查应用日志或点击重试。')
@@ -128,18 +124,27 @@ function AppInner() {
       setConfigLoadError(null)
       configRetryTimer.current = window.setTimeout(() => {
         configRetryTimer.current = null
-        if (requestId === configRequestId.current) loadConfig().catch(() => {})
+        if (mountedRef.current && requestId === configRequestId.current) loadConfig().catch(() => {})
       }, retryDelay)
     }
     try {
       const cfg = await window.electronAPI.providers.get().catch(error => {
-        scheduleRetry()
+        if (mountedRef.current && requestId === configRequestId.current) {
+          configEmptyRetryCount.current += 1
+          scheduleRetry()
+        }
         throw error
       })
-      if (requestId !== configRequestId.current) return
+      if (
+        !mountedRef.current ||
+        requestId !== configRequestId.current ||
+        mutationRevision !== configMutationRevision.current ||
+        pendingConfigMutationRevisions.current.size > 0
+      ) return
       applyProviderConfig(cfg)
       if (!isEmptyProviderConfig(cfg?.providers)) {
         configEmptyRetryCount.current = 0
+        configMutationReloadNeeded.current = false
         setConfigLoadError(null)
         return
       }
@@ -155,18 +160,30 @@ function AppInner() {
     loadConfig()
   }, [loadConfig])
 
-  useEffect(() => clearConfigRetryTimer, [clearConfigRetryTimer])
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      configRequestId.current += 1
+      configMutationRevision.current += 1
+      pendingConfigMutationRevisions.current.clear()
+      configMutationReloadNeeded.current = false
+      clearConfigRetryTimer()
+    }
+  }, [clearConfigRetryTimer])
 
   const refreshStatus = useCallback(async () => {
     try {
       const st = await window.electronAPI.hub.getStatus()
+      if (!mountedRef.current) return
       setHubRunning(!!st?.running)
       const m: Record<string, string> = {}
       for (const a of st?.agents ?? []) m[a.id] = a.status
       setHubAgents(m)
     } catch { /* noop */ }
     try {
-      setLocalAgents(await window.electronAPI.localAgents.status())
+      const nextLocalAgents = await window.electronAPI.localAgents.status()
+      if (mountedRef.current) setLocalAgents(nextLocalAgents)
     } catch { /* noop */ }
   }, [])
 
@@ -197,16 +214,13 @@ function AppInner() {
 
   /* 深链 */
   useEffect(() => {
-    const off = window.electronAPI.providers.onConfigChanged?.((cfg) => {
-      clearConfigRetryTimer()
-      applyProviderConfig(cfg)
-      if (!isEmptyProviderConfig(cfg?.providers)) {
-        configEmptyRetryCount.current = 0
-        setConfigLoadError(null)
-      }
+    const off = window.electronAPI.providers.onConfigChanged?.(() => {
+      if (!mountedRef.current) return
+      configMutationReloadNeeded.current = true
+      if (pendingConfigMutationRevisions.current.size === 0) loadConfig()
     })
     return off
-  }, [applyProviderConfig, clearConfigRetryTimer])
+  }, [loadConfig])
 
   useEffect(() => {
     const off = window.electronAPI?.app?.onDeepLink?.((link) => {
@@ -218,42 +232,134 @@ function AppInner() {
 
   /* ---------- 派发 ---------- */
   /* ---------- 设置操作 ---------- */
+  const beginConfigMutation = useCallback((resourceKey: string) => {
+    configRequestId.current += 1
+    const revision = ++configMutationRevision.current
+    configMutationResourceRevisions.current.set(resourceKey, revision)
+    pendingConfigMutationRevisions.current.add(revision)
+    return revision
+  }, [])
+
+  const finishConfigMutation = useCallback((resourceKey: string, revision: number, failed: boolean) => {
+    pendingConfigMutationRevisions.current.delete(revision)
+    if (!mountedRef.current) return
+    if (failed && configMutationResourceRevisions.current.get(resourceKey) === revision) {
+      configMutationReloadNeeded.current = true
+    }
+    if (configMutationReloadNeeded.current && pendingConfigMutationRevisions.current.size === 0) {
+      loadConfig()
+    }
+  }, [loadConfig])
+
+  const applyConfigMutationResponse = useCallback((cfg: any, revision: number) => {
+    if (!mountedRef.current || !cfg || revision !== configMutationRevision.current) return
+
+    const pendingResources = new Set<string>()
+    for (const [resourceKey, resourceRevision] of configMutationResourceRevisions.current) {
+      if (
+        resourceRevision !== revision &&
+        pendingConfigMutationRevisions.current.has(resourceRevision)
+      ) pendingResources.add(resourceKey)
+    }
+
+    const nextProviders: ProviderDef[] = Array.isArray(cfg.providers) ? cfg.providers : []
+    const pendingProviderIds = new Set(
+      [...pendingResources]
+        .filter(resourceKey => resourceKey.startsWith('provider:'))
+        .map(resourceKey => resourceKey.slice('provider:'.length))
+    )
+    setProviders(current => {
+      const currentById = new Map(current.map(provider => [provider.id, provider]))
+      const nextById = new Map(nextProviders.map(provider => [provider.id, provider]))
+      const ordered = pendingResources.has('provider-order')
+        ? [
+            ...current.map(provider => nextById.get(provider.id) ?? provider),
+            ...nextProviders.filter(provider => !currentById.has(provider.id))
+          ]
+        : [...nextProviders]
+      const merged = ordered.map(provider => (
+        pendingProviderIds.has(provider.id) ? currentById.get(provider.id) ?? provider : provider
+      ))
+      for (const providerId of pendingProviderIds) {
+        const currentProvider = currentById.get(providerId)
+        if (currentProvider && !merged.some(provider => provider.id === providerId)) merged.push(currentProvider)
+      }
+      return merged
+    })
+
+    const nextBindings: BindingDef[] = cfg.routing?.bindings ?? []
+    const pendingBindingAgentIds = new Set(
+      [...pendingResources]
+        .filter(resourceKey => resourceKey.startsWith('binding:'))
+        .map(resourceKey => resourceKey.slice('binding:'.length))
+    )
+    setBindings(current => {
+      const currentByAgentId = new Map(current.map(binding => [binding.agentId, binding]))
+      const merged = nextBindings.map(binding => (
+        pendingBindingAgentIds.has(binding.agentId)
+          ? currentByAgentId.get(binding.agentId) ?? binding
+          : binding
+      ))
+      for (const agentId of pendingBindingAgentIds) {
+        const currentBinding = currentByAgentId.get(agentId)
+        if (currentBinding && !merged.some(binding => binding.agentId === agentId)) merged.push(currentBinding)
+      }
+      return merged
+    })
+
+    if (!pendingResources.has('fallback')) {
+      setFallbackChain(cfg.routing?.fallbackChain ?? [])
+    }
+  }, [])
+
   const onSetEnabled = useCallback(async (id: string, enabled: boolean) => {
-    // Capture snapshot before optimistic update to ensure correct rollback
-    const prev = providersRef.current
+    const resourceKey = `provider:${id}`
+    const revision = beginConfigMutation(resourceKey)
     setProviders(ps => ps.map(p => p.id === id ? { ...p, enabled } : p))
-    try { applyProviderConfig(await window.electronAPI.providers.setEnabled(id, enabled)) }
-    catch { setProviders(() => prev) }
+    try {
+      const cfg = await window.electronAPI.providers.setEnabled(id, enabled)
+      applyConfigMutationResponse(cfg, revision)
+      finishConfigMutation(resourceKey, revision, false)
+    }
+    catch { finishConfigMutation(resourceKey, revision, true) }
     refreshStatus()
-  }, [applyProviderConfig, refreshStatus])
+  }, [applyConfigMutationResponse, beginConfigMutation, finishConfigMutation, refreshStatus])
 
   const onSetKey = useCallback(async (id: string, key: string) => {
-    // Capture snapshot before optimistic update to ensure correct rollback
-    const prev = providersRef.current
+    const resourceKey = `provider:${id}`
+    const revision = beginConfigMutation(resourceKey)
     setProviders(ps => ps.map(p => p.id === id ? { ...p, apiKey: key, enabled: p.enabled || !!key } : p))
-    try { applyProviderConfig(await window.electronAPI.providers.setKey(id, key)) }
-    catch { setProviders(() => prev) }
+    try {
+      const cfg = await window.electronAPI.providers.setKey(id, key)
+      applyConfigMutationResponse(cfg, revision)
+      finishConfigMutation(resourceKey, revision, false)
+    }
+    catch { finishConfigMutation(resourceKey, revision, true) }
     refreshStatus()
-  }, [applyProviderConfig, refreshStatus])
+  }, [applyConfigMutationResponse, beginConfigMutation, finishConfigMutation, refreshStatus])
 
   const onSetBinding = useCallback(async (b: BindingDef) => {
-    // Capture snapshot before optimistic update to ensure correct rollback
-    const prev = bindingsRef.current
+    const resourceKey = `binding:${b.agentId}`
+    const revision = beginConfigMutation(resourceKey)
     setBindings(bs => bs.some(x => x.agentId === b.agentId) ? bs.map(x => x.agentId === b.agentId ? b : x) : [...bs, b])
     try {
       await window.electronAPI.routing.setBinding(b)
+      finishConfigMutation(resourceKey, revision, false)
     }
-    catch { setBindings(() => prev) }
+    catch { finishConfigMutation(resourceKey, revision, true) }
     refreshStatus()
-  }, [refreshStatus])
+  }, [beginConfigMutation, finishConfigMutation, refreshStatus])
 
   const onSetFallback = useCallback(async (chain: string[]) => {
-    // Capture snapshot before optimistic update to ensure correct rollback
-    const prev = fallbackChainRef.current
+    const resourceKey = 'fallback'
+    const revision = beginConfigMutation(resourceKey)
     setFallbackChain(chain)
-    try { await window.electronAPI.routing.setFallback(chain) }
-    catch { setFallbackChain(() => prev) }
-  }, [])
+    try {
+      await window.electronAPI.routing.setFallback(chain)
+      finishConfigMutation(resourceKey, revision, false)
+    }
+    catch { finishConfigMutation(resourceKey, revision, true) }
+  }, [beginConfigMutation, finishConfigMutation])
 
   const onUpsertProvider = useCallback(async (p: any) => {
     try { await window.electronAPI.providers.upsert(p) } catch { /* noop */ }
@@ -266,17 +372,22 @@ function AppInner() {
   }, [refreshStatus])
 
   const onReorderProvidersForClaude = useCallback(async (orderedIds: string[]) => {
+    const resourceKey = 'provider-order'
+    const revision = beginConfigMutation(resourceKey)
     const byId = new Map(providers.map(provider => [provider.id, provider]))
     const reordered = orderedIds.map(id => byId.get(id)).filter((p): p is ProviderDef => !!p)
     if (reordered.length !== orderedIds.length) {
-      // Some IDs were not found, reload config to get consistent state
-      loadConfig()
+      finishConfigMutation(resourceKey, revision, true)
       return
     }
     setProviders(reordered)
-    try { applyProviderConfig(await window.electronAPI.providers.reorderForClaude(orderedIds)) }
-    catch { loadConfig() }
-  }, [applyProviderConfig, loadConfig, providers])
+    try {
+      const cfg = await window.electronAPI.providers.reorderForClaude(orderedIds)
+      applyConfigMutationResponse(cfg, revision)
+      finishConfigMutation(resourceKey, revision, false)
+    }
+    catch { finishConfigMutation(resourceKey, revision, true) }
+  }, [applyConfigMutationResponse, beginConfigMutation, finishConfigMutation, providers])
 
   const onRuntimeAgentStatus = useCallback((agentId: string, status: 'busy' | 'idle', runKey: string) => {
     if (!agentId || !runKey) return
@@ -325,11 +436,10 @@ function AppInner() {
   }, [bindings, providers, localAgents, hubAgents, runtimeBusyRuns])
 
 
-  const lang = useLang() // 语言切换时整树重挂载（key），组件内 tr() 直接生效
+  useLang() // 订阅语言变化并在保留 Workbench 本地状态的同时重渲染文案
 
   return (
     <WorkbenchLayout
-      key={lang}
       hubRunning={hubRunning}
       proxyHost={proxyHost}
       agents={agents}

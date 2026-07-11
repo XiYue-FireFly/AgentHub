@@ -11,6 +11,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { styledConfirm } from '../lib/confirm'
+import { notifyWorkspaceChange } from '../workspace-change'
 
 function EmptyState({ icon, title, detail }: { icon: React.ReactNode; title: string; detail: string }) {
   return (
@@ -35,7 +36,19 @@ export function WorkspacesTab() {
     ])
     setItems(list)
     setActiveId(active)
+    return active
   }, [])
+
+  const refreshAfterMutation = useCallback(async () => {
+    try {
+      const activeWorkspaceId = await refresh()
+      notifyWorkspaceChange({ kind: 'known', activeWorkspaceId })
+      setError(null)
+    } catch {
+      notifyWorkspaceChange({ kind: 'invalidate' })
+      setError(tr('工作目录修改已生效，但本页刷新失败。', 'The workspace change was applied, but this page failed to refresh.'))
+    }
+  }, [refresh])
 
   useEffect(() => {
     let alive = true
@@ -50,7 +63,7 @@ export function WorkspacesTab() {
       if (editing.id) await window.electronAPI.workspaces.update(editing.id, { name: editing.name.trim(), rootPath: editing.rootPath.trim() })
       else await window.electronAPI.workspaces.create({ name: editing.name.trim(), rootPath: editing.rootPath.trim() })
       setEditing(null)
-      await refresh()
+      await refreshAfterMutation()
     } catch (err: any) {
       setError(err?.message || tr('保存工作目录失败', 'Failed to save workspace'))
     }
@@ -106,7 +119,7 @@ export function WorkspacesTab() {
             {activeId !== item.id && <button className="ah-btn sm" onClick={async () => {
               try {
                 await window.electronAPI.workspaces.setActive(item.id)
-                await refresh()
+                await refreshAfterMutation()
               } catch (err: any) {
                 setError(err?.message || tr('设置当前目录失败', 'Failed to set active workspace'))
               }
@@ -116,8 +129,9 @@ export function WorkspacesTab() {
               try {
                 const ok = await styledConfirm({ message: tr(`移除工作目录「${item.name}」？磁盘文件不会被删除。`, `Remove workspace "${item.name}"? Files on disk will not be deleted.`), danger: true })
                 if (!ok) return
-                await window.electronAPI.workspaces.remove(item.id)
-                await refresh()
+                const removed = await window.electronAPI.workspaces.remove(item.id)
+                if (!removed) return
+                await refreshAfterMutation()
               } catch (err: any) {
                 setError(err?.message || tr('移除工作目录失败', 'Failed to remove workspace'))
               }

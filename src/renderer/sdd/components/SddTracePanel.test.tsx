@@ -11,7 +11,7 @@ import { parseRequirementBlocks, saveDraftToDisk } from '../sdd-draft-actions'
 
 vi.mock('../sdd-draft-actions', async () => ({
   saveDraftToDisk: vi.fn(async () => true),
-  parseRequirementBlocks: vi.fn(async () => undefined)
+  parseRequirementBlocks: vi.fn(async () => true)
 }))
 
 const blocks: SddRequirementBlock[] = [
@@ -71,17 +71,17 @@ const draft: SddDraft = {
 }
 
 describe('SddTracePanel', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setLang('en')
-    clearDraftHistory(draft.id, draft.workspaceRoot)
+    await clearDraftHistory(draft.id, draft.workspaceRoot)
     useSddDraftStore.persist.clearStorage()
     useSddDraftStore.getState().clearDraft()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
     vi.restoreAllMocks()
-    clearDraftHistory(draft.id, draft.workspaceRoot)
+    await clearDraftHistory(draft.id, draft.workspaceRoot)
     useSddDraftStore.getState().clearDraft()
   })
 
@@ -122,7 +122,7 @@ describe('SddTracePanel', () => {
   it('restores a selected history version through the draft editor and saves it to disk', async () => {
     useSddDraftStore.getState().setActiveDraft(draft)
     useSddDraftStore.getState().setContent('# Current')
-    addHistoryEntry(draft.id, '# Previous', draft.title, 'AI: assistant requirement writeback', 'ai', draft.workspaceRoot)
+    await addHistoryEntry(draft.id, '# Previous', draft.title, 'AI: assistant requirement writeback', 'ai', draft.workspaceRoot)
     vi.mocked(saveDraftToDisk).mockClear()
     vi.mocked(parseRequirementBlocks).mockClear()
 
@@ -136,5 +136,23 @@ describe('SddTracePanel', () => {
     await waitFor(() => expect(saveDraftToDisk).toHaveBeenCalled())
     expect(parseRequirementBlocks).toHaveBeenCalled()
     await view.findByText('Restored and saved')
+  })
+
+  it('does not report a restored history version as complete when block parsing aborts', async () => {
+    useSddDraftStore.getState().setActiveDraft(draft)
+    useSddDraftStore.getState().setContent('# Current')
+    await addHistoryEntry(draft.id, '# Previous', draft.title, 'AI: assistant requirement writeback', 'ai', draft.workspaceRoot)
+    vi.mocked(saveDraftToDisk).mockClear()
+    vi.mocked(parseRequirementBlocks).mockResolvedValueOnce(false)
+
+    const view = render(<SddDraftEditor />)
+
+    fireEvent.click(view.getByText('Version History'))
+    fireEvent.click(view.getByText('AI: assistant requirement writeback'))
+    fireEvent.click(view.getByRole('button', { name: /Restore/ }))
+
+    await waitFor(() => expect(parseRequirementBlocks).toHaveBeenCalled())
+    await view.findByText('Restore stopped because the requirement draft changed')
+    expect(view.queryByText('Restored and saved')).toBeNull()
   })
 })

@@ -318,6 +318,7 @@ const contractedChannels = [
   'agentic:getMode',
   'agentic:setMode',
   'agentic:getApprovalConfig',
+  'agentic:getPendingApprovalIds',
   'agentic:setApprovalPreset',
   'agentic:setApprovalDefault',
   'agentic:setApprovalOverride',

@@ -119,25 +119,24 @@ class AppStore {
 
     const snapshot = { ...this.data }
     const revision = this.legacyRevision
-    try {
-      await this.persistSnapshot(snapshot)
-      this.persistedLegacyRevision = Math.max(this.persistedLegacyRevision, revision)
-    } catch (e: any) {
-      log.error(`[Store] Persist failed (${this.filePath}):`, e?.message || String(e))
-    }
+    await this.persistSnapshot(snapshot)
+    this.persistedLegacyRevision = Math.max(this.persistedLegacyRevision, revision)
   }
 
   /** Enqueue a persist of the current in-memory snapshot. Always serial. */
   private enqueuePersist(): Promise<void> {
-    this.saveChain = this.saveChain.then(() => this.persistLatestLegacy())
-    return this.saveChain
+    const operation = this.saveChain.then(() => this.persistLatestLegacy())
+    this.saveChain = operation.catch((e: any) => {
+      log.error(`[Store] Persist failed (${this.filePath}):`, e?.message || String(e))
+    })
+    return operation
   }
 
   private save(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null
-      void this.enqueuePersist()
+      void this.enqueuePersist().catch(() => {})
     }, 200)
   }
 
@@ -155,7 +154,7 @@ class AppStore {
     await this.enqueuePersist()
   }
 
-  async commit(key: string, value: any): Promise<void> {
+  async commit<T>(key: string, value: T): Promise<T> {
     this.init()
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
@@ -178,7 +177,7 @@ class AppStore {
       isolationFailed = true
     }
 
-    const operation = this.saveChain.then(async () => {
+    const operation = this.saveChain.then(async (): Promise<T> => {
       if (isolationFailed) throw isolationError
 
       const candidate = { ...this.data, [key]: isolatedValue }
@@ -197,14 +196,19 @@ class AppStore {
       if (!targetSetChanged) {
         this.data = { ...this.data, [key]: persistedCandidate[key] }
       }
+      return this.cloneJsonValue(persistedCandidate[key]) as T
     })
 
     // Keep the shared chain usable after a rejected commit while returning the
     // original operation (and its rejection) to this caller.
-    this.saveChain = operation.catch(async (e: any) => {
+    this.saveChain = operation.then<void>(() => undefined).catch(async (e: any) => {
       log.error(`[Store] Commit failed (${this.filePath}):`, e?.message || String(e))
       if (this.persistedLegacyRevision < this.legacyRevision) {
-        await this.persistLatestLegacy()
+        try {
+          await this.persistLatestLegacy()
+        } catch (recoveryError: any) {
+          log.error(`[Store] Persist failed (${this.filePath}):`, recoveryError?.message || String(recoveryError))
+        }
       }
     })
     return operation
@@ -252,7 +256,7 @@ export function getLocalToken(): string {
   if (!t || typeof t !== 'string') {
     t = randomBytes(24).toString('hex')
     appStore.set(TOKEN_KEY, t)
-    appStore.flush()
+    void appStore.flush().catch(() => {})
   }
   return t
 }

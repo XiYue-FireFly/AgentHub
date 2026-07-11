@@ -7,6 +7,10 @@ import { getWorkspaceManager } from "../hub/workspace"
 import type { McpConfigState, McpServerConfig } from "./types"
 
 const STORAGE_KEY = "runtime.mcp.v1"
+const MCP_PROTOCOL_VERSION = "2024-11-05"
+const SUPPORTED_MCP_PROTOCOL_VERSIONS: ReadonlySet<string> = new Set([MCP_PROTOCOL_VERSION])
+// Existing MCP buffers use JavaScript string length, so this limit is measured in UTF-16 code units.
+const MAX_MCP_STDOUT_CODE_UNITS = 65_536
 
 /** Configurable probe timeout: env override > server config > default 5s. */
 function probeTimeoutMs(server: McpServerConfig): number {
@@ -82,8 +86,12 @@ export function upsertMcpServer(input: Partial<McpServerConfig> & { name: string
     command: input.command,
     args: input.args,
     env: input.env,
+    headers: input.headers,
     cwd: input.cwd,
     url: input.url,
+    timeoutMs: input.timeoutMs,
+    trustScope: input.trustScope,
+    trustedWorkspaceRoots: input.trustedWorkspaceRoots,
     status: "unknown"
   })
   if (!server) throw new Error("Invalid MCP server")
@@ -124,7 +132,7 @@ export async function testMcpServer(id: string, workspaceId?: string | null): Pr
       await probeStdioServer(server)
     } else if (server.url) {
       // P0-4: Real MCP protocol test for HTTP/SSE — send initialize request
-      const initBody = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "agenthub", version: "1.0" } } })
+      const initBody = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "agenthub", version: "1.0" } } })
       const res = await fetch(server.url, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(server.headers || {}) },
@@ -133,7 +141,12 @@ export async function testMcpServer(id: string, workspaceId?: string | null): Pr
       }).catch(() => null)
       if (!res || res.status < 200 || res.status >= 400) throw new Error(`HTTP ${res?.status ?? "unreachable"}`)
       const body = await res.text().catch(() => "")
-      if (!body.includes("result") && !body.includes("protocolVersion")) throw new Error("MCP initialize failed: no valid response")
+      const validation = validateHttpInitializeResult(
+        body,
+        res.headers.get("content-type") || "",
+        server.transport === "sse"
+      )
+      if (!validation.ok) throw new Error(`MCP initialize failed: ${validation.error}`)
     } else {
       throw new Error("Missing URL")
     }
@@ -181,27 +194,178 @@ function resolveAppName(): string {
  * Returns the parsed result object on success, or an error message string on failure.
  */
 export function validateInitializeResult(stdout: string): { ok: true; result: any } | { ok: false; error: string } {
-  const braceStart = stdout.indexOf('{')
-  if (braceStart < 0) return { ok: false, error: 'No JSON object found in stdout' }
-  // Find matching closing brace
-  let depth = 0
-  let end = -1
-  for (let i = braceStart; i < stdout.length && i < braceStart + 65536; i++) {
-    if (stdout[i] === '{') depth++
-    else if (stdout[i] === '}') { depth--; if (depth === 0) { end = i; break } }
+  return initializeInspectionToValidation(inspectInitializeOutput(stdout))
+}
+
+type InitializeInspection =
+  | { state: 'success'; result: any }
+  | { state: 'terminal-error'; error: string }
+  | { state: 'pending'; error: string; protocolDiagnostic?: boolean }
+
+function inspectInitializeOutput(stdout: string): InitializeInspection {
+  if (stdout.length > MAX_MCP_STDOUT_CODE_UNITS) {
+    return { state: 'terminal-error', error: `MCP stdout exceeded ${MAX_MCP_STDOUT_CODE_UNITS} code-unit limit` }
   }
-  if (end < 0) return { ok: false, error: 'Unbalanced braces in JSON-RPC response' }
-  let parsed: any
-  try {
-    parsed = JSON.parse(stdout.slice(braceStart, end + 1))
-  } catch {
-    return { ok: false, error: 'Invalid JSON in response' }
+
+  const parsedCandidates: any[] = []
+  const objectTexts = extractJsonObjects(stdout)
+  let sawInvalidObject = false
+  for (const objectText of objectTexts) {
+    try {
+      const parsed = JSON.parse(objectText)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        parsedCandidates.push(parsed)
+      }
+    } catch {
+      sawInvalidObject = true
+    }
   }
+
+  if (parsedCandidates.length === 0) {
+    if (sawInvalidObject) return { state: 'pending', error: 'Invalid JSON in response', protocolDiagnostic: true }
+    return stdout.includes('{')
+      ? { state: 'pending', error: 'Unbalanced braces in JSON-RPC response', protocolDiagnostic: true }
+      : { state: 'pending', error: 'No JSON object found in stdout' }
+  }
+  return inspectInitializeCandidates(parsedCandidates)
+}
+
+function inspectInitializeCandidates(candidates: any[]): InitializeInspection {
+  let mismatchedId: unknown
+  let sawMismatchedId = false
+  for (const candidate of candidates) {
+    if (!isJsonRpcResponseCandidate(candidate)) continue
+    if (candidate.id !== 1) {
+      if (!sawMismatchedId) mismatchedId = candidate.id
+      sawMismatchedId = true
+      continue
+    }
+    const validation = validateInitializeResponse(candidate)
+    return validation.ok
+      ? { state: 'success', result: validation.result }
+      : { state: 'terminal-error', error: validation.error }
+  }
+  if (sawMismatchedId) return { state: 'pending', error: `Expected id=1, got id=${JSON.stringify(mismatchedId)}`, protocolDiagnostic: true }
+  return { state: 'pending', error: 'No JSON-RPC initialize response found' }
+}
+
+function initializeInspectionToValidation(
+  inspection: InitializeInspection
+): { ok: true; result: any } | { ok: false; error: string } {
+  return inspection.state === 'success'
+    ? { ok: true, result: inspection.result }
+    : { ok: false, error: inspection.error }
+}
+
+function validateInitializeCandidates(candidates: any[]): { ok: true; result: any } | { ok: false; error: string } {
+  return initializeInspectionToValidation(inspectInitializeCandidates(candidates))
+}
+
+function isJsonRpcResponseCandidate(value: any): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  if (Object.prototype.hasOwnProperty.call(value, 'method')) return false
+  if (!Object.prototype.hasOwnProperty.call(value, 'id')) return false
+  return Object.prototype.hasOwnProperty.call(value, 'jsonrpc')
+    || Object.prototype.hasOwnProperty.call(value, 'result')
+    || Object.prototype.hasOwnProperty.call(value, 'error')
+}
+
+function validateInitializeResponse(parsed: any): { ok: true; result: any } | { ok: false; error: string } {
   if (parsed.jsonrpc !== '2.0') return { ok: false, error: `Missing or wrong jsonrpc: ${JSON.stringify(parsed.jsonrpc)}` }
   if (parsed.id !== 1) return { ok: false, error: `Expected id=1, got id=${JSON.stringify(parsed.id)}` }
-  if (parsed.error) return { ok: false, error: `Server returned JSON-RPC error: ${JSON.stringify(parsed.error)}` }
-  if (!parsed.result || typeof parsed.result !== 'object') return { ok: false, error: 'Missing result object in response' }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'error')) return { ok: false, error: `Server returned JSON-RPC error: ${JSON.stringify(parsed.error)}` }
+  if (!parsed.result || typeof parsed.result !== 'object' || Array.isArray(parsed.result)) return { ok: false, error: 'Missing result object in response' }
+  if (typeof parsed.result.protocolVersion !== 'string' || !parsed.result.protocolVersion.trim()) {
+    return { ok: false, error: 'Missing protocolVersion in initialize result' }
+  }
+  if (!SUPPORTED_MCP_PROTOCOL_VERSIONS.has(parsed.result.protocolVersion)) {
+    return { ok: false, error: `Unsupported protocolVersion: ${JSON.stringify(parsed.result.protocolVersion)}` }
+  }
   return { ok: true, result: parsed.result }
+}
+
+function validateHttpInitializeResult(
+  body: string,
+  contentType: string,
+  expectSse: boolean
+): { ok: true; result: any } | { ok: false; error: string } {
+  if (expectSse || contentType.toLowerCase().includes('text/event-stream')) {
+    const candidates: any[] = []
+    const frames = body.replace(/\r\n?/g, '\n').split(/\n{2,}/)
+    for (const frame of frames) {
+      let eventType = 'message'
+      let hasData = false
+      const dataLines: string[] = []
+      for (const line of frame.split('\n')) {
+        if (line.startsWith(':')) continue
+        if (line === 'event' || line.startsWith('event:')) {
+          eventType = line === 'event' ? '' : line.slice(6).trim()
+          continue
+        }
+        if (line === 'data' || line.startsWith('data:')) {
+          hasData = true
+          dataLines.push(line === 'data' ? '' : line.slice(5).trimStart())
+        }
+      }
+      if (!eventType) eventType = 'message'
+      if (eventType === 'endpoint' || eventType === 'keepalive') continue
+      if (eventType !== 'message' || !hasData) continue
+      const data = dataLines.join('\n')
+      try {
+        const parsed = JSON.parse(data)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          candidates.push(parsed)
+          const inspection = inspectInitializeCandidates(candidates)
+          if (inspection.state !== 'pending') return initializeInspectionToValidation(inspection)
+        }
+      } catch {
+        return { ok: false, error: 'Invalid JSON in SSE message event' }
+      }
+    }
+    if (candidates.length === 0) return { ok: false, error: 'No JSON-RPC initialize response in SSE stream' }
+    return validateInitializeCandidates(candidates)
+  }
+
+  try {
+    return validateInitializeCandidates([JSON.parse(body.trim())])
+  } catch {
+    return { ok: false, error: 'Invalid JSON response' }
+  }
+}
+
+function extractJsonObjects(stdout: string): string[] {
+  const objects: string[] = []
+  let start = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let i = 0; i < stdout.length; i++) {
+    const ch = stdout[i]
+    if (start < 0) {
+      if (ch === '{') {
+        start = i
+        depth = 1
+      }
+      continue
+    }
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{') depth += 1
+    else if (ch === '}') {
+      depth -= 1
+      if (depth === 0) {
+        objects.push(stdout.slice(start, i + 1))
+        start = -1
+      }
+    }
+  }
+  return objects
 }
 
 async function probeStdioServer(server: McpServerConfig): Promise<void> {
@@ -232,10 +396,15 @@ async function probeStdioServer(server: McpServerConfig): Promise<void> {
         : 'MCP initialize timed out; no JSON-RPC initialize response was received.'))
     }, probeTimeoutMs(server))
     child.stdout?.on('data', (chunk: Buffer | string) => {
-      stdout += String(chunk).slice(0, 65536)
-      // Only succeed when stdout contains a parsed JSON-RPC initialize result
-      const result = validateInitializeResult(stdout)
-      if (result.ok) finish()
+      const output = String(chunk)
+      if (stdout.length + output.length > MAX_MCP_STDOUT_CODE_UNITS) {
+        finish(new Error('MCP server output exceeded buffer limit'))
+        return
+      }
+      stdout += output
+      const inspection = inspectInitializeOutput(stdout)
+      if (inspection.state === 'success') finish()
+      else if (inspection.state === 'terminal-error') finish(new Error(inspection.error))
     })
     child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr += String(chunk).slice(0, 2048)
@@ -249,17 +418,17 @@ async function probeStdioServer(server: McpServerConfig): Promise<void> {
     })
     child.on('exit', (code: number | null) => {
       if (settled) return
-      // On exit, check if stdout has a valid initialize result
-      const result = validateInitializeResult(stdout)
-      if (result.ok) finish()
-      else finish(new Error((stderr || `MCP process exited with code ${code}`).trim()))
+      const inspection = inspectInitializeOutput(stdout)
+      if (inspection.state === 'success') finish()
+      else if (inspection.state === 'terminal-error') finish(new Error(inspection.error))
+      else finish(new Error((inspection.protocolDiagnostic ? inspection.error : stderr || `MCP process exited with code ${code}`).trim()))
     })
     const initRequest = JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
       params: {
-        protocolVersion: '2024-11-05',
+        protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: appName, version: appVersion }
       }
@@ -606,8 +775,11 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
     let requestId = 1
     const pending = new Map<number, (result: any) => void>()
     let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
 
     const finish = (result: McpServerToolsResult) => {
+      clearTimeout(timer)
+      timer = undefined
       if (settled) return
       settled = true
       // Reject all pending promises to prevent memory leaks
@@ -617,7 +789,7 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
       resolve(result)
     }
 
-    const timer = setTimeout(() => finish({ ok: false, tools: [], error: `Timeout: ${(stderr || stdout).trim().slice(0, 200)}` }), Math.max(5000, Math.min(30000, server.timeoutMs || 10000)))
+    timer = setTimeout(() => finish({ ok: false, tools: [], error: `Timeout: ${(stderr || stdout).trim().slice(0, 200)}` }), Math.max(5000, Math.min(30000, server.timeoutMs || 10000)))
 
     function sendRequest(method: string, params?: any): Promise<any> {
       return new Promise(res => {
@@ -627,13 +799,13 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
       })
     }
 
-    const MAX_MCP_STDOUT = 65536
     child.stdout?.on('data', (chunk: Buffer | string) => {
-      stdout += String(chunk)
-      if (stdout.length > MAX_MCP_STDOUT) {
+      const output = String(chunk)
+      if (stdout.length + output.length > MAX_MCP_STDOUT_CODE_UNITS) {
         finish({ ok: false, tools: [], error: 'MCP server output exceeded buffer limit' })
         return
       }
+      stdout += output
       // Try to parse complete JSON responses from the accumulated stdout
       const lines = stdout.split('\n')
       stdout = lines.pop() || '' // keep incomplete last line
@@ -662,7 +834,7 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
 
     // Step 1: Initialize
     sendRequest('initialize', {
-      protocolVersion: '2024-11-05',
+      protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: appName, version: appVersion }
     }).then(initResult => {
@@ -691,12 +863,10 @@ export async function listMcpServerTools(id: string, workspaceId?: string | null
         const resourceCount = resourcesResult?.result?.resources?.length ?? 0
         // Step 5: List prompts (non-fatal)
         return sendRequest('prompts/list').then(promptsResult => {
-          clearTimeout(timer)
           const promptCount = promptsResult?.result?.prompts?.length ?? 0
           finish({ ok: true, tools, resources: resourceCount, prompts: promptCount })
         })
       }).catch(() => {
-        clearTimeout(timer)
         // resources/list or prompts/list failed — still return tools
         finish({ ok: true, tools, resources: 0, prompts: 0 })
       })

@@ -106,6 +106,17 @@ function normPreset(v: unknown, fallback: ApprovalPreset = 'auto'): ApprovalPres
   return v === 'read-only' || v === 'auto' || v === 'full-access' || v === 'ask-all' || v === 'custom' ? v : fallback
 }
 
+function legacyPreset(
+  defaults: Record<GuardedTool, ApprovalPolicy>,
+  overrides: PersistedApproval['overrides']
+): ApprovalPreset {
+  if (Object.keys(overrides).length > 0) return 'custom'
+  if (defaults.write === 'deny' && defaults.exec === 'deny') return 'read-only'
+  if (defaults.write === 'ask' && defaults.exec === 'ask') return 'ask-all'
+  if (defaults.write === 'allow' && defaults.exec === 'allow') return 'full-access'
+  return 'custom'
+}
+
 /** Map preset to default policies (parallels codex builtin_approval_presets). */
 export function presetToPolicies(preset: ApprovalPreset): Record<GuardedTool, ApprovalPolicy> {
   switch (preset) {
@@ -127,7 +138,6 @@ class ApprovalConfig {
     if (this.cache) return this.cache
     const raw: any = store.get(STORAGE_KEY)
     if (!raw || typeof raw !== 'object') { this.cache = cloneDefault(); return this.cache }
-    const preset = normPreset(raw.preset, 'auto')
     const def: Record<GuardedTool, ApprovalPolicy> = {
       write: normPolicy(raw.default?.write, 'allow'),
       exec: normPolicy(raw.default?.exec, 'allow')
@@ -142,7 +152,10 @@ class ApprovalConfig {
         if (Object.keys(entry).length) overrides[agentId] = entry
       }
     }
+    const needsMigration = raw.preset === undefined
+    const preset = needsMigration ? legacyPreset(def, overrides) : normPreset(raw.preset, 'auto')
     this.cache = { version: 1, preset, default: def, overrides }
+    if (needsMigration) store.set(STORAGE_KEY, this.cache)
     return this.cache
   }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -63,6 +63,24 @@ describe('WorkspaceManager.bootstrapContext', () => {
     expect(ctx).toContain('## AGENTS.md')
     expect(ctx).toContain('agents content')
     expect(ctx).toMatch(/1 more bootstrap file\(s\) omitted/)
+  })
+
+  it('skips bootstrap files that resolve outside the workspace through a symlink', async () => {
+    const { getWorkspaceManager } = await import('../workspace')
+    const outside = mkdtempSync(join(tmpdir(), 'agenthub-bs-outside-'))
+    try {
+      writeFileSync(join(outside, 'secret.md'), 'do not inject')
+      symlinkSync(outside, join(tempDir, 'linked-outside'), 'junction')
+      const m = getWorkspaceManager()
+      const w = m.create({ name: 'demo', rootPath: tempDir })
+      m.update(w.id, { bootstrapFiles: ['linked-outside/secret.md'] })
+
+      const ctx = m.bootstrapContext(w.id)
+
+      expect(ctx).toBe('')
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('无 bootstrapFiles / 无 id → 空串', async () => {

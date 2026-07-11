@@ -334,6 +334,7 @@ interface ElectronAPI {
     getMode: () => Promise<AgenticModeLike>
     setMode: (mode: AgenticModeLike) => Promise<AgenticModeLike>
     getApprovalConfig: () => Promise<AgenticApprovalConfigLike>
+    getPendingApprovalIds: () => Promise<string[]>
     setApprovalPreset: (preset: AgenticApprovalPresetLike) => Promise<AgenticApprovalConfigLike>
     setApprovalDefault: (tool: AgenticGuardedToolLike, policy: AgenticApprovalPolicyLike) => Promise<AgenticApprovalConfigLike>
     setApprovalOverride: (agentId: string, tool: AgenticGuardedToolLike, policy: AgenticApprovalPolicyLike | null) => Promise<AgenticApprovalConfigLike>
@@ -522,7 +523,7 @@ interface ElectronAPI {
   sdd: {
     createDraft: (workspaceRoot: string, title: string, template?: string) => Promise<SddDraft>
     getDraft: (workspaceRoot: string, draftId: string) => Promise<SddDraft | null>
-    updateDraft: (workspaceRoot: string, draftId: string, content: string) => Promise<void>
+    updateDraft: (workspaceRoot: string, draftId: string, content: string, designContext?: SddDesignContext) => Promise<void>
     updateDesignContext: (workspaceRoot: string, draftId: string, designContext: SddDesignContext) => Promise<void>
     deleteDraft: (workspaceRoot: string, draftId: string) => Promise<void>
     listDrafts: (workspaceRoot: string) => Promise<SddDraftMeta[]>
@@ -564,7 +565,7 @@ interface ElectronAPI {
   platform: string
 }
 
-type WorkbenchTurnStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+type WorkbenchTurnStatus = import('../shared/turn-status').WorkbenchTurnStatus
 type DispatchPreset = 'auto' | 'broadcast' | 'chain' | 'orchestrate' | 'lead-workers' | 'parallel-review' | 'firefly-custom' | 'custom'
 type MemoryCategory = 'conversation' | 'task' | 'skill' | 'file' | 'system' | 'preference' | 'project' | 'style' | 'decision' | 'correction' | 'imported_conversation'
 type MemoryEntryStatus = 'candidate' | 'approved' | 'disabled'

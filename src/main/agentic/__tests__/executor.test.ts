@@ -8,7 +8,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const h = vi.hoisted(() => ({
   streamCalls: 0,
   script: [] as Array<(cb: any) => void>,
-  toolCalls: 0
+  toolCalls: 0,
+  toolContexts: [] as any[]
 }))
 
 vi.mock('../../providers/client', () => ({
@@ -19,12 +20,35 @@ vi.mock('../../providers/client', () => ({
 
 vi.mock('../tools', () => ({
   AGENTIC_TOOLS: [],
-  executeTool: async () => { h.toolCalls++; return { ok: true, output: 'TOOL_OUTPUT' } }
+  executeTool: async (_name: string, _args: any, ctx: any) => {
+    h.toolCalls++
+    h.toolContexts.push(ctx)
+    return { ok: true, output: 'TOOL_OUTPUT' }
+  }
 }))
 
-beforeEach(() => { h.streamCalls = 0; h.script = []; h.toolCalls = 0 })
+beforeEach(() => { h.streamCalls = 0; h.script = []; h.toolCalls = 0; h.toolContexts = [] })
 
 describe('runAgenticHttp', () => {
+  it('propagates the shutdown signal into tool execution context', async () => {
+    const { runAgenticHttp } = await import('../executor')
+    const controller = new AbortController()
+    h.script = [
+      (cb) => { cb.onDone({ finishReason: 'tool_calls', toolCalls: [{ id: 'e-abort', function: { name: 'exec', arguments: '{"command":"long-running"}' } }] }) },
+      (cb) => { cb.onDone({ finishReason: 'stop' }) }
+    ]
+
+    await runAgenticHttp({
+      userText: 'run', systemPrompt: 's', resolved: {} as any, thinking: {} as any, root: '/ws',
+      signal: controller.signal,
+      isCancelled: () => false,
+      emit: { delta: () => {}, activity: () => {} }
+    })
+
+    expect(h.toolContexts).toHaveLength(1)
+    expect(h.toolContexts[0].signal).toBe(controller.signal)
+  })
+
   it('tool_calls → 执行工具 → 回灌 → 次轮收尾', async () => {
     const { runAgenticHttp } = await import('../executor')
     h.script = [
@@ -141,5 +165,34 @@ describe('runAgenticHttp', () => {
     })
     expect(h.toolCalls).toBe(0)                                  // fail-closed：工具被拒绝，未执行
     expect(res.content).toBe('done')
+  })
+
+  it('ignores late stream content and tool calls after the AbortSignal is aborted', async () => {
+    const { runAgenticHttp } = await import('../executor')
+    const controller = new AbortController()
+    const activities: any[] = []
+    let content = ''
+    h.script = [
+      (cb) => {
+        controller.abort()
+        cb.onContent('late')
+        cb.onDone({
+          finishReason: 'tool_calls',
+          toolCalls: [{ id: 'late-write', function: { name: 'fs_write', arguments: '{"path":"late.txt","content":"x"}' } }]
+        })
+      }
+    ]
+
+    const res = await runAgenticHttp({
+      userText: 'write late', systemPrompt: 's', resolved: {} as any, thinking: {} as any, root: '/ws',
+      signal: controller.signal,
+      isCancelled: () => false,
+      emit: { delta: (_channel, text) => { content += text }, activity: step => activities.push(step) }
+    })
+
+    expect(res.content).toBe('')
+    expect(content).toBe('')
+    expect(activities).toEqual([])
+    expect(h.toolCalls).toBe(0)
   })
 })

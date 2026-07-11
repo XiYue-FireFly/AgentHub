@@ -57,13 +57,13 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
 
   // --- Tasks ---
   typedHandle('tasks:delete', async (_event, taskId) => {
-    runtimeStore?.deleteTask?.(taskId)
+    await runtimeStore?.deleteTask?.(taskId)
     if (dispatcher) dispatcher.deleteTask?.(taskId)
     return true
   })
 
   typedHandle('tasks:clearCompleted', async (_event, workspaceId) => {
-    runtimeStore?.clearCompletedTasks?.(workspaceId)
+    await runtimeStore?.clearCompletedTasks?.(workspaceId)
     if (dispatcher) dispatcher.clearCompleted?.()
     return true
   })
@@ -121,6 +121,9 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   })
   typedHandle("agentic:getApprovalConfig", async () => {
     return getApprovalConfig().getConfig()
+  })
+  typedHandle("agentic:getPendingApprovalIds", async () => {
+    return dispatcher?.getPendingApprovalIds() ?? []
   })
   typedHandle("agentic:setApprovalPreset", async (_e, preset) => {
     return getApprovalConfig().setPreset(preset)

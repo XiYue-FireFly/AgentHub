@@ -83,7 +83,10 @@ export class HubServer extends EventEmitter {
       } catch (err) { console.warn('[hub-server] Message parse error:', err) }
     })
 
-    ws.on('close', () => this.clients.delete(clientId))
+    ws.once('close', () => {
+      this.clients.delete(clientId)
+      this.emit('client:disconnected', { clientId, sessionId: clientId })
+    })
     // MED-12: Handle individual client socket errors to prevent uncaughtException
     ws.on('error', (e: Error) => log.error('WS client error: ' + e.message))
     this.emit('client:connected', client)

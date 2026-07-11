@@ -271,10 +271,8 @@ export class SddStore {
     const filePath = buildDraftFilePath(this.workspaceRoot, draftId)
 
     try {
-      let content = options.content
-      if (content === undefined) {
-        content = await fs.readFile(filePath, 'utf-8')
-      }
+      const existingContent = await fs.readFile(filePath, 'utf-8')
+      const content = options.content ?? existingContent
 
       await writeFileAtomic(filePath, content)
 

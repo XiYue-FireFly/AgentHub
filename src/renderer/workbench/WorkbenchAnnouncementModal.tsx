@@ -1,6 +1,7 @@
-import React from 'react'
+import React, { useId, useRef } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
+import { useModalFocus } from '../hooks/useModalFocus'
 
 interface WorkbenchAnnouncementModalProps {
   onClose: () => void
@@ -11,19 +12,33 @@ export function WorkbenchAnnouncementModal({
   onClose,
   onOpenSetup
 }: WorkbenchAnnouncementModalProps) {
+  const dialogRef = useRef<HTMLElement>(null)
+  const titleId = useId()
+  const descriptionId = useId()
+  useModalFocus({ containerRef: dialogRef, onEscape: onClose })
+
   return (
     <div className="wb-modal-backdrop wb-announcement-backdrop" onMouseDown={onClose}>
-      <section className="wb-announcement-modal" onMouseDown={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={tr('AgentHub 使用公告', 'AgentHub announcement')}>
+      <section
+        className="wb-announcement-modal"
+        onMouseDown={event => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        ref={dialogRef}
+        tabIndex={-1}
+      >
         <div className="wb-announcement-head">
           <div>
             <span>{tr('AgentHub 0.5.4', 'AgentHub 0.5.4')}</span>
-            <h2>{tr('开始前请先完成运行配置', 'Finish run setup before starting')}</h2>
+            <h2 id={titleId}>{tr('开始前请先完成运行配置', 'Finish run setup before starting')}</h2>
           </div>
           <button onClick={onClose} aria-label={tr('关闭公告', 'Close announcement')}>
             <Icon d={IC.x} size={15} />
           </button>
         </div>
-        <p className="wb-announcement-intro">
+        <p className="wb-announcement-intro" id={descriptionId}>
           {tr(
             '本版本把 AgentHub 工作台、Agent 切换、API 厂商直连、Git、Skills 和 MCP 整合到一个桌面流程中。为了避免任务发错 Agent，请按下面顺序完成首次配置。',
             'This release combines the workbench, agent switching, provider direct runs, Git, Skills, and MCP into one desktop workflow. Complete the setup below before sending tasks.'

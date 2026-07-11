@@ -18,11 +18,7 @@ export default defineConfig({
   },
   projects: [
     {
-      name: 'electron',
-      use: {
-        // Launch via electron-vite preview (serves built app)
-        baseURL: 'http://localhost:4173'
-      }
+      name: 'electron'
     }
   ]
   // MED-35: Removed unused webServer config — E2E tests use Electron's built-in Chromium, not a separate browser server

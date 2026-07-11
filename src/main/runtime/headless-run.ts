@@ -343,14 +343,23 @@ function spawnProcess(
       cwd,
       env: { ...process.env, AGENTHUB_HEADLESS: '1' },
       windowsHide: true,
-      shell: false
+      shell: false,
+      detached: process.platform !== 'win32'
     })
 
     const timer = setTimeout(() => {
       timedOut = true
-      try { child.kill('SIGTERM') } catch { /* ignore */ }
+      if (process.platform !== 'win32' && child.pid) {
+        try { process.kill(-child.pid, 'SIGTERM') } catch { try { child.kill('SIGTERM') } catch { /* ignore */ } }
+      } else {
+        try { child.kill('SIGTERM') } catch { /* ignore */ }
+      }
       setTimeout(() => {
-        try { child.kill('SIGKILL') } catch { /* ignore */ }
+        if (process.platform !== 'win32' && child.pid) {
+          try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* ignore */ } }
+        } else {
+          try { child.kill('SIGKILL') } catch { /* ignore */ }
+        }
       }, 2000)
     }, timeoutMs)
 

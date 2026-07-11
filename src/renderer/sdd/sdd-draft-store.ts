@@ -87,6 +87,8 @@ interface SddDraftState {
   saveStatus: SddSaveStatus
   operationStatus: SddOperationStatus
   error: string | null
+  draftSession: number
+  editRevision: number
 
   // Requirement blocks
   requirementBlocks: SddRequirementBlock[]
@@ -97,7 +99,8 @@ interface SddDraftState {
   // Actions
   setActiveDraft: (draft: SddDraft | null) => void
   setContent: (content: string) => void
-  markSaved: () => void
+  markSaved: (expectedSession: number, expectedRevision: number) => void
+  markError: (expectedSession: number, expectedRevision: number, error: string) => void
   setSaveStatus: (status: SddSaveStatus) => void
   setOperationStatus: (status: SddOperationStatus) => void
   setError: (error: string | null) => void
@@ -122,33 +125,47 @@ export const useSddDraftStore = create<SddDraftState>()(
         saveStatus: 'saved',
         operationStatus: 'idle',
         error: null,
+        draftSession: 0,
+        editRevision: 0,
         requirementBlocks: [],
         trace: null,
 
         // Actions
         setActiveDraft: (draft) => set((state) => {
+          state.draftSession++
           state.activeDraft = draft
           state.content = draft?.content || ''
           state.lastSavedContent = draft?.content || ''
           state.saveStatus = 'saved'
           state.operationStatus = 'idle'
           state.error = null
+          state.editRevision = 0
           state.requirementBlocks = []
           state.trace = null
         }),
 
         setContent: (content) => set((state) => {
+          if (state.content === content) return
           state.content = content
+          state.editRevision++
           state.saveStatus = 'dirty'
         }),
 
-        markSaved: () => set((state) => {
+        markSaved: (expectedSession, expectedRevision) => set((state) => {
+          if (state.draftSession !== expectedSession || state.editRevision !== expectedRevision) return
           state.lastSavedContent = state.content
           state.saveStatus = 'saved'
+          state.error = null
           // Keep partialized activeDraft in sync so rehydrate does not prefer a stale empty blob
           if (state.activeDraft) {
             state.activeDraft.content = state.content
           }
+        }),
+
+        markError: (expectedSession, expectedRevision, error) => set((state) => {
+          if (state.draftSession !== expectedSession || state.editRevision !== expectedRevision) return
+          state.saveStatus = 'error'
+          state.error = error
         }),
 
         setSaveStatus: (status) => set((state) => {
@@ -173,19 +190,25 @@ export const useSddDraftStore = create<SddDraftState>()(
 
         updateDesignContext: (patch) => set((state) => {
           if (!state.activeDraft) return
-          state.activeDraft.designContext = {
+          const next = {
             ...state.activeDraft.designContext,
             ...patch
           }
+          if (sameDesignContext(state.activeDraft.designContext, next)) return
+          state.activeDraft.designContext = next
+          state.editRevision++
+          state.saveStatus = 'dirty'
         }),
 
         clearDraft: () => set((state) => {
+          state.draftSession++
           state.activeDraft = null
           state.content = ''
           state.lastSavedContent = ''
           state.saveStatus = 'saved'
           state.operationStatus = 'idle'
           state.error = null
+          state.editRevision = 0
           state.requirementBlocks = []
           state.trace = null
         }),
@@ -204,6 +227,7 @@ export const useSddDraftStore = create<SddDraftState>()(
         }),
         onRehydrateStorage: () => (state) => {
           if (!state) return
+          state.draftSession++
           if (state.activeDraft) {
             // Prefer lastSavedContent (successful save snapshot). Do not use ?? on
             // activeDraft.content — empty string would block fallback (G2-MC1 review).
@@ -214,13 +238,22 @@ export const useSddDraftStore = create<SddDraftState>()(
             state.lastSavedContent = restored
             state.activeDraft.content = restored
             state.saveStatus = 'saved'
+            state.editRevision = 0
             // F-W4: schedule disk reload after rehydrate (avoid empty wipe race)
             const draftId = state.activeDraft.id
             const workspaceRoot = state.activeDraft.workspaceRoot
+            const draftSession = state.draftSession
+            const editRevision = state.editRevision
             queueMicrotask(() => {
               void import('./sdd-draft-actions').then(m => {
                 const cur = useSddDraftStore.getState()
-                if (cur.activeDraft?.id === draftId && cur.activeDraft.workspaceRoot === workspaceRoot && cur.saveStatus !== 'dirty') {
+                if (
+                  cur.activeDraft?.id === draftId &&
+                  cur.activeDraft.workspaceRoot === workspaceRoot &&
+                  cur.draftSession === draftSession &&
+                  cur.editRevision === editRevision &&
+                  cur.saveStatus === 'saved'
+                ) {
                   void m.reloadActiveDraftFromDisk()
                 }
               }).catch(() => {})
@@ -229,6 +262,7 @@ export const useSddDraftStore = create<SddDraftState>()(
             state.content = ''
             state.lastSavedContent = ''
             state.saveStatus = 'saved'
+            state.editRevision = 0
           }
         },
       }
@@ -236,6 +270,13 @@ export const useSddDraftStore = create<SddDraftState>()(
     { name: 'sdd-draft-store' }
   )
 )
+
+function sameDesignContext(left: SddDesignContext | undefined, right: SddDesignContext | undefined): boolean {
+  if (left?.designType !== right?.designType || left?.brandColor !== right?.brandColor) return false
+  const leftTone = left?.tone ?? []
+  const rightTone = right?.tone ?? []
+  return leftTone.length === rightTone.length && leftTone.every((value, index) => value === rightTone[index])
+}
 
 // ============================================================
 // Selector Hooks

@@ -10,7 +10,7 @@ import { tr } from '../../glass/i18n'
 import type { ProviderDef } from '../../glass/meta'
 import { styledConfirm } from '../../lib/confirm'
 import { useSddDraftStore, type SddRequirementBlock } from '../sdd-draft-store'
-import { listDrafts, createNewDraft, deleteDraft, loadDraft, saveDraftToDisk, parseRequirementBlocks, persistPlanTrace, applyVerifyVerdicts } from '../sdd-draft-actions'
+import { listDrafts, createNewDraft, deleteDraft, invalidateDraftLoads, loadDraft, saveDraftToDisk, parseRequirementBlocks, persistPlanTrace, applyVerifyVerdicts } from '../sdd-draft-actions'
 import { buildAssistantPrompt } from '../sdd-assistant-prompt'
 import { previewAssistantRequirementResponse } from '../sdd-assistant-apply'
 import { recordAiHistory } from '../sdd-draft-history'
@@ -57,6 +57,39 @@ interface AssistantRequirementApplyContext {
     added: string[]
     removed: string[]
   }
+}
+
+type SddDraftStoreState = ReturnType<typeof useSddDraftStore.getState>
+type ActiveSddDraftStoreState = SddDraftStoreState & { activeDraft: NonNullable<SddDraftStoreState['activeDraft']> }
+
+interface RequirementDraftSnapshot {
+  draftId: string
+  workspaceRoot: string
+  draftSession: number
+  editRevision: number
+  content: string
+}
+
+function captureRequirementDraftSnapshot(state: SddDraftStoreState): RequirementDraftSnapshot | null {
+  if (!state.activeDraft) return null
+  return {
+    draftId: state.activeDraft.id,
+    workspaceRoot: state.activeDraft.workspaceRoot,
+    draftSession: state.draftSession,
+    editRevision: state.editRevision,
+    content: state.content
+  }
+}
+
+function matchesRequirementDraftSnapshot(
+  state: SddDraftStoreState,
+  snapshot: RequirementDraftSnapshot
+): state is ActiveSddDraftStoreState {
+  return state.activeDraft?.id === snapshot.draftId &&
+    state.activeDraft.workspaceRoot === snapshot.workspaceRoot &&
+    state.draftSession === snapshot.draftSession &&
+    state.editRevision === snapshot.editRevision &&
+    state.content === snapshot.content
 }
 
 function isVerifyDraftSnapshot(value: unknown): value is VerifyDraftSnapshot {
@@ -133,12 +166,9 @@ function parseRequirementTodoBlocksFromMarkdown(markdown: string): SddRequiremen
   return blocks.filter(block => block.acceptanceCriteria.length > 0)
 }
 
-function selectRequirementTodoBlocks(parsedBlocks: SddRequirementBlock[], fallbackBlocks: SddRequirementBlock[], markdown: string): SddRequirementBlock[] {
+function selectRequirementTodoBlocks(parsedBlocks: SddRequirementBlock[], markdown: string): SddRequirementBlock[] {
   if (parsedBlocks.length > 0) return parsedBlocks
-  const markdownBlocks = parseRequirementTodoBlocksFromMarkdown(markdown)
-  if (markdownBlocks.length > 0) return markdownBlocks
-  const hasChecklistMarkers = /^\s*[-*]\s+\[[ xX]\]\s+.+$/m.test(markdown)
-  return hasChecklistMarkers ? fallbackBlocks : []
+  return parseRequirementTodoBlocksFromMarkdown(markdown)
 }
 
 export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodos = [], events = [], providers = [], modelSelection = null, onModelSelectionChange, onThreadTodosChanged, onSendRequirementToChat, onRequirementSentToChat }: SddRequirementsListProps) {
@@ -233,13 +263,17 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
     const store = useSddDraftStore.getState()
     const draft = store.activeDraft
     if (!draft || !onSendRequirementToChat) return
+    const source = captureRequirementDraftSnapshot(store)
+    if (!source) return
     const saved = await saveDraftToDisk()
     if (!saved) throw new Error('Failed to save draft before sending it to chat')
-    await parseRequirementBlocks()
+    if (!matchesRequirementDraftSnapshot(useSddDraftStore.getState(), source)) return
+    const parsed = await parseRequirementBlocks()
+    if (!parsed) return
     const latest = useSddDraftStore.getState()
-    const latestDraft = latest.activeDraft ?? draft
+    if (!matchesRequirementDraftSnapshot(latest, source)) return
     const prompt = buildRequirementDocumentChatPrompt({
-      draft: latestDraft,
+      draft: latest.activeDraft,
       content: latest.content,
       blocks: latest.requirementBlocks
     })
@@ -253,23 +287,30 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
       setSyncDocumentTodoStatus({ tone: 'warning', text: tr('需要先打开一个会话。', 'Open a thread first.') })
       return
     }
-    const draft = useSddDraftStore.getState().activeDraft
-    if (!draft) return
+    const store = useSddDraftStore.getState()
+    const draft = store.activeDraft
+    const sourceSnapshot = captureRequirementDraftSnapshot(store)
+    if (!draft || !sourceSnapshot) return
     setSyncingDocumentTodo(true)
     setSyncDocumentTodoStatus({ tone: 'muted', text: tr('同步中...', 'Syncing...') })
     try {
       const saved = await saveDraftToDisk()
       if (!saved) throw new Error('Failed to save draft before syncing todos')
-      const previousBlocks = useSddDraftStore.getState().requirementBlocks
-      await parseRequirementBlocks()
-      const latest = useSddDraftStore.getState()
-      const latestDraft = latest.activeDraft ?? draft
-      const source = {
-        workspaceRoot: latestDraft.workspaceRoot,
-        draftId: latestDraft.id,
-        relativePath: latestDraft.relativePath
+      if (!matchesRequirementDraftSnapshot(useSddDraftStore.getState(), sourceSnapshot)) {
+        throw new Error('Requirement draft changed while syncing todos. Try again for the current draft.')
       }
-      const requirementBlocks = selectRequirementTodoBlocks(latest.requirementBlocks, previousBlocks, latest.content)
+      const parsed = await parseRequirementBlocks()
+      if (!parsed) throw new Error('Failed to parse requirement blocks for Todo sync.')
+      const latest = useSddDraftStore.getState()
+      if (!matchesRequirementDraftSnapshot(latest, sourceSnapshot)) {
+        throw new Error('Requirement draft changed while syncing todos. Try again for the current draft.')
+      }
+      const source = {
+        workspaceRoot: latest.activeDraft.workspaceRoot,
+        draftId: latest.activeDraft.id,
+        relativePath: latest.activeDraft.relativePath
+      }
+      const requirementBlocks = selectRequirementTodoBlocks(latest.requirementBlocks, latest.content)
       const todoMarkdown = buildRequirementTodoMarkdown(requirementBlocks)
       const todoCount = todoMarkdown ? todoMarkdown.split('\n').filter(Boolean).length : 0
       await window.electronAPI.todos.syncFromMarkdown(threadId, todoMarkdown, source)
@@ -307,6 +348,10 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   useEffect(() => {
     refreshDrafts()
   }, [refreshDrafts])
+
+  useEffect(() => () => {
+    invalidateDraftLoads()
+  }, [workspaceRoot])
 
   useEffect(() => {
     if (!activeDraft || !threadId || !draftContent) return
@@ -389,8 +434,8 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
   // Open draft
   const handleOpen = async (draftId: string) => {
     if (!workspaceRoot) return
-    await loadDraft(workspaceRoot, draftId)
-    setView('editor')
+    const loaded = await loadDraft(workspaceRoot, draftId)
+    if (loaded) setView('editor')
   }
 
   // Back to list
@@ -406,6 +451,8 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
     const store = useSddDraftStore.getState()
     const draft = store.activeDraft
     if (!draft) throw new Error('No active draft')
+    const sourceSnapshot = captureRequirementDraftSnapshot(store)
+    if (!sourceSnapshot) throw new Error('No active draft')
     let requestDraft = { ...draft, content: store.content }
     let requestBlocks = store.requirementBlocks
 
@@ -416,10 +463,16 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
     if (mode === 'plan' || mode === 'verify') {
       const saved = await saveDraftToDisk()
       if (!saved) throw new Error(mode === 'plan' ? 'Failed to save draft before planning' : 'Failed to save draft before verification')
-      await parseRequirementBlocks()
+      if (!matchesRequirementDraftSnapshot(useSddDraftStore.getState(), sourceSnapshot)) {
+        throw new Error('Requirement draft changed while preparing the assistant request. Try again for the current draft.')
+      }
+      const parsed = await parseRequirementBlocks()
+      if (!parsed) throw new Error('Failed to parse requirement blocks for the assistant request.')
       const latest = useSddDraftStore.getState()
-      const latestDraft = latest.activeDraft ?? draft
-      requestDraft = { ...latestDraft, content: latest.content }
+      if (!matchesRequirementDraftSnapshot(latest, sourceSnapshot)) {
+        throw new Error('Requirement draft changed while preparing the assistant request. Try again for the current draft.')
+      }
+      requestDraft = { ...latest.activeDraft, content: latest.content }
       requestBlocks = latest.requirementBlocks
       if (mode === 'plan') {
         const planResult = buildPlanPrompt({
@@ -478,6 +531,9 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
       workspaceRoot: requestDraft.workspaceRoot
     })
     if (!result?.ok) throw new Error(result?.error || 'AI request failed')
+    if (!matchesRequirementDraftSnapshot(useSddDraftStore.getState(), sourceSnapshot)) {
+      throw new Error('Requirement draft changed while the assistant was responding. Try again for the current draft.')
+    }
     const content = result.content || ''
     if (mode === 'plan' && content.trim()) {
       await persistPlanTrace(content, requestDraft)
@@ -505,7 +561,7 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
       }
     }
     return verifySnapshot ? { content, applyContext: verifySnapshot } : content
-  }, [events, refreshDrafts, threadId, threadTodos])
+  }, [events, modelSelection, refreshDrafts, threadId, threadTodos])
 
   const handleApplyAssistantRequirement = useCallback(async (applyContext?: unknown) => {
     if (!isAssistantRequirementApplyContext(applyContext)) {
@@ -521,20 +577,48 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
       throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
     }
 
-    const previousBlocks = latest.requirementBlocks
-    recordAiHistory(latestDraft, latest.content, 'assistant requirement writeback')
-    latest.setContent(applyContext.nextContent)
+    const source = {
+      draftSession: latest.draftSession,
+      editRevision: latest.editRevision,
+      content: latest.content
+    }
+    await recordAiHistory(latestDraft, source.content, 'assistant requirement writeback')
+    const afterHistory = useSddDraftStore.getState()
+    const afterHistoryDraft = afterHistory.activeDraft
+    if (
+      !afterHistoryDraft ||
+      afterHistoryDraft.id !== applyContext.draftId ||
+      afterHistoryDraft.workspaceRoot !== applyContext.workspaceRoot ||
+      afterHistory.draftSession !== source.draftSession ||
+      afterHistory.editRevision !== source.editRevision ||
+      afterHistory.content !== source.content ||
+      hashVerifyContent(afterHistory.content) !== applyContext.contentHash
+    ) {
+      throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
+    }
+    afterHistory.setContent(applyContext.nextContent)
+    const appliedSource = captureRequirementDraftSnapshot(useSddDraftStore.getState())
+    if (!appliedSource || appliedSource.draftId !== applyContext.draftId || appliedSource.workspaceRoot !== applyContext.workspaceRoot) {
+      throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
+    }
     const saved = await saveDraftToDisk()
     if (!saved) throw new Error('Failed to save assistant requirement update')
-    await parseRequirementBlocks()
+    if (!matchesRequirementDraftSnapshot(useSddDraftStore.getState(), appliedSource)) {
+      throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
+    }
+    const parsed = await parseRequirementBlocks()
+    if (!parsed) throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
+    const afterApply = useSddDraftStore.getState()
+    if (!matchesRequirementDraftSnapshot(afterApply, appliedSource)) {
+      throw new Error('Requirement document changed after this AI response. Ask again before applying it.')
+    }
     if (threadId) {
-      const afterApply = useSddDraftStore.getState()
-      const requirementBlocks = selectRequirementTodoBlocks(afterApply.requirementBlocks, previousBlocks, afterApply.content)
+      const requirementBlocks = selectRequirementTodoBlocks(afterApply.requirementBlocks, afterApply.content)
       const todoMarkdown = buildRequirementTodoMarkdown(requirementBlocks)
       await window.electronAPI.todos.syncFromMarkdown(threadId, todoMarkdown, {
-        workspaceRoot: latestDraft.workspaceRoot,
-        draftId: latestDraft.id,
-        relativePath: latestDraft.relativePath
+        workspaceRoot: afterApply.activeDraft.workspaceRoot,
+        draftId: afterApply.activeDraft.id,
+        relativePath: afterApply.activeDraft.relativePath
       })
       await onThreadTodosChanged?.(threadId)
     }

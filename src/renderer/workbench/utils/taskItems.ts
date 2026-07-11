@@ -1,5 +1,6 @@
 import type { ActivityStep, TaskItem, TaskUIStatus, TokenUsage } from '../../glass/meta'
 import { upsertStep } from '../../glass/chat-transcript'
+import { isTerminalTurnStatus } from '../../../shared/turn-status'
 
 type RuntimeTaskEvent = Pick<RuntimeEvent, 'id' | 'threadId' | 'turnId' | 'seq' | 'kind' | 'agentId' | 'payload' | 'createdAt'>
 
@@ -123,24 +124,38 @@ function summarizeTaskEvents(events: RuntimeTaskEvent[]): {
 function taskStatus(status: WorkbenchTurnStatus): TaskUIStatus {
   if (status === 'completed') return 'completed'
   if (status === 'failed') return 'failed'
-  if (status === 'cancelled') return 'cancelled'
+  if (status === 'cancelled' || status === 'interrupted') return 'cancelled'
   return 'running'
 }
 
 function taskDuration(turn: WorkbenchTurn, runs: AgentRunNode[], events: RuntimeTaskEvent[]): number | null {
-  if (typeof turn.completedAt === 'number' && turn.completedAt >= turn.createdAt) {
+  const turnIsTerminal = isTerminalTurnStatus(turn.status)
+  if (turnIsTerminal && typeof turn.completedAt === 'number' && turn.completedAt >= turn.createdAt) {
     return turn.completedAt - turn.createdAt
   }
   const runTimes = runs
     .filter(run => typeof run.endedAt === 'number' && run.endedAt >= run.startedAt)
     .map(run => ({ start: run.startedAt, end: run.endedAt as number }))
-  if (runTimes.length > 0 && turn.status !== 'running' && turn.status !== 'queued') {
+  if (turnIsTerminal && runTimes.length > 0) {
     return Math.max(...runTimes.map(run => run.end)) - Math.min(...runTimes.map(run => run.start))
   }
   const explicitDuration = [...events].reverse()
+    .filter(event => turnIsTerminal || isExplicitTerminalTaskEvent(event))
     .map(event => event.payload?.durationMs)
     .find(value => typeof value === 'number' && Number.isFinite(value) && value >= 0)
   return typeof explicitDuration === 'number' ? explicitDuration : null
+}
+
+function isExplicitTerminalTaskEvent(event: RuntimeTaskEvent): boolean {
+  if (event.kind === 'agent:done' || event.kind === 'agent:error') return true
+  if (event.kind === 'orchestrate') {
+    return event.payload?.kind === 'orchestrate:final' || event.payload?.kind === 'orchestrate:error'
+  }
+  if (event.kind === 'turn:status' || event.kind === 'run:status') {
+    const status = event.payload?.status as WorkbenchTurnStatus | undefined
+    return Boolean(status && isTerminalTurnStatus(status))
+  }
+  return false
 }
 
 function formatTime(timestamp: number): string {

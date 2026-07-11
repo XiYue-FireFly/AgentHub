@@ -11,6 +11,11 @@ import React, { useState, useEffect, useCallback } from 'react'
 // IC reserved for future icon usage
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
+import {
+  approvalDisplayModeFromConfig,
+  approvalDisplayModeLabel,
+  approvalPresetForDisplayMode
+} from '../workbench/utils/approvalMode'
 
 type ApprovalPolicy = 'allow' | 'ask' | 'deny'
 type ApprovalPreset = 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'
@@ -35,9 +40,7 @@ export function ApprovalsTab() {
   }, [])
 
   useEffect(() => {
-    let alive = true
     load().catch(() => {})
-    return () => { alive = false }
   }, [load])
 
   const setPreset = async (preset: ApprovalPreset) => {
@@ -57,7 +60,8 @@ export function ApprovalsTab() {
 
   if (!config || !config.default) return <div className="wb-muted-box">{error || tr('正在加载权限策略...', 'Loading approval policies...')}</div>
 
-  const currentPreset = config.preset || 'auto'
+  const displayMode = approvalDisplayModeFromConfig(config)
+  const currentPreset = config.preset || (displayMode === 'custom' ? 'custom' : approvalPresetForDisplayMode(displayMode))
 
   return (
     <div className="wb-settings-stack">
@@ -66,6 +70,9 @@ export function ApprovalsTab() {
         <div className="wb-card-head">
           <div>
             <strong>{tr('审批模式', 'Approval mode')}</strong>
+            <span role="status" aria-label={tr('当前审批模式', 'Current approval mode')} className="ah-chip">
+              {approvalDisplayModeLabel(displayMode)}
+            </span>
             <span>{tr('"完全访问"等价于 codex Full Access — 永不弹窗。', '"Full access" equals codex Full Access — never prompts.')}</span>
           </div>
         </div>

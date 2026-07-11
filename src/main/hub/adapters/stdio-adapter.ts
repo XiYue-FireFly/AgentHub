@@ -8,9 +8,42 @@ import type { LocalAgentAdapterLifecycle } from '../../runtime/types'
 const log = createLogger('StdioAdapter')
 const STDOUT_BUFFER_MAX = 256 * 1024
 
-function quoteForCommandShell(value: string): string {
-  if (/^[A-Za-z0-9_./:\\=@%+-]+$/.test(value)) return value
-  return `"${value.replace(/"/g, '\\"')}"`
+function resolveWindowsLaunchBinary(binary: string): string {
+  if (process.platform !== 'win32' || /[\\/]/.test(binary) || /\.[A-Za-z0-9]+$/.test(binary)) return binary
+  try {
+    const candidates = execFileSync('where.exe', [binary], {
+      timeout: 2000,
+      encoding: 'utf-8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim().split(/\r?\n/).map(candidate => candidate.trim()).filter(Boolean)
+    const native = candidates.find(candidate => /\.(exe|com)$/i.test(candidate))
+    const batch = candidates.find(candidate => /\.(cmd|bat)$/i.test(candidate))
+    if (native || batch) return native || batch!
+  } catch {
+    // Fall through to the fail-closed error below.
+  }
+  throw new Error(`No supported Windows executable found for ${binary}`)
+}
+
+function escapeWindowsBatchArgument(value: string): string {
+  return value
+    .replace(/(\\*)"/g, '$1$1\\"')
+    .replace(/(\\+)$/g, '$1$1')
+}
+
+function windowsBatchLaunch(binary: string, args: string[]): { args: string[]; env: Record<string, string> } {
+  const env: Record<string, string> = { AGENTHUB_STDIO_BINARY: binary }
+  const deferredArgs = args.map((arg, index) => {
+    const key = `AGENTHUB_STDIO_ARG_${index}`
+    env[key] = escapeWindowsBatchArgument(arg)
+    // The carets preserve !KEY! through cmd's first parse. The target .cmd/.bat
+    // expands it only after its %* command line has been parsed, so introduced
+    // metacharacters cannot become commands. Backslash quoting above preserves argv.
+    return `"^!${key}^!"`
+  })
+  const command = [`"!AGENTHUB_STDIO_BINARY!"`, ...deferredArgs].join(' ')
+  return { args: ['/d', '/s', '/v:on', '/c', `"${command}"`], env }
 }
 
 /**
@@ -129,7 +162,8 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     this.exitCode = null
     this.lastStderr = ''
     const viaArg = this.execArgs.some(a => a.includes('{prompt}'))
-    const needsCommandShell = process.platform === 'win32' && !/\.exe$/i.test(this.binary)
+    const launchBinary = resolveWindowsLaunchBinary(this.binary)
+    const needsCommandShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(launchBinary)
     // 多行提示词保真：直接 spawn（.exe / 非 Windows）时单个 argv 可含换行，原样保留；
     // 仅经 cmd.exe /c 拼接命令行时才压平换行（否则换行会破坏命令行解析）。
     const promptArg = resolvePromptArg(prompt, needsCommandShell)
@@ -137,10 +171,9 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
       ? this.execArgs.map(a => a.replace('{prompt}', promptArg))
       : this.execArgs
     const effectiveArgs = this.modelOverride ? this.modelArgsForOverride(args, this.modelOverride) : args
-    const cmd = needsCommandShell ? (process.env.ComSpec || 'cmd.exe') : this.binary
-    const spawnArgs = needsCommandShell
-      ? ['/d', '/s', '/c', [this.binary, ...effectiveArgs].map(quoteForCommandShell).join(' ')]
-      : effectiveArgs
+    const batchLaunch = needsCommandShell ? windowsBatchLaunch(launchBinary, effectiveArgs) : null
+    const cmd = batchLaunch ? (process.env.ComSpec || 'cmd.exe') : launchBinary
+    const spawnArgs = batchLaunch?.args || effectiveArgs
 
     // 工作目录解析：opts.cwd 给定 → 预检 → 不存在/不是目录 → 降级 homedir，控制台告警
     // （不写入 errChunks：那是 CLI 进程的真实 stderr，混入会误导用户）
@@ -159,6 +192,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     this.proc = spawn(cmd, spawnArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
+      detached: process.platform !== 'win32',
       windowsVerbatimArguments: needsCommandShell,
       cwd,
       // 本地 CLI 以管道方式 spawn（非真实终端）。显式声明”非交互纯文本管道”：
@@ -168,7 +202,15 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
       //   颜色码污染聊天气泡；
       // - PYTHONUNBUFFERED：Python CLI 实时回流输出（更好的流式体验）；
       // - PYTHONIOENCODING=utf-8：修正 Windows 下 Python 输出的 GBK 乱码。
-      env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', ...this.envOverrides },
+      env: {
+        ...process.env,
+        TERM: 'dumb',
+        NO_COLOR: '1',
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8',
+        ...this.envOverrides,
+        ...batchLaunch?.env
+      },
       windowsHide: true
     })
     this.status = 'busy'
@@ -298,7 +340,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
           log.warn(`[${this.name}] taskkill failed for pid ${p.pid}:`, error?.message || String(error))
         }
       } else {
-        try { p.kill('SIGKILL') } catch { /* noop */ }
+        try { process.kill(-p.pid, 'SIGKILL') } catch { try { p.kill('SIGKILL') } catch { /* noop */ } }
       }
     }
     this.status = 'idle'

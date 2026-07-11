@@ -4,6 +4,7 @@ import { AGENT_META } from '../glass/meta'
 import { getLang, tr } from '../glass/i18n'
 import { SetupTab } from '../glass/connection-status'
 import { localAgentOptions } from './localAgentOptions'
+import { isTerminalTurnStatus } from '../../shared/turn-status'
 import {
   buildCustomScheduleTemplate,
   scheduleGraphFromSteps,
@@ -46,7 +47,7 @@ export function RunTimeline({
   const timelineEvents = events.filter(event => event.kind !== 'memory:candidate')
   const recent = [...timelineEvents].slice(-14).reverse()
   const [detecting, setDetecting] = React.useState(false)
-  const runningTurns = turns.filter(turn => turn.status === 'running' || turn.status === 'queued').length
+  const runningTurns = turns.filter(turn => !isTerminalTurnStatus(turn.status)).length
   const completedTurns = turns.filter(turn => turn.status === 'completed').length
   const failedTurns = turns.filter(turn => turn.status === 'failed').length
   const usableAgentIds = localAgentOptions(localAgents)

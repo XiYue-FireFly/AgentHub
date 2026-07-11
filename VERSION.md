@@ -1,14 +1,32 @@
 # AgentHub Version Register
 
-Current code version: 2.0.0
-Current branch baseline: new
-Updated: 2026-07-06
+Current code version: 2.0.1
+Current branch baseline: main
+Updated: 2026-07-11
 
 This file is the release discipline record for AgentHub. Before any release,
 keep `package.json.version`, `package.json.build.buildVersion`, this current
 version, and release notes aligned.
 
 ## Release History
+
+### 2.0.1
+
+Purpose: defensive bugfix release for ACP permission/lifecycle hardening, local process cleanup, dependency refresh, and Electron E2E coverage.
+
+Main changes:
+- Completed the previously deferred ACP permission and lifecycle hardening batches.
+- Hardened local process cancellation so POSIX process groups and Windows process trees are cleaned up consistently.
+- Updated runtime/build/test dependencies to the compatible Electron 43 / Vite 7 toolchain.
+- Added an active Electron E2E guard for blocked local top-level navigation without using HTTP(S), localhost, or external network fallback.
+
+Verification recorded:
+- `npm run typecheck`
+- `npm run lint`
+- `npm test -- --reporter=dot --maxWorkers=4`
+- `npm run build`
+- `npm run test:e2e -- --reporter=line`
+- `npm run build:win -- --config.directories.output=<system-temp>`
 
 ### 2.0.0
 

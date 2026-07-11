@@ -26,7 +26,9 @@ export class TerminalRuntime {
   run(input: { workspaceId?: string | null; command: string }): TerminalRun {
     const command = input.command.trim()
     if (!command) throw new Error("Command is required")
-    const workspace = input.workspaceId ? getWorkspaceManager().getById(input.workspaceId) : null
+    const hasExplicitWorkspace = input.workspaceId !== undefined && input.workspaceId !== null
+    const workspace = hasExplicitWorkspace ? getWorkspaceManager().getById(String(input.workspaceId)) : null
+    if (hasExplicitWorkspace && !workspace) throw new Error(`Workspace not found: ${input.workspaceId}`)
     const cwd = workspace?.rootPath || app.getPath("userData")
     if (!existsSync(cwd)) throw new Error(`Workspace path does not exist: ${cwd}`)
     const run: TerminalRun = {
@@ -47,6 +49,7 @@ export class TerminalRuntime {
     const child = spawn(shell.command, shell.args(command), {
       cwd,
       windowsHide: true,
+      detached: process.platform !== "win32",
       env: process.env
     })
     this.children.set(run.id, child)

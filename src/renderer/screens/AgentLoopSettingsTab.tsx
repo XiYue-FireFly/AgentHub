@@ -5,8 +5,8 @@
  * 使用设置里本地 Agent 的可用状态
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { Icon, IC, Switch } from '../glass/ui'
+import React, { useState, useEffect, useCallback, useId, useMemo } from 'react'
+import { Icon, IC } from '../glass/ui'
 import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
 
@@ -46,6 +46,7 @@ const AGENT_DEFAULT_ROLES: Record<string, string> = {
 }
 
 export function AgentLoopSettingsTab() {
+  const loopConfigLabelPrefix = useId()
   const [config, setConfig] = useState<AgentLoopConfig>({
     maxSteps: 10,
     timeoutMs: 120000,
@@ -194,49 +195,35 @@ export function AgentLoopSettingsTab() {
         <div className="wb-mcp-clean-head">
           <div>
             <strong>{tr('循环配置', 'Loop Configuration')}</strong>
-            <span>{tr('配置 Agent Loop 的执行参数', 'Configure Agent Loop execution parameters')}</span>
+            <span>{tr('只读预览：当前版本尚未接入执行配置。', 'Read-only preview: execution settings are not connected in this version.')}</span>
           </div>
+        </div>
+        <div className="wb-muted-box" role="status">
+          {tr(
+            '这是只读预览。Agent Loop 执行设置尚未接线，无法在此处修改。',
+            'This is a read-only preview. Agent Loop execution settings are not connected yet and cannot be changed here.'
+          )}
         </div>
         <div className="wb-mcp-clean-stats">
           <div>
-            <span>{tr('默认模式', 'Default Mode')}</span>
-            <select
-              className="ah-select"
-              value={config.mode}
-              onChange={(e) => setConfig({ ...config, mode: e.target.value as 'auto' | 'single' })}
-            >
-              <option value="auto">{tr('自动路由', 'Auto Route')}</option>
-              <option value="single">{tr('单Agent', 'Single Agent')}</option>
-            </select>
+            <span id={`${loopConfigLabelPrefix}-mode`}>{tr('默认模式', 'Default Mode')}</span>
+            <output aria-labelledby={`${loopConfigLabelPrefix}-mode`}>
+              <strong>{config.mode === 'auto' ? tr('自动路由', 'Auto Route') : tr('单Agent', 'Single Agent')}</strong>
+            </output>
           </div>
           <div>
-            <span>{tr('最大步数', 'Max Steps')}</span>
-            <input
-              type="number"
-              className="ah-input"
-              value={config.maxSteps}
-              onChange={(e) => setConfig({ ...config, maxSteps: parseInt(e.target.value) || 10 })}
-              min={1}
-              max={50}
-            />
+            <span id={`${loopConfigLabelPrefix}-max-steps`}>{tr('最大步数', 'Max Steps')}</span>
+            <output aria-labelledby={`${loopConfigLabelPrefix}-max-steps`}><strong>{config.maxSteps}</strong></output>
           </div>
           <div>
-            <span>{tr('超时(ms)', 'Timeout(ms)')}</span>
-            <input
-              type="number"
-              className="ah-input"
-              value={config.timeoutMs}
-              onChange={(e) => setConfig({ ...config, timeoutMs: parseInt(e.target.value) || 120000 })}
-              min={10000}
-              max={600000}
-            />
+            <span id={`${loopConfigLabelPrefix}-timeout`}>{tr('超时(ms)', 'Timeout(ms)')}</span>
+            <output aria-labelledby={`${loopConfigLabelPrefix}-timeout`}><strong>{config.timeoutMs} ms</strong></output>
           </div>
           <div>
-            <span>{tr('启用委托', 'Delegation')}</span>
-            <Switch
-              on={config.enableDelegation}
-              onChange={(v) => setConfig({ ...config, enableDelegation: v })}
-            />
+            <span id={`${loopConfigLabelPrefix}-delegation`}>{tr('启用委托', 'Delegation')}</span>
+            <output aria-labelledby={`${loopConfigLabelPrefix}-delegation`}>
+              <strong>{config.enableDelegation ? tr('已启用', 'Enabled') : tr('已禁用', 'Disabled')}</strong>
+            </output>
           </div>
         </div>
       </section>

@@ -125,16 +125,16 @@ export function gatedCandidateStepIds(steps: ScheduleStep[]): Set<string> {
     .map(step => step.id))
 }
 
-export function appendSyntheticChatRelease(input: {
+export async function appendSyntheticChatRelease(input: {
   threadId: string
   turnId: string
   step: ScheduleStep
   content: string
   fireflyHandoff: boolean
   stripGuardPreamble: (content: string) => string
-}) {
+}): Promise<boolean> {
   const content = input.fireflyHandoff ? input.stripGuardPreamble(input.content) : input.content
-  if (!content.trim()) return
+  if (!content.trim()) return runtimeStore.completeTurnWithFinalEvent(input.turnId)
   const payload = {
     content,
     providerId: "local-cli",
@@ -147,7 +147,10 @@ export function appendSyntheticChatRelease(input: {
     synthetic: true,
     usageExcluded: true
   }
-  runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:done", input.step.agentId, payload)
+  return runtimeStore.completeTurnWithFinalEvent(input.turnId, {
+    agentId: input.step.agentId,
+    payload
+  })
 }
 
 export async function runCustomScheduleTurn(input: {
@@ -164,7 +167,7 @@ export async function runCustomScheduleTurn(input: {
   preserveCurrentMessage?: boolean
   routeDecision?: RouteDecision
   recentUserMessages?: string[]
-  emitMemoryCandidates: (threadId: string, turnId: string, prompt: string, content: string) => void
+  emitMemoryCandidates: (threadId: string, turnId: string, prompt: string, content: string) => Promise<void>
 }): Promise<{ status: "completed" | "failed" | "cancelled"; error?: string }> {
   const fireflyHandoff = input.schedule.preset === "firefly-custom"
   const scheduleSteps = fireflyHandoff
@@ -188,7 +191,7 @@ export async function runCustomScheduleTurn(input: {
       if (input.isCancelled()) return { step, content: "", error: "cancelled", status: "cancelled" as const }
       if (fireflyHandoff && step.role === "router") {
         const content = JSON.stringify(input.routeDecision || {}, null, 2)
-        runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:done", step.agentId, {
+        await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "agent:done", step.agentId, {
           kind: "done",
           taskId: `synthetic-router-${input.turnId}`,
           agentId: step.agentId,
@@ -205,7 +208,7 @@ export async function runCustomScheduleTurn(input: {
         return { step, content, status: "completed" as const }
       }
       if (step.role === "executor" && blockedByGuard) {
-        runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
+        await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
           role: step.role,
           level: "high",
           status: "block",
@@ -256,7 +259,7 @@ export async function runCustomScheduleTurn(input: {
             })
             const { requestId, decision } = guardDecision
             if (decision === "approved") {
-              runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
+              await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
                 role: step.role,
                 level: verdict.level,
                 status: "warn",
@@ -269,7 +272,7 @@ export async function runCustomScheduleTurn(input: {
               deniedByGuard = decision === "timeout"
                 ? "Guard decision timed out; execution was stopped."
                 : reason
-              runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
+              await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
                 role: step.role,
                 level: verdict.level,
                 status: "block",
@@ -281,7 +284,7 @@ export async function runCustomScheduleTurn(input: {
               blockedByGuard = deniedByGuard
             }
           } else {
-            emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
+            await emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
             const guardDecision = await requestGuardApproval(guardStore, {
               threadId: input.threadId,
               turnId: input.turnId,
@@ -291,7 +294,7 @@ export async function runCustomScheduleTurn(input: {
             })
             const { decision } = guardDecision
             if (decision === "approved") {
-              runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
+              await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
                 role: step.role,
                 level: verdict.level,
                 status: "warn",
@@ -304,7 +307,7 @@ export async function runCustomScheduleTurn(input: {
             }
           }
         } else {
-          emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
+          await emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
         }
       }
       return { step, content, error, status: task.status }
@@ -316,7 +319,7 @@ export async function runCustomScheduleTurn(input: {
     const failed = results.find(result => result.status === "failed" || result.error)
     if (failed) {
       if (fireflyHandoff && isNonBlockingGuardStepFailure(failed.step, outputs)) {
-        runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", failed.step.agentId, {
+        await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", failed.step.agentId, {
           role: failed.step.role,
           level: "medium",
           status: "warn",
@@ -336,8 +339,9 @@ export async function runCustomScheduleTurn(input: {
   }
   if (blockedByGuard) return { status: "failed", error: blockedByGuard }
   const gatedFinal = finalScheduleRelease(outputs, fireflyHandoff, gatedCandidateIds)
+  let completed = false
   if (gatedFinal?.content) {
-    appendSyntheticChatRelease({
+    completed = await appendSyntheticChatRelease({
       threadId: input.threadId,
       turnId: input.turnId,
       step: gatedFinal.step,
@@ -345,9 +349,12 @@ export async function runCustomScheduleTurn(input: {
       fireflyHandoff,
       stripGuardPreamble
     })
+  } else {
+    completed = await runtimeStore.completeTurnWithFinalEvent(input.turnId)
   }
+  if (!completed) return { status: "cancelled" }
   const final = gatedFinal || [...outputs].reverse().find(item => item.step.role === "lead" || item.step.role === "synthesizer") || outputs[outputs.length - 1]
-  if (final?.content) input.emitMemoryCandidates(input.threadId, input.turnId, input.prompt, fireflyHandoff ? stripGuardPreamble(final.content) : final.content)
+  if (final?.content) await input.emitMemoryCandidates(input.threadId, input.turnId, input.prompt, fireflyHandoff ? stripGuardPreamble(final.content) : final.content)
   return { status: "completed" }
 }
 

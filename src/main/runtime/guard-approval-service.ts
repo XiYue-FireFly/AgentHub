@@ -17,7 +17,7 @@ export interface GuardDecision {
 }
 
 export interface GuardEventStore {
-  appendSystemEvent(threadId: string, turnId: string, kind: string, agentId: string, payload: Record<string, any>): void
+  appendSystemEvent(threadId: string, turnId: string, kind: string, agentId: string, payload: Record<string, any>): Promise<unknown>
 }
 
 const GUARD_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
@@ -32,13 +32,13 @@ export function evaluateGuardVerdict(reviewText: string, role: string): GuardVer
   return explicitGuardVerdictFromText(reviewText) || riskVerdictForText(reviewText, role)
 }
 
-export function emitGuardVerdict(
+export async function emitGuardVerdict(
   store: GuardEventStore,
   threadId: string, turnId: string, agentId: string, role: string, reviewText: string,
   extra: Record<string, any> = {}
-): GuardVerdict {
+): Promise<GuardVerdict> {
   const verdict = evaluateGuardVerdict(reviewText, role)
-  store.appendSystemEvent(threadId, turnId, 'guard:verdict', agentId, {
+  await store.appendSystemEvent(threadId, turnId, 'guard:verdict', agentId, {
     role,
     ...verdict,
     ...extra,
@@ -69,26 +69,34 @@ export function cancelGuardApprovalsForTurn(turnId: string): void {
   }
 }
 
-export function requestGuardApproval(
+export async function requestGuardApproval(
   store: GuardEventStore,
   input: { threadId: string; turnId: string; agentId: string; role: string; verdict: GuardVerdict }
 ): Promise<GuardDecision> {
   const requestId = `guard-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
-  store.appendSystemEvent(input.threadId, input.turnId, 'guard:verdict', input.agentId, {
-    role: input.role,
-    ...input.verdict,
-    status: 'needs-confirmation',
-    requestId,
-    requiresUserDecision: true,
-    checkedAt: Date.now()
-  })
-  return new Promise(resolve => {
+  const decision = new Promise<GuardDecision>(resolve => {
     const timer = setTimeout(() => {
       if (!pendingGuardApprovals.delete(requestId)) return
       resolve({ requestId, decision: 'timeout' })
     }, GUARD_APPROVAL_TIMEOUT_MS)
     pendingGuardApprovals.set(requestId, { turnId: input.turnId, resolve, timer })
   })
+  try {
+    await store.appendSystemEvent(input.threadId, input.turnId, 'guard:verdict', input.agentId, {
+      role: input.role,
+      ...input.verdict,
+      status: 'needs-confirmation',
+      requestId,
+      requiresUserDecision: true,
+      checkedAt: Date.now()
+    })
+  } catch (error) {
+    const pending = pendingGuardApprovals.get(requestId)
+    if (pending) clearTimeout(pending.timer)
+    pendingGuardApprovals.delete(requestId)
+    throw error
+  }
+  return decision
 }
 
 /** Clear all pending guard approvals (for shutdown). */

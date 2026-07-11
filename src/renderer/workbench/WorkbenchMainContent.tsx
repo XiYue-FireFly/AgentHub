@@ -8,7 +8,7 @@ import { SddRequirementsList } from '../sdd/components/SddRequirementsList'
 import { WorkbenchChatTopBar } from './WorkbenchChatTopBar'
 import { WriteWorkspace } from './WriteWorkspace'
 import { ThreadView } from './ThreadView'
-import { ComposerBar } from './ComposerBar'
+import { ComposerBar, type ComposerSendOverrides, type ComposerSendResult } from './ComposerBar'
 import { GitBranchControl } from './GitBranchControl'
 import type { ViewMode } from './viewModes'
 import type { WorkbenchRightPanel, WorkbenchSettingsTabKey } from './NativeTitlebar'
@@ -43,7 +43,8 @@ interface WorkbenchMainContentProps {
   localAgents: LocalAgentStatus[]
   onLocalAgentsChanged: (agents: LocalAgentStatus[]) => void
   sending: boolean
-  sendPrompt: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: { targetAgent?: string | null; mode?: DispatchPreset; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }) => Promise<any>
+  sendPrompt: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: ComposerSendOverrides) => Promise<any>
+  sendComposerPrompt: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: ComposerSendOverrides) => Promise<ComposerSendResult>
   cancelLatest: () => Promise<void>
   openCreateProject: () => void
   openSetup: (tab?: SettingsTabKey) => void
@@ -125,6 +126,7 @@ export function WorkbenchMainContent({
   onLocalAgentsChanged,
   sending,
   sendPrompt,
+  sendComposerPrompt,
   cancelLatest,
   openCreateProject,
   openSetup,
@@ -166,6 +168,38 @@ export function WorkbenchMainContent({
   pendingComposerAttachments,
   onExternalAttachmentsConsumed
 }: WorkbenchMainContentProps) {
+  const composerProps: React.ComponentProps<typeof ComposerBar> = {
+    mode,
+    setMode,
+    providers,
+    bindings,
+    modelSelection,
+    setModelSelection,
+    thinking,
+    setThinking,
+    schedules,
+    scheduleForMode,
+    sending,
+    onSend: sendComposerPrompt,
+    onCancel: cancelLatest,
+    workspaceId,
+    workspaces,
+    setWorkspaceId: selectWorkspace,
+    onCreateProject: openCreateProject,
+    localAgents,
+    targetAgent,
+    setTargetAgent: selectTargetAgent,
+    agents,
+    onRunCommand: runSlashCommand,
+    onOpenProviderSettings: () => openSetup('providers'),
+    onRefreshProviders: providerActions.onReload,
+    externalAttachments: pendingComposerAttachments,
+    onExternalAttachmentsConsumed,
+    gitBranchNode: <GitBranchControl workspaceId={workspaceId} onOpenGit={() => setRightPanel('git')} compact />,
+    threadId: activeThreadId,
+    turns: activeTurns,
+    events: activeEvents
+  }
   return (
     <main className="wb-main">
       {configLoadError && (
@@ -255,41 +289,11 @@ export function WorkbenchMainContent({
 
           {sendError && <div className="wb-send-error">{sendError}</div>}
 
-          <ComposerBar
-            mode={mode}
-            setMode={setMode}
-            providers={providers}
-            bindings={bindings}
-            modelSelection={modelSelection}
-            setModelSelection={setModelSelection}
-            thinking={thinking}
-            setThinking={setThinking}
-            schedules={schedules}
-            scheduleForMode={scheduleForMode}
-            sending={sending}
-            onSend={sendPrompt}
-            onCancel={cancelLatest}
-            workspaceId={workspaceId}
-            workspaces={workspaces}
-            setWorkspaceId={selectWorkspace}
-            onCreateProject={openCreateProject}
-            localAgents={localAgents}
-            targetAgent={targetAgent}
-            setTargetAgent={selectTargetAgent}
-            agents={agents}
-            onRunCommand={runSlashCommand}
-            onOpenProviderSettings={() => openSetup('providers')}
-            onRefreshProviders={providerActions.onReload}
-            externalAttachments={pendingComposerAttachments}
-            onExternalAttachmentsConsumed={onExternalAttachmentsConsumed}
-            gitBranchNode={<GitBranchControl workspaceId={workspaceId} onOpenGit={() => setRightPanel('git')} compact />}
-            threadId={activeThread?.id ?? null}
-            turns={activeTurns}
-            events={activeEvents}
-          />
         </>
         </ErrorBoundary>
       )}
+
+      <PersistentComposer active={view === 'chat'} composerProps={composerProps} />
 
       {view === 'tasks' && (
         <ErrorBoundary label="Tasks">
@@ -366,5 +370,21 @@ export function WorkbenchMainContent({
         </ErrorBoundary>
       )}
     </main>
+  )
+}
+
+export function PersistentComposer({
+  active,
+  composerProps
+}: {
+  active: boolean
+  composerProps: React.ComponentProps<typeof ComposerBar>
+}) {
+  return (
+    <div hidden={!active} style={active ? { display: 'contents' } : undefined}>
+      <ErrorBoundary label="Composer">
+        <ComposerBar {...composerProps} />
+      </ErrorBoundary>
+    </div>
   )
 }

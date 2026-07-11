@@ -26,6 +26,41 @@ describe('ApprovalConfig', () => {
     expect(cfg.getConfig().overrides).toEqual({})
   })
 
+  it.each([
+    ['deny', 'deny', 'read-only'],
+    ['ask', 'ask', 'ask-all'],
+    ['allow', 'allow', 'full-access'],
+    ['allow', 'ask', 'custom'],
+    ['allow', 'deny', 'custom'],
+    ['ask', 'allow', 'custom'],
+    ['ask', 'deny', 'custom'],
+    ['deny', 'allow', 'custom'],
+    ['deny', 'ask', 'custom']
+  ] as const)('migrates legacy %s/%s defaults to the %s preset', async (write, exec, expectedPreset) => {
+    store['agentic.approval.v1'] = { version: 1, default: { write, exec }, overrides: {} }
+    const { getApprovalConfig } = await import('../approval')
+
+    expect(getApprovalConfig().getConfig().preset).toBe(expectedPreset)
+    expect(store['agentic.approval.v1']).toMatchObject({
+      version: 1,
+      preset: expectedPreset,
+      default: { write, exec },
+      overrides: {}
+    })
+  })
+
+  it('migrates any legacy config with meaningful overrides to custom', async () => {
+    store['agentic.approval.v1'] = {
+      version: 1,
+      default: { write: 'deny', exec: 'deny' },
+      overrides: { claude: { write: 'allow' } }
+    }
+    const { getApprovalConfig } = await import('../approval')
+
+    expect(getApprovalConfig().getConfig().preset).toBe('custom')
+    expect(store['agentic.approval.v1'].preset).toBe('custom')
+  })
+
   it('setDefault 改全局默认（不影响另一工具）', async () => {
     const { getApprovalConfig } = await import('../approval')
     const cfg = getApprovalConfig()

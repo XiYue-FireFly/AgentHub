@@ -116,6 +116,35 @@ describe('main store local token', () => {
     expect(fsMock.promises.rename).not.toHaveBeenCalled()
   })
 
+  it('observes a rejected token flush and keeps the shared persist chain reusable', async () => {
+    const renameError = new Error('token rename failed')
+    fsMock.promises.rename.mockRejectedValueOnce(renameError)
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+
+    try {
+      const { getLocalToken, store } = await import('../store')
+      const token = getLocalToken()
+      await new Promise<void>(resolve => setImmediate(resolve))
+
+      store.set('after.token.flush.failure', 'recovered')
+      await store.flush()
+
+      const configPath = join(electronMock.userData, 'config.json')
+      expect(JSON.parse(fsMock.files.get(configPath) || '{}')).toMatchObject({
+        'local.token': token,
+        'after.token.flush.failure': 'recovered'
+      })
+      expect(unhandled).toEqual([])
+      expect(loggerMock.error.mock.calls.filter(call => (
+        String(call[0]).includes('Persist failed') && call[1] === renameError.message
+      ))).toHaveLength(1)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
   it('serializes concurrent set/flush so last write wins without interleave', async () => {
     let releaseWrite: (() => void) | undefined
     const gate = new Promise<void>(resolve => { releaseWrite = resolve })
@@ -148,6 +177,24 @@ describe('main store local token', () => {
     expect(saved['agenthub.test.b']).toBe(2)
   })
 
+  it('rejects an explicit flush failure and recovers the shared persist tail', async () => {
+    const flushError = new Error('flush rename failed')
+    fsMock.promises.rename.mockRejectedValueOnce(flushError)
+    const { store } = await import('../store')
+    store.set('legacy.flush', 'first')
+
+    await expect(store.flush()).rejects.toBe(flushError)
+    expect(loggerMock.error).toHaveBeenCalledWith(
+      expect.stringContaining('Persist failed'),
+      'flush rename failed'
+    )
+
+    store.set('legacy.flush', 'recovered')
+    await expect(store.flush()).resolves.toBeUndefined()
+    const configPath = join(electronMock.userData, 'config.json')
+    expect(JSON.parse(fsMock.files.get(configPath) || '{}')['legacy.flush']).toBe('recovered')
+  })
+
   it('rejects a failed atomic commit without publishing it and recovers on later persistence', async () => {
     const configPath = join(electronMock.userData, 'config.json')
     fsMock.files.set(configPath, JSON.stringify({ 'atomic.value': 'old' }))
@@ -169,6 +216,30 @@ describe('main store local token', () => {
       'atomic.value': 'committed',
       'legacy.flush': 'recovered'
     })
+  })
+
+  it('returns the exact JSON-canonical value stored in memory and on disk', async () => {
+    const configPath = join(electronMock.userData, 'config.json')
+    const { store } = await import('../store')
+    const input = {
+      nan: Number.NaN,
+      omitted: undefined,
+      date: new Date('2030-01-02T03:04:05.000Z')
+    }
+
+    const canonical = await store.commit('atomic.canonical', input)
+    const expected = {
+      nan: null,
+      date: '2030-01-02T03:04:05.000Z'
+    }
+
+    expect(canonical).toEqual(expected)
+    expect(store.get('atomic.canonical')).toEqual(expected)
+    expect(JSON.parse(fsMock.files.get(configPath) || '{}')['atomic.canonical']).toEqual(expected)
+
+    vi.resetModules()
+    const { store: reloadedStore } = await import('../store')
+    expect(reloadedStore.get('atomic.canonical')).toEqual(expected)
   })
 
   it('automatically persists pending legacy data after a commit rename fails', async () => {

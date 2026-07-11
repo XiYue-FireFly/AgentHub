@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
-import { gitCommit, gitCurrentBranch, runGit } from "../git"
+import { gitCommit, gitCreateBranch, gitCurrentBranch, runGit } from "../git"
 import { getWorkspaceManager } from "../../hub/workspace"
 
 function createRepo(): string {
@@ -35,6 +35,23 @@ describe("git runtime public helpers", () => {
     const { stdout } = await runGit(root, ["status", "--porcelain=v1", "-z"])
 
     expect(stdout).toContain(fileName)
+  }, 15000)
+
+  it.each(["\u0000", "\u001f"])("rejects branch names containing ASCII control character %#", async controlCharacter => {
+    const root = createRepo()
+    const manager = getWorkspaceManager()
+    const getById = vi.spyOn(manager, "getById").mockReturnValue({
+      id: "git-control-test",
+      name: "git-control-test",
+      rootPath: root,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    })
+    try {
+      await expect(gitCreateBranch("git-control-test", `invalid${controlCharacter}branch`, false)).rejects.toThrow()
+    } finally {
+      getById.mockRestore()
+    }
   }, 15000)
 
   it("does not commit unselected staged files", async () => {

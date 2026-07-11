@@ -47,20 +47,58 @@ const STORAGE_KEY_PREFIX = 'sdd-history-'
 // ============================================================
 
 const historyCache = new Map<string, DraftHistoryEntry[]>()
-const diskHydrateInFlight = new Set<string>()
+const diskHydrateInFlight = new Map<string, number>()
+const latestHydrationSequence = new Map<string, number>()
+const authoritativeHistoryKeys = new Set<string>()
+const historyMutationQueues = new Map<string, Promise<void>>()
+let hydrationSequence = 0
+
+function isWindowsHistoryIdentity(normalizedRoot: string): boolean {
+  const platform = window.electronAPI?.platform
+  if (platform) return platform === 'win32'
+  return /^[a-zA-Z]:\//.test(normalizedRoot) || normalizedRoot.startsWith('//')
+}
 
 function normalizeHistoryRoot(workspaceRoot?: string): string {
-  return (workspaceRoot || '').trim().replaceAll('\\', '/').replace(/\/+$/, '')
+  const normalized = (workspaceRoot || '').trim().replaceAll('\\', '/').replace(/\/+$/, '')
+  return isWindowsHistoryIdentity(normalized) ? normalized.toLowerCase() : normalized
 }
 
 function historyKey(draftId: string, workspaceRoot?: string): string {
   const normalizedRoot = normalizeHistoryRoot(workspaceRoot)
-  if (!normalizedRoot) return `${STORAGE_KEY_PREFIX}${draftId}`
-  return `${STORAGE_KEY_PREFIX}${encodeURIComponent(normalizedRoot)}::${draftId}`
+  const normalizedDraftId = isWindowsHistoryIdentity(normalizedRoot) ? draftId.toLowerCase() : draftId
+  if (!normalizedRoot) return `${STORAGE_KEY_PREFIX}${normalizedDraftId}`
+  return `${STORAGE_KEY_PREFIX}${encodeURIComponent(normalizedRoot)}::${normalizedDraftId}`
+}
+
+function advanceHydrationSequence(key: string): number {
+  const sequence = ++hydrationSequence
+  latestHydrationSequence.set(key, sequence)
+  return sequence
+}
+
+function isLatestHydration(key: string, sequence: number): boolean {
+  return latestHydrationSequence.get(key) === sequence
 }
 
 function cloneHistory(history: DraftHistoryEntry[]): DraftHistoryEntry[] {
   return history.map(entry => ({ ...entry }))
+}
+
+function currentHistorySnapshot(key: string): DraftHistoryEntry[] {
+  const cached = historyCache.get(key)
+  return cached ? cloneHistory(cached) : []
+}
+
+function enqueueHistoryMutation<T>(key: string, mutation: () => Promise<T>): Promise<T> {
+  const previous = historyMutationQueues.get(key) ?? Promise.resolve()
+  const result = previous.then(mutation)
+  const tail = result.then(() => undefined, () => undefined)
+  historyMutationQueues.set(key, tail)
+  void tail.then(() => {
+    if (historyMutationQueues.get(key) === tail) historyMutationQueues.delete(key)
+  })
+  return result
 }
 
 function normalizeHistoryEntries(entries: DraftHistoryEntry[]): DraftHistoryEntry[] {
@@ -78,37 +116,71 @@ function normalizeHistoryEntries(entries: DraftHistoryEntry[]): DraftHistoryEntr
     }))
 }
 
+async function getAuthoritativeHistory(draftId: string, workspaceRoot: string | undefined, key: string): Promise<DraftHistoryEntry[]> {
+  if (authoritativeHistoryKeys.has(key)) return currentHistorySnapshot(key)
+  if (!workspaceRoot) return currentHistorySnapshot(key)
+  const sddApi = window.electronAPI?.sdd as Partial<typeof window.electronAPI.sdd> | undefined
+  if (!sddApi?.getHistory) {
+    if (sddApi?.saveHistory) {
+      throw new Error('Cannot save history without an authoritative history baseline')
+    }
+    return currentHistorySnapshot(key)
+  }
+
+  while (true) {
+    const sequence = advanceHydrationSequence(key)
+    const entries = await sddApi.getHistory(workspaceRoot, draftId)
+    if (isLatestHydration(key, sequence)) return normalizeHistoryEntries(entries)
+    if (authoritativeHistoryKeys.has(key)) return currentHistorySnapshot(key)
+  }
+}
+
 function setCachedHistory(draftId: string, workspaceRoot: string | undefined, entries: DraftHistoryEntry[]): DraftHistoryEntry[] {
   const key = historyKey(draftId, workspaceRoot)
   const normalized = normalizeHistoryEntries(entries)
   historyCache.set(key, normalized)
+  authoritativeHistoryKeys.add(key)
   saveToLocalStorage(key, normalized)
   return normalized
 }
 
-function saveToDisk(workspaceRoot: string | undefined, draftId: string, history: DraftHistoryEntry[]): void {
+async function saveToDisk(workspaceRoot: string | undefined, draftId: string, history: DraftHistoryEntry[]): Promise<void> {
   if (!workspaceRoot || !window.electronAPI?.sdd?.saveHistory) return
-  window.electronAPI.sdd.saveHistory(workspaceRoot, draftId, normalizeHistoryEntries(history)).catch(() => {})
+  await window.electronAPI.sdd.saveHistory(workspaceRoot, draftId, normalizeHistoryEntries(history))
 }
 
 function hydrateFromDiskIfNeeded(draftId: string, workspaceRoot?: string): void {
   if (!workspaceRoot || !window.electronAPI?.sdd?.getHistory) return
   const key = historyKey(draftId, workspaceRoot)
-  if (diskHydrateInFlight.has(key)) return
-  diskHydrateInFlight.add(key)
-  window.electronAPI.sdd.getHistory(workspaceRoot, draftId)
+  const inFlightSequence = diskHydrateInFlight.get(key)
+  if (inFlightSequence !== undefined && isLatestHydration(key, inFlightSequence)) return
+  const sequence = advanceHydrationSequence(key)
+  diskHydrateInFlight.set(key, sequence)
+  let request: Promise<DraftHistoryEntry[]>
+  try {
+    request = window.electronAPI.sdd.getHistory(workspaceRoot, draftId)
+  } catch {
+    if (diskHydrateInFlight.get(key) === sequence) diskHydrateInFlight.delete(key)
+    return
+  }
+  request
     .then(entries => {
-      if (Array.isArray(entries) && entries.length > 0) {
+      if (isLatestHydration(key, sequence) && Array.isArray(entries)) {
         setCachedHistory(draftId, workspaceRoot, entries)
       }
     })
     .catch(() => {})
-    .finally(() => diskHydrateInFlight.delete(key))
+    .finally(() => {
+      if (diskHydrateInFlight.get(key) === sequence) diskHydrateInFlight.delete(key)
+    })
 }
 
 export async function hydrateDraftHistoryFromDisk(draftId: string, workspaceRoot?: string): Promise<DraftHistoryEntry[]> {
   if (!workspaceRoot || !window.electronAPI?.sdd?.getHistory) return getDraftHistory(draftId, workspaceRoot)
+  const key = historyKey(draftId, workspaceRoot)
+  const sequence = advanceHydrationSequence(key)
   const entries = await window.electronAPI.sdd.getHistory(workspaceRoot, draftId)
+  if (!isLatestHydration(key, sequence)) return currentHistorySnapshot(key)
   return cloneHistory(setCachedHistory(draftId, workspaceRoot, entries))
 }
 
@@ -149,34 +221,26 @@ export function addHistoryEntry(
   message: string = '自动保存',
   author: 'user' | 'system' | 'ai' = 'system',
   workspaceRoot?: string
-): DraftHistoryEntry {
+): Promise<DraftHistoryEntry> {
   const key = historyKey(draftId, workspaceRoot)
-  const history = getDraftHistory(draftId, workspaceRoot)
-  const version = history.length > 0 ? history[history.length - 1].version + 1 : 1
+  return enqueueHistoryMutation(key, async () => {
+    const history = await getAuthoritativeHistory(draftId, workspaceRoot, key)
+    const version = history.reduce((max, existing) => Math.max(max, existing.version), 0) + 1
+    const entry: DraftHistoryEntry = {
+      version,
+      timestamp: new Date().toISOString(),
+      content,
+      title,
+      message,
+      author
+    }
+    const nextHistory = normalizeHistoryEntries([...history, entry])
 
-  const entry: DraftHistoryEntry = {
-    version,
-    timestamp: new Date().toISOString(),
-    content,
-    title,
-    message,
-    author
-  }
-
-  // 添加新条目
-  const nextHistory = [...history, entry]
-
-  // 限制历史记录数量
-  while (nextHistory.length > MAX_HISTORY_VERSIONS) {
-    nextHistory.shift()
-  }
-
-  // 保存到缓存和 localStorage
-  historyCache.set(key, nextHistory)
-  saveToLocalStorage(key, nextHistory)
-  saveToDisk(workspaceRoot, draftId, nextHistory)
-
-  return entry
+    await saveToDisk(workspaceRoot, draftId, nextHistory)
+    advanceHydrationSequence(key)
+    setCachedHistory(draftId, workspaceRoot, nextHistory)
+    return entry
+  })
 }
 
 /**
@@ -190,7 +254,7 @@ export function getHistoryEntry(draftId: string, version: number, workspaceRoot?
 /**
  * 恢复到指定版本
  */
-export function restoreFromHistory(draftId: string, version: number, workspaceRoot?: string): boolean {
+export async function restoreFromHistory(draftId: string, version: number, workspaceRoot?: string): Promise<boolean> {
   const entry = getHistoryEntry(draftId, version, workspaceRoot)
   if (!entry) return false
 
@@ -198,6 +262,13 @@ export function restoreFromHistory(draftId: string, version: number, workspaceRo
   const draft = store.activeDraft
   if (!draft || draft.id !== draftId) return false
   if (workspaceRoot && draft.workspaceRoot !== workspaceRoot) return false
+  const source = {
+    draftId: draft.id,
+    workspaceRoot: draft.workspaceRoot,
+    draftSession: store.draftSession,
+    editRevision: store.editRevision,
+    content: store.content
+  }
 
   // 检查内容是否被截断
   if (entry.truncated) {
@@ -205,10 +276,19 @@ export function restoreFromHistory(draftId: string, version: number, workspaceRo
   }
 
   // 保存当前版本到历史（恢复前快照）
-  addHistoryEntry(draftId, store.content, draft.title, `恢复前快照 (v${version})`, 'system', draft.workspaceRoot)
+  await addHistoryEntry(draftId, source.content, draft.title, `恢复前快照 (v${version})`, 'system', source.workspaceRoot)
+
+  const current = useSddDraftStore.getState()
+  if (
+    current.activeDraft?.id !== source.draftId ||
+    current.activeDraft.workspaceRoot !== source.workspaceRoot ||
+    current.draftSession !== source.draftSession ||
+    current.editRevision !== source.editRevision ||
+    current.content !== source.content
+  ) return false
 
   // 恢复内容
-  store.setContent(entry.content)
+  current.setContent(entry.content)
 
   return true
 }
@@ -247,15 +327,19 @@ export function diffHistoryVersions(
 /**
  * 清除草稿的历史记录
  */
-export function clearDraftHistory(draftId: string, workspaceRoot?: string): void {
+export function clearDraftHistory(draftId: string, workspaceRoot?: string): Promise<void> {
   const key = historyKey(draftId, workspaceRoot)
-  historyCache.delete(key)
-  try {
-    localStorage.removeItem(key)
-  } catch { /* localStorage 清除失败，忽略 */ }
-  if (workspaceRoot && window.electronAPI?.sdd?.clearHistory) {
-    window.electronAPI.sdd.clearHistory(workspaceRoot, draftId).catch(() => {})
-  }
+  return enqueueHistoryMutation(key, async () => {
+    if (workspaceRoot && window.electronAPI?.sdd?.clearHistory) {
+      await window.electronAPI.sdd.clearHistory(workspaceRoot, draftId)
+    }
+    advanceHydrationSequence(key)
+    historyCache.set(key, [])
+    authoritativeHistoryKeys.add(key)
+    try {
+      localStorage.removeItem(key)
+    } catch { /* localStorage 清除失败，忽略 */ }
+  })
 }
 
 /**
@@ -294,13 +378,13 @@ function saveToLocalStorage(key: string, history: DraftHistoryEntry[]): void {
 /**
  * 在保存草稿时自动记录历史
  */
-export function recordSaveHistory(draft: SddDraft, content: string): void {
-  addHistoryEntry(draft.id, content, draft.title, '手动保存', 'user', draft.workspaceRoot)
+export async function recordSaveHistory(draft: SddDraft, content: string): Promise<void> {
+  await addHistoryEntry(draft.id, content, draft.title, '手动保存', 'user', draft.workspaceRoot)
 }
 
 /**
  * 在 AI 修改后记录历史
  */
-export function recordAiHistory(draft: SddDraft, content: string, message: string): void {
-  addHistoryEntry(draft.id, content, draft.title, `AI: ${message}`, 'ai', draft.workspaceRoot)
+export async function recordAiHistory(draft: SddDraft, content: string, message: string): Promise<void> {
+  await addHistoryEntry(draft.id, content, draft.title, `AI: ${message}`, 'ai', draft.workspaceRoot)
 }

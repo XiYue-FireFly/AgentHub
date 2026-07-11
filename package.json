@@ -1,6 +1,6 @@
 {
   "name": "agenthub",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "AgentHub - 多 Agent 协同桌面工作台",
   "main": "out/main/index.js",
   "author": {
@@ -53,23 +53,23 @@
     "@types/ws": "^8.5.12",
     "@vitejs/plugin-react": "^4.3.1",
     "@vitest/coverage-v8": "^4.1.7",
-    "electron": "^33.4.11",
-    "electron-builder": "^25.0.0",
-    "electron-vite": "^2.3.0",
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
     "eslint": "^9.17.0",
     "globals": "^15.14.0",
-    "happy-dom": "^18.0.1",
+    "happy-dom": "^20.10.6",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.6.2",
     "typescript-eslint": "^8.18.0",
-    "vite": "^5.4.8",
+    "vite": "^7.3.6",
     "vitest": "^4.1.7"
   },
   "build": {
     "appId": "dev.agenthub.desktop",
     "productName": "AgentHub",
     "copyright": "Copyright (c) 2026 AgentHubTeam",
-    "buildVersion": "2.0.0",
+    "buildVersion": "2.0.1",
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
     "files": [
@@ -142,7 +142,6 @@
         }
       ],
       "icon": "build/icon.ico",
-      "publisherName": "AgentHubTeam",
       "verifyUpdateCodeSignature": false,
       "signAndEditExecutable": false,
       "requestedExecutionLevel": "asInvoker",
@@ -222,15 +221,10 @@
       "vendor": "AgentHubTeam",
       "maintainer": "AgentHubTeam <team@agenthub.dev>",
       "description": "AgentHub - 多 Agent 协同桌面工作台",
-      "desktop": {
-        "entry": {
-          "Name": "AgentHub",
-          "Comment": "多 Agent 协同桌面工作台",
-          "Categories": "Development;Utility;"
-        },
-        "MimeType": "x-scheme-handler/agenthub;"
-      },
-      "artifactName": "${productName}-${version}.${ext}"
+      "artifactName": "${productName}-${version}.${ext}",
+      "mimeTypes": [
+        "x-scheme-handler/agenthub"
+      ]
     },
     "publish": [
       {

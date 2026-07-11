@@ -80,4 +80,24 @@ describe("missing IPC agentic handlers", () => {
     expect(handler).toBeTruthy()
     await expect(handler?.({}, "approval-2", false)).resolves.toBe(false)
   })
+
+  it("returns the live dispatcher's exact pending approval ids", async () => {
+    const dispatcher = { getPendingApprovalIds: vi.fn(() => ["approval-1", "approval-2"]) }
+    const { registerMissingIpc } = await import("../missing-ipc")
+    registerMissingIpc(deps(dispatcher))
+
+    const handler = electronMock.handlers.get("agentic:getPendingApprovalIds")
+    expect(handler).toBeTruthy()
+    await expect(handler?.({})).resolves.toEqual(["approval-1", "approval-2"])
+    expect(dispatcher.getPendingApprovalIds).toHaveBeenCalledOnce()
+  })
+
+  it("returns no active approval ids when there is no live dispatcher", async () => {
+    const { registerMissingIpc } = await import("../missing-ipc")
+    registerMissingIpc(deps(null))
+
+    const handler = electronMock.handlers.get("agentic:getPendingApprovalIds")
+    expect(handler).toBeTruthy()
+    await expect(handler?.({})).resolves.toEqual([])
+  })
 })

@@ -3,7 +3,7 @@ import { AgentRegistry } from "./registry"
 import { EventPipeline } from "./pipeline"
 import { KeywordRouter } from "./router"
 import { getProviderManager, isProviderRuntimeUsable } from "../providers/manager"
-import { buildProviderClient } from "../providers/client"
+import { buildProviderClient, type CallOptions, type StreamCallbacks } from "../providers/client"
 import { appendAppEventLog } from "../runtime/app-event-log"
 import { agentSystemPrompt } from "./agents"
 import { buildAgentRuntimeSystemPrompt, buildAgentTaskPrompt, RuntimeMemoryEntry } from "./agent-runtime"
@@ -16,6 +16,7 @@ import type {
 } from "../runtime/types"
 import { getWorkspaceManager } from "./workspace"
 import { homedir } from "node:os"
+import { randomUUID } from "node:crypto"
 import { acpMcpServersForWorkspace } from "../runtime/mcp"
 // --- AgentHub skills + native agentic (Claude-B 新增) ---
 import { getSkillManager } from "../skills/manager"
@@ -39,8 +40,28 @@ const STDIO_THINKING_DIRECTIVE =
 
 /** 'ask' 审批等待上限：超时自动拒绝，避免回环永久挂起（用户也可取消任务）。 */
 const APPROVAL_TIMEOUT_MS = 2 * 60 * 1000
+const ORCHESTRATE_EXECUTION_CONCURRENCY = 3
 
 const AGENT_CANCELLED = Symbol("agent-cancelled")
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return []
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, limit), items.length)
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++
+      if (index >= items.length) return
+      results[index] = await worker(items[index], index)
+    }
+  }))
+  return results
+}
 
 /** 宽松判断 thinking 是否开启（兼容 {enabled} / {level} 等形态）。 */
 function thinkingRequested(th: any): boolean {
@@ -163,6 +184,22 @@ export function providerDirectAgentId(providerId: string): string {
   return `provider:${providerId}`
 }
 
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function acpPermissionArgs(req: any): Record<string, unknown> {
+  return recordOrNull(req?.args)
+    || recordOrNull(req?.raw?.toolCall?.rawInput)
+    || recordOrNull(req?.raw?.toolCall?.input)
+    || recordOrNull(req?.raw?.tool_call?.rawInput)
+    || recordOrNull(req?.raw?.tool_call?.input)
+    || recordOrNull(req?.raw?.rawInput)
+    || recordOrNull(req?.raw?.input)
+    || recordOrNull(req?.raw)
+    || {}
+}
+
 export interface DispatchTask {
   id: string
   text: string
@@ -176,6 +213,8 @@ export interface DispatchTask {
   thinkingSummary: Map<string, { enabled: boolean; level?: string; budget?: number; preview?: string }>
   error?: string
   createdAt: Date
+  /** Internal Workbench Turn identity used for cancellation admission. */
+  __turnId?: string
 }
 
 export interface DispatchOptions {
@@ -198,6 +237,20 @@ export interface DispatchOptions {
   preserveCurrentMessage?: boolean
 }
 
+export interface ApprovalStreamRequest {
+  id: string
+  stepId: string
+  tool: GuardedTool
+  toolName: string
+  label?: string
+  detail?: string
+  action?: 'write_file' | 'run_command'
+  target?: string
+  risk?: string
+  reason?: string
+  preview?: string
+}
+
 export type StreamEvent =
   | { kind: "start"; taskId: string; agentId: string; providerId: string; modelId: string; mode: "content" | "thinking"; routeReason?: string }
   | { kind: "delta"; taskId: string; agentId: string; providerId: string; modelId: string; channel: "content" | "thinking"; text: string }
@@ -206,12 +259,7 @@ export type StreamEvent =
   // agentic 活动步骤（stdio stream-json / 未来 HTTP act-observe 解析所得）；UI 按 step.id upsert
   | { kind: "activity"; taskId: string; agentId: string; step: { id: string; kind?: string; tool?: string; label?: string; detail?: string; output?: string; status: string } }
   // 写/执行审批请求（'ask' 策略命中时发出）；渲染层弹窗 → agentic:resolveApproval 回传决策
-  | { kind: "approval"; taskId: string; agentId: string; request: {
-      id: string; tool: GuardedTool; toolName: string;
-      label?: string; detail?: string;
-      action?: 'write_file' | 'run_command'; target?: string;
-      risk?: string; reason?: string; preview?: string
-    } }
+  | { kind: "approval"; taskId: string; agentId: string; status?: "pending" | "approved" | "denied"; request: ApprovalStreamRequest }
   // 编排模式（Orchestrator）
   | { kind: "orchestrate:plan"; taskId: string; leadAgentId?: string; subtasks: Array<{ id: string; title: string; detail?: string; agentId?: string }> }
   | { kind: "orchestrate:subtask"; taskId: string; subtaskId: string; agentId?: string; status: "pending" | "running" | "done" | "error"; content?: string }
@@ -220,15 +268,40 @@ export type StreamEvent =
   | { kind: "orchestrate:final"; taskId: string; content: string }
   | { kind: "orchestrate:error"; taskId: string; error: string }
 
+interface PendingApproval {
+  resolve: (value: boolean) => void
+  timer: ReturnType<typeof setTimeout>
+  taskId: string
+  agentId: string
+  request: ApprovalStreamRequest
+}
+
 export class Dispatcher extends EventEmitter {
   private tasks: Map<string, DispatchTask> = new Map()
+  private inFlightTaskIds = new Set<string>()
+  private stableTaskIds = new WeakMap<DispatchTask, string>()
+  private finishedTasks = new WeakSet<DispatchTask>()
+  private cancelledTerminalTaskIds = new Set<string>()
+  private taskObserverErrors = new Map<string, unknown>()
   private taskCounter = 0
-  /** 'ask' 审批待决池：requestId → {resolve,timer}。requestId 以 `appr-<taskId>-` 前缀便于按任务清理。 */
-  private pendingApprovals: Map<string, { resolve: (v: boolean) => void; timer: ReturnType<typeof setTimeout> }> = new Map()
+  /** 'ask' 审批待决池。保留原始 stream request，确保所有终结路径都能写入 resolution event。 */
+  private pendingApprovals: Map<string, PendingApproval> = new Map()
   private approvalSeq = 0
-  private activeAgentStops = new Map<string, () => void>()
+  private readonly approvalSessionNonce = randomUUID()
+  private activeAgentStops = new Map<string, Set<() => void>>()
+  private cancelledAgents = new WeakMap<DispatchTask, Set<string>>()
+  private cancelledAgentTerminals = new WeakMap<DispatchTask, Set<string>>()
+  private cancelledOrchestrateSubtaskTerminals = new WeakMap<DispatchTask, Set<string>>()
+  private cancelledTurnIds = new Set<string>()
+  private cancelledAgentsByTurn = new Map<string, Set<string>>()
   private streamMetaByTask = new Map<string, Record<string, any>>()
   private busyCount = new Map<string, number>()
+  private localAgentQueues = new Map<string, Promise<void>>()
+  private pendingTaskRemovals = new Map<string, "delete" | "clear" | "prune">()
+  private shutdownState: "open" | "closing" | "closed" = "open"
+  private shutdownDrainPromise: Promise<void> | null = null
+  private dispatchOperations = new Set<Promise<void>>()
+  private sourceOperations = new Set<Promise<unknown>>()
 
   constructor(
     private registry: AgentRegistry,
@@ -253,14 +326,57 @@ export class Dispatcher extends EventEmitter {
 
   emit(event: string | symbol, ...args: any[]): boolean {
     if (event === "stream" && args[0]?.taskId) {
+      const isShutdownTerminal = args[0]?.kind === "error" && args[0]?.code === "AGENT_CANCELLED"
+      const isApprovalResolution = args[0]?.kind === "approval" && args[0]?.status !== "pending"
+      if (this.shutdownState !== "open" && !isShutdownTerminal && !isApprovalResolution) return false
+      const task = this.tasks.get(args[0].taskId)
+      const agentId = args[0]?.agentId
+      if (task && agentId && this.isScopedAgentCancelled(task, agentId)) {
+        const isOrchestrateSubtaskTerminal = args[0]?.kind === "orchestrate:subtask"
+          && args[0]?.status === "error"
+          && typeof args[0]?.subtaskId === "string"
+        if (isShutdownTerminal) {
+          const terminals = this.cancelledAgentTerminals.get(task) ?? new Set<string>()
+          if (terminals.has(agentId)) return false
+          terminals.add(agentId)
+          this.cancelledAgentTerminals.set(task, terminals)
+        } else if (isOrchestrateSubtaskTerminal) {
+          const terminals = this.cancelledOrchestrateSubtaskTerminals.get(task) ?? new Set<string>()
+          const terminalKey = `${agentId}:${args[0].subtaskId}`
+          if (terminals.has(terminalKey)) return false
+          terminals.add(terminalKey)
+          this.cancelledOrchestrateSubtaskTerminals.set(task, terminals)
+          args[0] = { ...args[0], content: "已暂停该 Agent。" }
+        } else if (!isApprovalResolution) {
+          return false
+        }
+      }
       const meta = this.streamMetaByTask.get(args[0].taskId)
       if (meta) args[0] = { ...args[0], ...meta }
+      if (args[0]?.kind === "error" && args[0]?.code === "AGENT_CANCELLED") {
+        this.cancelledTerminalTaskIds.add(args[0].taskId)
+      }
     }
-    return super.emit(event, ...args)
+    if (event !== "task:created" && event !== "stream" && event !== "task:finished" && event !== "task:removed") {
+      return super.emit(event, ...args)
+    }
+    const listeners = this.rawListeners(event)
+    for (const listener of listeners) {
+      try {
+        Reflect.apply(listener, this, args)
+      } catch (error) {
+        const taskId = event === "task:created" ? args[0]?.id : event === "stream" ? args[0]?.taskId : undefined
+        if (taskId && !this.taskObserverErrors.has(taskId)) this.taskObserverErrors.set(taskId, error)
+        console.error(`[dispatcher] ${String(event)} observer failed`, error)
+      }
+    }
+    return listeners.length > 0
   }
 
   on(event: "stream", listener: (e: StreamEvent) => void): this
   on(event: "task:created", listener: (task: DispatchTask) => void): this
+  on(event: "task:finished", listener: (task: DispatchTask) => void): this
+  on(event: "task:removed", listener: (event: { taskId: string; reason: "delete" | "clear" | "prune" }) => void): this
   on(event: string, listener: (...args: any[]) => void): this
   on(event: string | symbol, listener: (...args: any[]) => void): this {
     return super.on(event, listener)
@@ -270,11 +386,122 @@ export class Dispatcher extends EventEmitter {
     return super.off(event, listener)
   }
 
+  beginShutdown(): void {
+    if (this.shutdownState !== "open") return
+    this.shutdownState = "closing"
+    for (const [taskId, task] of this.tasks) {
+      if (task.status === "pending") {
+        task.status = "cancelled"
+        task.error = "Dispatcher is shutting down."
+      } else if (task.status === "running") {
+        this.cancel(taskId)
+      }
+    }
+    for (const stops of [...this.activeAgentStops.values()]) {
+      for (const stop of [...stops]) {
+        try { stop() } catch { /* best-effort cancellation; drain still awaits tracked operations */ }
+      }
+    }
+    for (const [requestId, pending] of [...this.pendingApprovals]) {
+      this.settlePendingApproval(requestId, pending, "denied", false)
+    }
+  }
+
+  stopAndDrain(): Promise<void> {
+    this.beginShutdown()
+    if (this.shutdownDrainPromise) return this.shutdownDrainPromise
+    this.shutdownDrainPromise = (async () => {
+      while (this.dispatchOperations.size > 0 || this.sourceOperations.size > 0) {
+        await Promise.allSettled([
+          ...this.dispatchOperations,
+          ...this.sourceOperations
+        ])
+      }
+      this.shutdownState = "closed"
+    })()
+    return this.shutdownDrainPromise
+  }
+
+  private shutdownAdmissionError(): Error {
+    return Object.assign(new Error("Dispatcher is shutting down and cannot accept new dispatches."), {
+      code: "DISPATCHER_SHUTDOWN"
+    })
+  }
+
+  private isScopedAgentCancelled(task: DispatchTask, agentId: string): boolean {
+    if (this.cancelledAgents.get(task)?.has(agentId) === true) return true
+    const turnId = task.__turnId
+    return !!turnId && this.cancelledAgentsByTurn.get(turnId)?.has(agentId) === true
+  }
+
+  private isTaskTurnCancelled(task: DispatchTask): boolean {
+    return !!task.__turnId && this.cancelledTurnIds.has(task.__turnId)
+  }
+
+  private isAgentCancelled(task: DispatchTask, agentId: string): boolean {
+    return task.status === "cancelled"
+      || this.isTaskTurnCancelled(task)
+      || this.isScopedAgentCancelled(task, agentId)
+  }
+
+  private agentCancelledError(): Error {
+    return Object.assign(new Error("已暂停该 Agent。"), { code: "AGENT_CANCELLED" })
+  }
+
+  private throwIfAgentCancelled(task: DispatchTask, agentId: string): void {
+    if (this.isAgentCancelled(task, agentId)) throw this.agentCancelledError()
+  }
+
+  private markTaskAgentCancelled(task: DispatchTask, agentId: string): boolean {
+    const cancelled = this.cancelledAgents.get(task) ?? new Set<string>()
+    if (cancelled.has(agentId)) return false
+    cancelled.add(agentId)
+    this.cancelledAgents.set(task, cancelled)
+    task.errors.set(agentId, "已暂停该 Agent。")
+    return true
+  }
+
+  private startDispatchOperation<T>(run: () => Promise<T>): Promise<T> {
+    let finish!: () => void
+    const marker = new Promise<void>(resolve => { finish = resolve })
+    this.dispatchOperations.add(marker)
+    let operation: Promise<T>
+    try {
+      operation = run()
+    } catch (error) {
+      this.dispatchOperations.delete(marker)
+      finish()
+      return Promise.reject(error)
+    }
+    void operation.then(
+      () => {
+        this.dispatchOperations.delete(marker)
+        finish()
+      },
+      () => {
+        this.dispatchOperations.delete(marker)
+        finish()
+      }
+    )
+    return operation
+  }
+
   /**
    * Dispatch a prompt. Returns the task object; results stream via "stream" events.
    * No demo / mock fallback: if no provider is bound the call fails immediately.
    */
-  async dispatch(text: string, mode: DispatchMode = "auto", targetAgent?: string, opts: DispatchOptions = {}): Promise<DispatchTask> {
+  dispatch(text: string, mode: DispatchMode = "auto", targetAgent?: string, opts: DispatchOptions = {}): Promise<DispatchTask> {
+    if (this.shutdownState !== "open") return Promise.reject(this.shutdownAdmissionError())
+    if (opts.turnId && this.cancelledTurnIds.has(opts.turnId)) {
+      return Promise.reject(this.agentCancelledError())
+    }
+    if (opts.turnId && targetAgent && this.cancelledAgentsByTurn.get(opts.turnId)?.has(targetAgent)) {
+      return Promise.reject(this.agentCancelledError())
+    }
+    return this.startDispatchOperation(() => this.dispatchOpen(text, mode, targetAgent, opts))
+  }
+
+  private async dispatchOpen(text: string, mode: DispatchMode, targetAgent: string | undefined, opts: DispatchOptions): Promise<DispatchTask> {
     if (opts.modelSelection?.source === "provider") {
       throw new Error("Provider model selections must run through provider direct dispatch, not local agent routing.")
     }
@@ -293,11 +520,18 @@ export class Dispatcher extends EventEmitter {
       thinkingSummary: new Map(),
       createdAt: new Date()
     }
-    if (opts.turnId) (task as any).__turnId = opts.turnId
-    this.tasks.set(task.id, task)
+    if (opts.turnId) task.__turnId = opts.turnId
+    this.stableTaskIds.set(task, taskId)
+    this.tasks.set(taskId, task)
+    this.inFlightTaskIds.add(taskId)
     if (opts.streamMeta) this.streamMetaByTask.set(task.id, opts.streamMeta)
-    this.emit("task:created", task)
+    this.emit("task:created", this.taskSnapshot(task, taskId))
 
+    if (task.status === "cancelled"
+      || this.isTaskTurnCancelled(task)
+      || (!!targetAgent && this.isAgentCancelled(task, targetAgent))) {
+      return this.finishCancelledBeforeStart(task, targetAgent || "dispatcher")
+    }
     task.status = "running"
     try {
       if (effectiveMode === "orchestrate") {
@@ -322,15 +556,25 @@ export class Dispatcher extends EventEmitter {
         if ((task as any).status !== "cancelled") task.status = task.errors.size > 0 ? "failed" : "completed"
       }
     } catch (e: any) {
-      task.status = "failed"
-      task.error = e.message
+      if ((task as any).status !== "cancelled") {
+        task.status = "failed"
+        task.error = e.message
+      }
     }
-    this.streamMetaByTask.delete(task.id)
-    this.pruneTasks()
-    return task
+    return this.finishTask(task, taskId)
   }
 
-  async dispatchProviderDirect(text: string, selection: ModelSelection, opts: DispatchOptions = {}): Promise<DispatchTask> {
+  dispatchProviderDirect(text: string, selection: ModelSelection, opts: DispatchOptions = {}): Promise<DispatchTask> {
+    if (this.shutdownState !== "open") return Promise.reject(this.shutdownAdmissionError())
+    const agentId = providerDirectAgentId(selection.providerId)
+    if (opts.turnId && (this.cancelledTurnIds.has(opts.turnId)
+      || this.cancelledAgentsByTurn.get(opts.turnId)?.has(agentId))) {
+      return Promise.reject(this.agentCancelledError())
+    }
+    return this.startDispatchOperation(() => this.dispatchProviderDirectOpen(text, selection, opts))
+  }
+
+  private async dispatchProviderDirectOpen(text: string, selection: ModelSelection, opts: DispatchOptions): Promise<DispatchTask> {
     const taskId = "task-" + (++this.taskCounter)
     const providerId = selection.providerId
     const modelId = selection.modelId
@@ -348,14 +592,21 @@ export class Dispatcher extends EventEmitter {
       thinkingSummary: new Map(),
       createdAt: new Date()
     }
-    if (opts.turnId) (task as any).__turnId = opts.turnId
-    this.tasks.set(task.id, task)
+    if (opts.turnId) task.__turnId = opts.turnId
+    this.stableTaskIds.set(task, taskId)
+    this.tasks.set(taskId, task)
+    this.inFlightTaskIds.add(taskId)
     if (opts.streamMeta) this.streamMetaByTask.set(task.id, opts.streamMeta)
-    this.emit("task:created", task)
-    task.status = "running"
+    try {
+      this.emit("task:created", this.taskSnapshot(task, taskId))
+      this.throwTaskObserverError(taskId)
+      if (task.status === "cancelled" || this.isAgentCancelled(task, agentId)) {
+        return this.finishCancelledBeforeStart(task, agentId, providerId, modelId)
+      }
+      task.status = "running"
 
-    const mgr = getProviderManager()
-    const fallbackProvider = mgr.getProvider(providerId)
+      const mgr = getProviderManager()
+      const fallbackProvider = mgr.getProvider(providerId)
     const directModel = fallbackProvider?.models.find(item => item.id === modelId)
     if (directModel?.enabled === false) {
       const err = `Selected model is disabled: ${providerId}/${modelId}`
@@ -363,8 +614,7 @@ export class Dispatcher extends EventEmitter {
       task.error = err
       task.errors.set(agentId, err)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err })
-      this.streamMetaByTask.delete(task.id)
-      return task
+      return this.finishTask(task)
     }
     const routed = typeof (mgr as any).resolveModelRoute === "function"
       ? mgr.resolveModelRoute(providerId, modelId)
@@ -379,8 +629,7 @@ export class Dispatcher extends EventEmitter {
       task.error = err
       task.errors.set(agentId, err)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err })
-      this.streamMetaByTask.delete(task.id)
-      return task
+      return this.finishTask(task)
     }
     if (!model) {
       const err = `Selected model not found: ${providerId}/${modelId}`
@@ -388,8 +637,7 @@ export class Dispatcher extends EventEmitter {
       task.error = err
       task.errors.set(agentId, err)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err })
-      this.streamMetaByTask.delete(task.id)
-      return task
+      return this.finishTask(task)
     }
 
     const requestModelId = routed?.requestedModelId ?? modelId
@@ -405,7 +653,17 @@ export class Dispatcher extends EventEmitter {
       temperature: 0.2
     }
     const resolved = { provider, model: effectiveModel, binding, thinking: opts.thinking || provider.defaultThinking }
-    const client = buildProviderClient(resolved)
+    let client: ReturnType<typeof buildProviderClient>
+    try {
+      client = buildProviderClient(resolved)
+    } catch (error: any) {
+      const err = error?.message || String(error)
+      task.status = "failed"
+      task.error = err
+      task.errors.set(agentId, err)
+      this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: err })
+      return this.finishTask(task)
+    }
     const messages: ChatCompletionMessage[] = opts.messages?.length
       ? opts.messages
       : [{ role: "user", content: text }]
@@ -424,30 +682,34 @@ export class Dispatcher extends EventEmitter {
       routeReason,
       modelSelection: selection
     })
-    this.emit("stream", { kind: "start", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, mode: "content", routeReason })
+    this.emit("stream", { kind: "start", taskId, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, mode: "content", routeReason })
+    this.throwTaskObserverError(taskId)
 
     try {
-      await this.withAgentTimeout(task, agentId, () => new Promise<void>((resolve, reject) => {
-        client.stream(
-          { messages, systemPrompt, thinkingOverride: resolved.thinking },
-          {
-            onContent: (delta) => {
-              content += delta
-              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, channel: "content", text: delta })
-            },
-            onThinking: (delta) => {
-              thinkingTxt += delta
-              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, channel: "thinking", text: delta })
-            },
-            onDone: (final) => {
-              summary = final.thinking
-              usage = final.usage
-              resolve()
-            },
-            onError: (err) => reject(err)
+      const abortController = new AbortController()
+      await this.withAgentTimeout(task, agentId, () => this.waitForProviderStream(
+        client,
+        { messages, systemPrompt, thinkingOverride: resolved.thinking, signal: abortController.signal },
+        {
+          onContent: (delta) => {
+            if (this.isAgentCancelled(task, agentId)) return
+            content += delta
+            this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, channel: "content", text: delta })
+          },
+          onThinking: (delta) => {
+            if (this.isAgentCancelled(task, agentId)) return
+            thinkingTxt += delta
+            this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, channel: "thinking", text: delta })
+          },
+          onDone: (final) => {
+            if (this.isAgentCancelled(task, agentId)) return
+            summary = final.thinking
+            usage = final.usage
           }
-        )
-      }), undefined, model.timeoutMs)
+        }
+      ), () => abortController.abort(), model.timeoutMs)
+      this.throwIfAgentCancelled(task, agentId)
+      this.throwTaskObserverError(taskId)
       task.results.set(agentId, content)
       task.thinking.set(agentId, thinkingTxt)
       if (summary) task.thinkingSummary.set(agentId, summary)
@@ -484,9 +746,19 @@ export class Dispatcher extends EventEmitter {
       task.errors.set(agentId, err)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: provider.id, modelId: requestModelId, upstreamModelId, error: err, code: e?.code, durationMs: Date.now() - start })
     }
-    this.streamMetaByTask.delete(task.id)
-    this.pruneTasks()
-    return task
+    return this.finishTask(task, taskId)
+    } catch (error: any) {
+      if (!this.finishedTasks.has(task) && task.status !== "cancelled") {
+        const err = error?.message || String(error)
+        task.status = "failed"
+        task.error = err
+        task.errors.set(agentId, err)
+        this.emit("stream", { kind: "error", taskId, agentId, providerId, modelId, error: err, code: error?.code })
+      }
+      return task
+    } finally {
+      this.finishTask(task, taskId)
+    }
   }
 
   private isLocalBinding(binding: AgentRouteBinding | undefined | null): boolean {
@@ -559,6 +831,20 @@ export class Dispatcher extends EventEmitter {
 
   private usableBindings(bindings: AgentRouteBinding[]): AgentRouteBinding[] {
     return bindings.filter(binding => !this.isLocalBinding(binding) || this.localAgentAvailability(binding.agentId, binding).usable)
+  }
+
+  private async withLocalAgentQueue<T>(agentId: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.localAgentQueues.get(agentId) || Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>(resolve => { release = resolve })
+    this.localAgentQueues.set(agentId, current)
+    await previous.catch(() => {})
+    try {
+      return await run()
+    } finally {
+      release()
+      if (this.localAgentQueues.get(agentId) === current) this.localAgentQueues.delete(agentId)
+    }
   }
 
   private resolveTargets(task: DispatchTask, mode: DispatchMode, targetAgent?: string): Array<{ agentId: string }> {
@@ -638,13 +924,26 @@ export class Dispatcher extends EventEmitter {
 
       // 2. 并行执行子任务（O3：测试 agent 校验 + 有界回环修复，最多 2 次尝试）
       const MAX_ATTEMPTS = 2
-      const parts = await Promise.all(plan.subtasks.map(async (st) => {
+      const parts = await mapWithConcurrency(plan.subtasks, ORCHESTRATE_EXECUTION_CONCURRENCY, async (st) => {
         if ((task as any).status === "cancelled") return { title: st.title, agentId: st.agentId, content: "", error: "cancelled" }
         let content = ""
         let lastNote: string | undefined
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           if ((task as any).status === "cancelled") break
           this.emit("stream", { kind: "orchestrate:subtask", taskId: task.id, subtaskId: st.id, agentId: st.agentId, status: "running" })
+          let workerTerminalEmitted = false
+          const emitWorkerTerminal = (status: "done" | "error", terminalContent: string) => {
+            if (workerTerminalEmitted) return
+            workerTerminalEmitted = true
+            this.emit("stream", {
+              kind: "orchestrate:subtask",
+              taskId: task.id,
+              subtaskId: st.id,
+              agentId: st.agentId,
+              status,
+              content: terminalContent
+            })
+          }
           try {
             const rawPrompt = attempt === 1 ? (st.detail || st.title) : retryPrompt(st.detail || st.title, lastNote)
             const prompt = opts.preserveCurrentMessage ? rawPrompt : compactOrchestrateText(rawPrompt, 3_000)
@@ -655,33 +954,41 @@ export class Dispatcher extends EventEmitter {
             })
             // 失败外显：provider 报错绝不伪装成 done(空内容)，发 error 状态并退出该子任务
             if (r.error) {
-              this.emit("stream", { kind: "orchestrate:subtask", taskId: task.id, subtaskId: st.id, agentId: st.agentId, status: "error", content: r.error })
+              emitWorkerTerminal("error", r.error)
               return { title: st.title, agentId: st.agentId, content: "", error: r.error }
             }
             content = r.content
-            this.emit("stream", { kind: "orchestrate:subtask", taskId: task.id, subtaskId: st.id, agentId: st.agentId, status: "done", content })
-            // 校验：用 lead 作为 verify agent（verify 自身报错时 content 为空 → parseVerdict 宽松判过，避免死循环）
+            emitWorkerTerminal("done", content)
+            // 校验：用 lead 作为 verify agent；verify 自身报错时终止当前子任务，避免误当作歧义 verdict 重跑 worker。
             const verifyDetail = opts.preserveCurrentMessage ? (st.detail || "") : compactOrchestrateText(st.detail || "", 1_500)
             const verifyText = verifyPrompt(st.title, verifyDetail, compactOrchestrateText(content, 3_000))
-            const verifyRaw = (await this.sendToAgent(task, leadId, verifyText, {
+            const verifyResult = await this.sendToAgent(task, leadId, verifyText, {
               ...opts,
               systemPrompt: ORCHESTRATOR_LEAD_SYSTEM,
               conversationText: verifyText,
               messages: compactOrchestrateMessages(opts, verifyText)
-            })).content
-            const v = parseVerdict(verifyRaw)
+            })
+            if (verifyResult.error) {
+              return {
+                title: st.title,
+                agentId: st.agentId,
+                content,
+                error: "校验阶段失败: " + verifyResult.error
+              }
+            }
+            const v = parseVerdict(verifyResult.content)
             this.emit("stream", { kind: "orchestrate:verdict", taskId: task.id, subtaskId: st.id, pass: v.pass, note: v.note, attempt })
             if (v.pass) return { title: st.title, agentId: st.agentId, content }
             lastNote = v.note
             if (attempt >= MAX_ATTEMPTS) return { title: st.title, agentId: st.agentId, content, error: "校验未通过: " + (v.note || "结果不达标") }
           } catch (e: any) {
             const err = e?.message || String(e)
-            this.emit("stream", { kind: "orchestrate:subtask", taskId: task.id, subtaskId: st.id, agentId: st.agentId, status: "error", content: err })
+            emitWorkerTerminal("error", err)
             return { title: st.title, agentId: st.agentId, content: "", error: err }
           }
         }
         return { title: st.title, agentId: st.agentId, content }
-      }))
+      })
 
       if ((task as any).status === "cancelled") return
 
@@ -709,23 +1016,27 @@ export class Dispatcher extends EventEmitter {
   }
 
   private async sendToAgent(task: DispatchTask, agentId: string, text: string, opts: DispatchOptions): Promise<{ content: string; error?: string }> {
+    if (this.isAgentCancelled(task, agentId)) return { content: "", error: "已暂停该 Agent。" }
     const mgr = getProviderManager()
     const binding = mgr.getBinding(agentId)
     const resolved = mgr.resolveBinding(agentId)
     // Local transports are usable only when the current binding explicitly asks for them.
     // This prevents a stale registry adapter from hijacking an HTTP/API route.
     if (this.isLocalBinding(binding)) {
-      const availability = this.localAgentAvailability(agentId, binding)
-      if (!availability.usable) {
-        task.errors.set(agentId, availability.message)
-        this.emit("stream", { kind: "error", taskId: task.id, agentId, error: availability.message, code: availability.code })
-        return { content: "", error: availability.message }
-      }
-      const agentInfo = this.registry.get(agentId)!
-      if (binding?.protocol === "acp" || (agentInfo.adapter as any).protocol === "acp") {
-        return this.sendToAgentAcp(task, agentId, text, opts, agentInfo.adapter)
-      }
-      return this.sendToAgentStdio(task, agentId, text, opts, resolved, agentInfo.adapter, binding)
+      return this.withLocalAgentQueue(agentId, async () => {
+        if (this.isAgentCancelled(task, agentId)) return { content: "", error: "已暂停该 Agent。" }
+        const availability = this.localAgentAvailability(agentId, binding)
+        if (!availability.usable) {
+          task.errors.set(agentId, availability.message)
+          this.emit("stream", { kind: "error", taskId: task.id, agentId, error: availability.message, code: availability.code })
+          return { content: "", error: availability.message }
+        }
+        const agentInfo = this.registry.get(agentId)!
+        if (binding?.protocol === "acp" || (agentInfo.adapter as any).protocol === "acp") {
+          return this.sendToAgentAcp(task, agentId, text, opts, agentInfo.adapter)
+        }
+        return this.sendToAgentStdio(task, agentId, text, opts, resolved, agentInfo.adapter, binding)
+      })
     }
     if (!resolved) {
       const err = "No available provider for agent " + agentId
@@ -749,6 +1060,7 @@ export class Dispatcher extends EventEmitter {
     }
     this.registry.setStatus(agentId, "busy")
     this.busyCount.set(agentId, (this.busyCount.get(agentId) || 0) + 1)
+    try {
     const messages: ChatCompletionMessage[] = opts.messages?.length
       ? opts.messages
       : [{ role: "user", content: text }]
@@ -758,7 +1070,7 @@ export class Dispatcher extends EventEmitter {
 
     // --- AgentHub native agentic (Claude-B 新增): 开启后 HTTP agent 走工具回环，真在工作区动手 ---
     if (isHttpAgenticEnabled(agentId)) {
-      return this.runAgenticHttpBranch(task, agentId, text, messages, systemPrompt, thinking, effectiveResolved, opts)
+      return await this.runAgenticHttpBranch(task, agentId, text, messages, systemPrompt, thinking, effectiveResolved, opts)
     }
     // --- /AgentHub native agentic ---
 
@@ -780,33 +1092,30 @@ export class Dispatcher extends EventEmitter {
 
     try {
       await this.pipeline.process(text, agentId)
+      if (this.isAgentCancelled(task, agentId)) return { content, error: "已暂停该 Agent。" }
       const abortController = new AbortController()
-      await this.withAgentTimeout(task, agentId, () => new Promise<void>((resolve, reject) => {
-        const existingStop = this.activeAgentStops.get(`${task.id}:${agentId}`)
-        this.activeAgentStops.set(`${task.id}:${agentId}`, () => {
-          abortController.abort()
-          existingStop?.()
-        })
-        client.stream(
-          { messages, systemPrompt, thinkingOverride: thinking, signal: abortController.signal },
-          {
-            onContent: (delta) => {
-              content += delta
-              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveModelId, upstreamModelId: effectiveUpstreamModelId, channel: "content", text: delta })
-            },
-            onThinking: (delta) => {
-              thinkingTxt += delta
-              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveModelId, upstreamModelId: effectiveUpstreamModelId, channel: "thinking", text: delta })
-            },
-            onDone: (final) => {
-              summary = final.thinking
-              usage = final.usage
-              resolve()
-            },
-            onError: (err) => reject(err)
+      await this.withAgentTimeout(task, agentId, () => this.waitForProviderStream(
+        client,
+        { messages, systemPrompt, thinkingOverride: thinking, signal: abortController.signal },
+        {
+          onContent: (delta) => {
+            if (this.isAgentCancelled(task, agentId)) return
+            content += delta
+            this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveModelId, upstreamModelId: effectiveUpstreamModelId, channel: "content", text: delta })
+          },
+          onThinking: (delta) => {
+            if (this.isAgentCancelled(task, agentId)) return
+            thinkingTxt += delta
+            this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveModelId, upstreamModelId: effectiveUpstreamModelId, channel: "thinking", text: delta })
+          },
+          onDone: (final) => {
+            if (this.isAgentCancelled(task, agentId)) return
+            summary = final.thinking
+            usage = final.usage
           }
-        )
-      }), undefined, effectiveResolved.model.timeoutMs)
+        }
+      ), () => abortController.abort(), effectiveResolved.model.timeoutMs)
+      this.throwIfAgentCancelled(task, agentId)
       task.results.set(agentId, content)
       task.thinking.set(agentId, thinkingTxt)
       if (summary) task.thinkingSummary.set(agentId, summary)
@@ -832,6 +1141,7 @@ export class Dispatcher extends EventEmitter {
       task.errors.set(agentId, e.message)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId: effectiveResolved.provider.id, modelId: effectiveModelId, upstreamModelId: effectiveUpstreamModelId, error: e.message, code: e?.code, durationMs: Date.now() - start })
       return { content, error: e.message }
+    }
     } finally {
       const remaining = (this.busyCount.get(agentId) || 1) - 1
       if (remaining <= 0) {
@@ -937,6 +1247,7 @@ export class Dispatcher extends EventEmitter {
     task: DispatchTask, agentId: string, userText: string, messages: ChatCompletionMessage[], systemPrompt: string,
     thinking: ThinkingConfig, resolved: any, opts: DispatchOptions
   ): Promise<{ content: string; error?: string }> {
+    if (this.isAgentCancelled(task, agentId)) return { content: "", error: "已暂停该 Agent。" }
     const providerId = resolved.provider.id
     const modelId = resolved.model.id
     let root: string | null = null
@@ -947,8 +1258,13 @@ export class Dispatcher extends EventEmitter {
     const start = Date.now()
     this.emit("stream", { kind: "start", taskId: task.id, agentId, providerId, modelId, mode: "content" })
     const tracker = createExecutionTracker(task.id)
+    const abortController = new AbortController()
+    let operationActive = true
+    const canEmitOperationEvent = () => operationActive
+      && !abortController.signal.aborted
+      && !this.isAgentCancelled(task, agentId)
     try {
-      const res = await this.withAgentTimeout(task, agentId, () => runAgenticHttp({
+      const res = await this.withAgentTimeout(task, agentId, () => this.trackSourceOperation(runAgenticHttp({
         userText,
         messages,
         systemPrompt,
@@ -958,13 +1274,24 @@ export class Dispatcher extends EventEmitter {
         agentId,
         policyFor: (tool, risk) => getApprovalConfig().policyForWithRisk(agentId, tool, risk ?? 'low'),
         requestApproval: (req) => this.requestApprovalFor(task, agentId, req),
-        isCancelled: () => (task as any).status === "cancelled",
+        isCancelled: () => this.isAgentCancelled(task, agentId),
+        signal: abortController.signal,
         tracker,
         emit: {
-          delta: (channel, textDelta) => this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId, modelId, channel, text: textDelta }),
-          activity: (step) => this.emit("stream", { kind: "activity", taskId: task.id, agentId, step })
+          delta: (channel, textDelta) => {
+            if (canEmitOperationEvent()) {
+              this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId, modelId, channel, text: textDelta })
+            }
+          },
+          activity: (step) => {
+            if (canEmitOperationEvent()) {
+              this.emit("stream", { kind: "activity", taskId: task.id, agentId, step })
+            }
+          }
         }
-      }))
+      })), () => abortController.abort())
+      operationActive = false
+      this.throwIfAgentCancelled(task, agentId)
       tracker.persistReport()
       if (res.error) {
         task.errors.set(agentId, res.error)
@@ -976,9 +1303,14 @@ export class Dispatcher extends EventEmitter {
       this.emit("stream", { kind: "done", taskId: task.id, agentId, providerId, modelId, content: res.content, usage: res.usage, durationMs: Date.now() - start })
       return { content: res.content }
     } catch (e: any) {
+      if (e === AGENT_CANCELLED || e?.code === "AGENT_CANCELLED") {
+        return { content: "", error: "已暂停该 Agent。" }
+      }
       task.errors.set(agentId, e.message)
       this.emit("stream", { kind: "error", taskId: task.id, agentId, providerId, modelId, error: e.message, code: e?.code, durationMs: Date.now() - start })
       return { content: "", error: e.message }
+    } finally {
+      operationActive = false
     }
     // Note: busyCount is managed by sendToAgent, not here
   }
@@ -997,22 +1329,68 @@ export class Dispatcher extends EventEmitter {
     return flattenMessagesForLocalAgent(messages)
   }
 
+  /**
+   * Cancel every current task for a Turn and reject tasks created for the same
+   * Turn later. The tombstone is written before transports are stopped so
+   * synchronous stop callbacks cannot race a new dispatch admission.
+   */
+  cancelTurn(turnId: string): boolean {
+    const newlyCancelled = !this.cancelledTurnIds.has(turnId)
+    this.cancelledTurnIds.add(turnId)
+    let matched = false
+    for (const task of this.tasks.values()) {
+      if (task.__turnId !== turnId) continue
+      if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") continue
+      matched = true
+      if (task.status === "pending") {
+        task.status = "cancelled"
+        task.error = "已暂停该任务。"
+        this.settleTaskPendingApprovals(task.id)
+      } else {
+        this.cancel(task.id)
+      }
+    }
+    return newlyCancelled || matched
+  }
+
+  /** Cancel one Agent across current and future tasks belonging to a Turn. */
+  cancelAgentForTurn(turnId: string, agentId: string): boolean {
+    const cancelled = this.cancelledAgentsByTurn.get(turnId) ?? new Set<string>()
+    const newlyCancelled = !cancelled.has(agentId)
+    cancelled.add(agentId)
+    this.cancelledAgentsByTurn.set(turnId, cancelled)
+    let matched = false
+    for (const task of this.tasks.values()) {
+      if (task.__turnId !== turnId) continue
+      if (task.status !== "pending" && task.status !== "running") continue
+      if (task.targetAgent && task.targetAgent !== agentId) continue
+      matched = true
+      if (task.targetAgent === agentId) {
+        if (task.status === "pending") {
+          task.status = "cancelled"
+          task.error = "已暂停该 Agent。"
+        } else {
+          this.cancel(task.id)
+        }
+      } else if (task.status === "running") {
+        this.cancelAgent(task.id, agentId)
+      } else {
+        this.markTaskAgentCancelled(task, agentId)
+      }
+    }
+    return newlyCancelled || matched
+  }
+
   cancel(taskId: string): boolean {
     const task = this.tasks.get(taskId)
     if (task && task.status === "running") {
       task.status = "cancelled"
-      for (const [key, stop] of this.activeAgentStops) {
-        if (key.startsWith(`${taskId}:`)) stop()
+      for (const [key, stops] of [...this.activeAgentStops]) {
+        if (!key.startsWith(`${taskId}:`)) continue
+        for (const stop of [...stops]) stop()
       }
       // 清理该任务所有待决审批（拒绝放行），避免工具回环在 await 上永久挂起
-      for (const [id, p] of this.pendingApprovals) {
-        if (id.startsWith(`appr-${taskId}-`)) {
-          clearTimeout(p.timer)
-          this.pendingApprovals.delete(id)
-          resolvePendingApproval(id, 'denied')
-          p.resolve(false)
-        }
-      }
+      this.settleTaskPendingApprovals(taskId)
       return true
     }
     return false
@@ -1021,9 +1399,15 @@ export class Dispatcher extends EventEmitter {
   cancelAgent(taskId: string, agentId: string): boolean {
     const task = this.tasks.get(taskId)
     if (!task || task.status !== "running") return false
-    task.errors.set(agentId, "已暂停该 Agent。")
-    const stop = this.activeAgentStops.get(`${taskId}:${agentId}`)
-    if (stop) stop()
+    if (!this.markTaskAgentCancelled(task, agentId)) return true
+    const stops = this.activeAgentStops.get(`${taskId}:${agentId}`)
+    for (const stop of [...(stops ?? [])]) {
+      try { stop() } catch { /* continue cancelling the remaining transports */ }
+    }
+    for (const [id, pending] of this.pendingApprovals) {
+      if (pending.taskId !== taskId || pending.agentId !== agentId) continue
+      this.settlePendingApproval(id, pending, 'denied', false)
+    }
     this.emit("stream", { kind: "error", taskId, agentId, error: "已暂停该 Agent。", code: "AGENT_CANCELLED" })
     return true
   }
@@ -1032,9 +1416,10 @@ export class Dispatcher extends EventEmitter {
     task: DispatchTask,
     agentId: string,
     run: () => Promise<T>,
-    onStop?: () => void,
+    onStop?: () => void | Promise<void>,
     timeoutOverrideMs?: number
   ): Promise<T> {
+    this.throwIfAgentCancelled(task, agentId)
     const timeoutMs = timeoutOverrideMs && timeoutOverrideMs > 0 ? timeoutOverrideMs : getRunTimeoutMs()
     const key = `${task.id}:${agentId}`
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -1044,45 +1429,156 @@ export class Dispatcher extends EventEmitter {
         if (settled) return
         settled = true
         if (timer) clearTimeout(timer)
-        this.activeAgentStops.delete(key)
+        const stops = this.activeAgentStops.get(key)
+        stops?.delete(stopOperation)
+        if (stops?.size === 0) this.activeAgentStops.delete(key)
         fn()
       }
-      this.activeAgentStops.set(key, () => {
-        try { onStop?.() } catch { /* noop */ }
+      const stopOperation = () => {
+        this.trackBestEffortStop(onStop)
         finish(() => reject(Object.assign(new Error("已暂停该 Agent。"), { code: "AGENT_CANCELLED" })))
-      })
+      }
+      const stops = this.activeAgentStops.get(key) ?? new Set<() => void>()
+      stops.add(stopOperation)
+      this.activeAgentStops.set(key, stops)
+      if (this.isAgentCancelled(task, agentId)) {
+        stopOperation()
+        return
+      }
       timer = setTimeout(() => {
-        try { onStop?.() } catch { /* noop */ }
+        this.trackBestEffortStop(onStop)
         const message = `已超过超时限制（${Math.round(timeoutMs / 1000)} 秒）`
         task.errors.set(agentId, message)
         finish(() => reject(Object.assign(new Error(message), { code: "AGENT_TIMEOUT" })))
       }, timeoutMs)
-      run().then(value => finish(() => resolve(value)), error => finish(() => reject(error)))
+      let source: Promise<T>
+      try {
+        this.throwIfAgentCancelled(task, agentId)
+        source = run()
+      } catch (error) {
+        finish(() => reject(error))
+        return
+      }
+      source.then(
+        value => finish(() => this.isAgentCancelled(task, agentId)
+          ? reject(this.agentCancelledError())
+          : resolve(value)),
+        error => finish(() => reject(error))
+      )
     })
   }
 
+  private waitForProviderStream(
+    client: ReturnType<typeof buildProviderClient>,
+    options: CallOptions,
+    callbacks: StreamCallbacks
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      const onAbort = () => {
+        settled = true
+        options.signal?.removeEventListener("abort", onAbort)
+      }
+      const finish = (complete: () => void) => {
+        if (settled || options.signal?.aborted) return
+        settled = true
+        options.signal?.removeEventListener("abort", onAbort)
+        complete()
+      }
+      if (options.signal?.aborted) {
+        settled = true
+      } else {
+        options.signal?.addEventListener("abort", onAbort, { once: true })
+      }
+      let source: Promise<void>
+      try {
+        source = this.trackSourceOperation(Promise.resolve(client.stream(options, {
+          onContent: (delta) => {
+            if (!settled && !options.signal?.aborted) callbacks.onContent?.(delta)
+          },
+          onThinking: (delta) => {
+            if (!settled && !options.signal?.aborted) callbacks.onThinking?.(delta)
+          },
+          onToolCallDelta: (toolCalls) => {
+            if (!settled && !options.signal?.aborted) callbacks.onToolCallDelta?.(toolCalls)
+          },
+          onDone: (final) => {
+            finish(() => {
+              callbacks.onDone?.(final)
+              resolve()
+            })
+          },
+          onError: (error) => {
+            finish(() => {
+              callbacks.onError?.(error)
+              reject(error)
+            })
+          }
+        })))
+      } catch (error) {
+        finish(() => reject(error))
+        return
+      }
+      void source.catch(error => finish(() => reject(error)))
+    })
+  }
+
+  private trackSourceOperation<T>(source: Promise<T>): Promise<T> {
+    this.sourceOperations.add(source)
+    void source.then(
+      () => this.sourceOperations.delete(source),
+      () => this.sourceOperations.delete(source)
+    )
+    return source
+  }
+
+  private trackBestEffortStop(stop?: () => void | Promise<void>): void {
+    if (!stop) return
+    try {
+      const operation = stop()
+      if (operation && typeof operation.then === "function") {
+        void this.trackSourceOperation(Promise.resolve(operation)).catch(() => undefined)
+      }
+    } catch {
+      // Cancellation remains best-effort, but async work must still be observed and drained.
+    }
+  }
+
   /** 渲染层审批决策回传：true=放行，false=拒绝。返回是否命中一个待决请求（用于 IPC 反馈）。 */
+  getPendingApprovalIds(): string[] {
+    return [...this.pendingApprovals.keys()]
+  }
+
   resolveApproval(requestId: string, approved: boolean): boolean {
     const p = this.pendingApprovals.get(requestId)
     if (!p) return false
-    clearTimeout(p.timer)
-    this.pendingApprovals.delete(requestId)
-    resolvePendingApproval(requestId, approved ? 'approved' : 'denied')
-    p.resolve(approved)
+    const status = approved ? 'approved' : 'denied'
+    this.settlePendingApproval(requestId, p, status, approved)
     return true
   }
 
   /** 发起一次写/执行审批：emit approval 事件 + 注册待决 Promise（超时自动拒绝）+ 持久化。 */
   private requestApprovalFor(task: DispatchTask, agentId: string, req: ApprovalRequest): Promise<boolean> {
-    const requestId = `appr-${task.id}-${++this.approvalSeq}`
+    if (this.isScopedAgentCancelled(task, agentId)
+      || this.finishedTasks.has(task)
+      || task.status === 'completed'
+      || task.status === 'failed'
+      || task.status === 'cancelled') {
+      return Promise.resolve(false)
+    }
+    const requestId = `appr-${task.id}-${this.approvalSessionNonce}-${++this.approvalSeq}`
+    const streamRequest: ApprovalStreamRequest = {
+      id: requestId, stepId: req.stepId, tool: req.tool, toolName: req.toolName,
+      label: req.label, detail: req.detail,
+      action: req.action, target: req.target,
+      risk: req.risk, reason: req.reason, preview: req.preview
+    }
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
-        if (this.pendingApprovals.delete(requestId)) {
-          resolvePendingApproval(requestId, 'denied')
-          resolve(false)
-        }
+        const pending = this.pendingApprovals.get(requestId)
+        if (pending) this.settlePendingApproval(requestId, pending, 'denied', false)
       }, APPROVAL_TIMEOUT_MS)
-      this.pendingApprovals.set(requestId, { resolve, timer })
+      this.pendingApprovals.set(requestId, { resolve, timer, taskId: task.id, agentId, request: streamRequest })
       // Persist pending approval for cross-restart recovery
       const persisted: PersistedPendingApproval = {
         id: requestId,
@@ -1091,21 +1587,142 @@ export class Dispatcher extends EventEmitter {
         createdAt: new Date().toISOString(),
         status: 'pending'
       }
-      savePendingApproval(persisted)
+      try {
+        savePendingApproval(persisted)
+      } catch (error) {
+        clearTimeout(timer)
+        this.pendingApprovals.delete(requestId)
+        console.error(`[dispatcher] failed to persist pending approval ${requestId}`, error)
+        resolve(false)
+        return
+      }
       this.emit("stream", {
-        kind: "approval", taskId: task.id, agentId,
-        request: {
-          id: requestId, tool: req.tool, toolName: req.toolName,
-          label: req.label, detail: req.detail,
-          action: req.action, target: req.target,
-          risk: req.risk, reason: req.reason, preview: req.preview
-        }
+        kind: "approval", taskId: task.id, agentId, status: "pending", request: streamRequest
       })
     })
   }
 
+  private emitApprovalResolution(
+    pending: { taskId: string; agentId: string; request: ApprovalStreamRequest },
+    status: "approved" | "denied"
+  ): void {
+    this.emit("stream", {
+      kind: "approval",
+      taskId: pending.taskId,
+      agentId: pending.agentId,
+      status,
+      request: pending.request
+    })
+  }
+
+  private settlePendingApproval(
+    requestId: string,
+    pending: PendingApproval,
+    status: "approved" | "denied",
+    approved: boolean
+  ): void {
+    if (this.pendingApprovals.get(requestId) !== pending) return
+    clearTimeout(pending.timer)
+    this.pendingApprovals.delete(requestId)
+    try {
+      resolvePendingApproval(requestId, status)
+    } catch (error) {
+      console.error(`[dispatcher] failed to persist approval resolution ${requestId}`, error)
+    }
+    this.emitApprovalResolution(pending, status)
+    pending.resolve(approved)
+  }
+
+  private settleTaskPendingApprovals(...taskIds: string[]): void {
+    const matchingTaskIds = new Set(taskIds)
+    for (const [requestId, pending] of this.pendingApprovals) {
+      if (!matchingTaskIds.has(pending.taskId)) continue
+      this.settlePendingApproval(requestId, pending, 'denied', false)
+    }
+  }
+
   getTask(taskId: string): DispatchTask | undefined {
     return this.tasks.get(taskId)
+  }
+
+  private finishCancelledBeforeStart(task: DispatchTask, agentId: string, providerId?: string, modelId?: string): DispatchTask {
+    const stableTaskId = this.stableTaskIds.get(task) ?? task.id
+    const error = "已暂停该 Agent。"
+    task.status = "cancelled"
+    task.error = error
+    task.errors.set(agentId, error)
+    this.emit("stream", { kind: "error", taskId: stableTaskId, agentId, providerId, modelId, error, code: "AGENT_CANCELLED" })
+    return this.finishTask(task, stableTaskId)
+  }
+
+  private throwTaskObserverError(taskId: string): void {
+    const error = this.taskObserverErrors.get(taskId)
+    if (!error) return
+    this.taskObserverErrors.delete(taskId)
+    throw error instanceof Error ? error : new Error(String(error))
+  }
+
+  private taskSnapshot(task: DispatchTask, stableTaskId = this.stableTaskIds.get(task) ?? task.id): DispatchTask {
+    return Object.freeze({
+      ...task,
+      id: stableTaskId,
+      results: new Map(task.results),
+      errors: new Map(task.errors),
+      thinking: new Map(task.thinking),
+      usage: new Map(task.usage),
+      thinkingSummary: new Map(task.thinkingSummary),
+      createdAt: new Date(task.createdAt)
+    })
+  }
+
+  private emitTaskLifecycle(event: "task:finished" | "task:removed", payload: DispatchTask | { taskId: string; reason: "delete" | "clear" | "prune" }): void {
+    this.emit(event, Object.freeze({ ...payload }))
+  }
+
+  private requestTaskRemoval(taskId: string, reason: "delete" | "clear" | "prune"): void {
+    const priority = { prune: 1, clear: 2, delete: 3 } as const
+    const current = this.pendingTaskRemovals.get(taskId)
+    if (!current || priority[reason] > priority[current]) this.pendingTaskRemovals.set(taskId, reason)
+  }
+
+  private finishTask(task: DispatchTask, stableTaskId = this.stableTaskIds.get(task) ?? task.id): DispatchTask {
+    if (this.finishedTasks.has(task)) return task
+    this.finishedTasks.add(task)
+    this.settleTaskPendingApprovals(task.id, stableTaskId)
+    if (task.status === "cancelled" && !this.cancelledTerminalTaskIds.has(stableTaskId)) {
+      const error = task.error || "已暂停该 Agent。"
+      this.emit("stream", {
+        kind: "error",
+        taskId: stableTaskId,
+        agentId: task.targetAgent || "dispatcher",
+        error,
+        code: "AGENT_CANCELLED"
+      })
+    }
+    this.streamMetaByTask.delete(stableTaskId)
+    try {
+      this.emitTaskLifecycle("task:finished", this.taskSnapshot(task, stableTaskId))
+    } finally {
+      this.inFlightTaskIds.delete(stableTaskId)
+      const pendingRemoval = this.pendingTaskRemovals.get(stableTaskId)
+      if (pendingRemoval) {
+        this.pendingTaskRemovals.delete(stableTaskId)
+        this.removeTask(stableTaskId, pendingRemoval)
+      } else {
+        this.pruneTasks()
+      }
+      this.cancelledTerminalTaskIds.delete(stableTaskId)
+      this.taskObserverErrors.delete(stableTaskId)
+      this.stableTaskIds.delete(task)
+    }
+    return task
+  }
+
+  private removeTask(taskId: string, reason: "delete" | "clear" | "prune"): void {
+    if (!this.tasks.delete(taskId)) return
+    this.pendingTaskRemovals.delete(taskId)
+    this.streamMetaByTask.delete(taskId)
+    this.emitTaskLifecycle("task:removed", { taskId, reason })
   }
 
   getRecentTasks(limit = 20): DispatchTask[] {
@@ -1117,13 +1734,17 @@ export class Dispatcher extends EventEmitter {
 
   /** 删除指定任务（幂等操作，不存在也不报错） */
   deleteTask(taskId: string): void {
-    // 如果任务正在运行，先取消再删除
     const task = this.tasks.get(taskId)
-    if (task && (task.status === 'running' || task.status === 'pending')) {
-      try { this.cancel(taskId) } catch { /* non-critical */ }
+    if (!task) return
+    if (this.inFlightTaskIds.has(taskId)) {
+      this.requestTaskRemoval(taskId, "delete")
+      if (task.status === "pending") task.status = "cancelled"
+      else if (task.status === "running") {
+        try { this.cancel(taskId) } catch { /* non-critical */ }
+      }
+      return
     }
-    this.tasks.delete(taskId)
-    this.streamMetaByTask.delete(taskId)
+    this.removeTask(taskId, "delete")
   }
 
   /** 清除所有已完成/已取消/已失败的终端任务 */
@@ -1135,8 +1756,8 @@ export class Dispatcher extends EventEmitter {
       }
     }
     for (const id of toDelete) {
-      this.tasks.delete(id)
-      this.streamMetaByTask.delete(id)
+      if (this.inFlightTaskIds.has(id)) this.requestTaskRemoval(id, "clear")
+      else this.removeTask(id, "clear")
     }
   }
 
@@ -1151,11 +1772,18 @@ export class Dispatcher extends EventEmitter {
     for (const [id, task] of entries) {
       if (this.tasks.size <= maxTasks) break
       if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
-        this.tasks.delete(id)
+        if (this.inFlightTaskIds.has(id)) this.requestTaskRemoval(id, "prune")
+        else this.removeTask(id, "prune")
       } else if (task.status === 'running' && now - task.createdAt.getTime() > ONE_HOUR) {
-        // Force mark very old running tasks as failed and remove
-        task.status = 'failed'
-        this.tasks.delete(id)
+        if (this.inFlightTaskIds.has(id)) {
+          this.requestTaskRemoval(id, "prune")
+          try { this.cancel(id) } catch { /* non-critical */ }
+        }
+        else {
+          // Force mark very old running tasks as failed and remove
+          task.status = 'failed'
+          this.removeTask(id, "prune")
+        }
       }
     }
   }
@@ -1166,6 +1794,7 @@ export class Dispatcher extends EventEmitter {
    * 注意: stdio 不依赖 HTTP provider, resolved 可为 null.
    */
   private async sendToAgentStdio(task: DispatchTask, agentId: string, text: string, opts: DispatchOptions, resolved: any, adapter: any, binding?: any): Promise<{ content: string; error?: string }> {
+    if (this.isAgentCancelled(task, agentId)) return { content: "", error: "已暂停该 Agent。" }
     this.registry.setStatus(agentId, "busy")
     let content = ""
     // stdio 直连本地 CLI：用绑定自身的 provider/model 做标注（而非 HTTP 回退结果，
@@ -1215,10 +1844,13 @@ export class Dispatcher extends EventEmitter {
         else agentPrompt = '[AgentHub 提示] 指定的工作区不存在或已被删除；本次派发将在 home 目录运行（agent 看不到项目文件）。\n\n' + agentPrompt
       }
       // pipeline 看到的是最终 prompt（包含工作区提示）
+      this.throwIfAgentCancelled(task, agentId)
       await this.pipeline.process(agentPrompt, agentId)
+      if (this.isAgentCancelled(task, agentId)) return { content: "", error: "已暂停该 Agent。" }
       await this.withAgentTimeout(task, agentId, () => new Promise<void>((resolveP, rejectP) => {
         let lastOutputAt = Date.now()
         const onChunk = (chunk: string) => {
+          if (self.isAgentCancelled(task, agentId)) return
           content += chunk
           lastOutputAt = Date.now()
           self.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId, modelId, channel: "content", text: chunk })
@@ -1232,7 +1864,7 @@ export class Dispatcher extends EventEmitter {
         }
         // agentic 活动步骤：透传成 stream 事件；同时刷新"有输出"时间戳，防止长任务被 60s 静默检测误杀
         const onAct = (step: any) => {
-          if (settled || !step) return
+          if (settled || !step || self.isAgentCancelled(task, agentId)) return
           lastOutputAt = Date.now()
           sawActivity = true
           activitySteps.push(step)
@@ -1243,6 +1875,10 @@ export class Dispatcher extends EventEmitter {
         adapter.onActivity = onAct
         adapter.onUsage = (nextUsage: any) => { usage = nextUsage }
         adapter.start().then(() => {
+          if (self.isAgentCancelled(task, agentId)) {
+            onErr(Object.assign(new Error("已暂停该 Agent。"), { code: "AGENT_CANCELLED" }))
+            return
+          }
           try {
             adapter.send(agentPrompt, { cwd })
             spawnedOnce = true
@@ -1258,13 +1894,13 @@ export class Dispatcher extends EventEmitter {
           const quietDone = hasOutput && idle > IDLE_AFTER_OUTPUT_MS               // 有输出后久静默 → 兜底完成
           const stalledNoOutput = spawnedOnce && !hasOutput && elapsed > STARTUP_SILENCE_MS // 始终无输出 → 卡死
           const timedOut = elapsed > TIMEOUT_MS
-          const cancelled = (task as any).status === "cancelled"
+          const cancelled = self.isAgentCancelled(task, agentId)
           if (procGone || quietDone || stalledNoOutput || timedOut || cancelled) {
             settled = true
             clearInterval(poll)
             cleanup()
             if (cancelled || timedOut || stalledNoOutput) {
-              try { adapter.stop() } catch { /* noop */ }
+              this.trackBestEffortStop(() => adapter.stop())
             }
             // 卡死 / 超时 → 显式报错，绝不把卡住的 banner/动画当作“完成”静默返回
             if (stalledNoOutput) {
@@ -1289,7 +1925,8 @@ export class Dispatcher extends EventEmitter {
             resolveP()  // procGone(正常) / quietDone / cancelled → 用已收集内容完成
           }
         }, POLL_MS)
-      }), () => { try { adapter.stop() } catch { /* noop */ } })
+      }), () => adapter.stop())
+      this.throwIfAgentCancelled(task, agentId)
       content = content || fallbackContentFromActivitySteps(activitySteps)
       task.results.set(agentId, content)
       if (usage) task.usage.set(agentId, usage)
@@ -1347,6 +1984,7 @@ export class Dispatcher extends EventEmitter {
    * 取消：轮询 task.status，cancelled 时发 session/cancel。每轮结束 stop() 杀掉 server（第一阶段不复用）。
    */
   private async sendToAgentAcp(task: DispatchTask, agentId: string, text: string, opts: DispatchOptions, adapter: any): Promise<{ content: string; error?: string }> {
+    if (this.isAgentCancelled(task, agentId)) return { content: "", error: "已暂停该 Agent。" }
     this.registry.setStatus(agentId, "busy")
     const localConfigModel = localCliModelLabelForAgent(agentId)
     const providerId = localConfigModel?.providerId ?? "local-acp"
@@ -1375,18 +2013,35 @@ export class Dispatcher extends EventEmitter {
     if (workspaceMissing) agentPrompt = '[AgentHub 提示] 指定的工作区不存在或已被删除；本次派发将在 home 目录运行（agent 看不到项目文件）。\n\n' + agentPrompt
 
     const cancelPoll = setInterval(() => {
-      if ((task as any).status === "cancelled") { try { adapter.cancel() } catch { /* noop */ } }
+      if (this.isAgentCancelled(task, agentId)) { try { adapter.cancel() } catch { /* noop */ } }
     }, 300)
 
     try {
+      this.throwIfAgentCancelled(task, agentId)
       await this.pipeline.process(agentPrompt, agentId)
+      if (this.isAgentCancelled(task, agentId)) return { content: "", error: "已暂停该 Agent。" }
       const stopReason: string = await this.withAgentTimeout(task, agentId, () => adapter.runPrompt(agentPrompt, cwd, {
-        onChunk: (t: string) => { content += t; this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId, modelId, channel: "content", text: t }) },
-        onThought: (t: string) => this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId, modelId, channel: "thinking", text: t }),
-        onActivity: (step: any) => this.emit("stream", { kind: "activity", taskId: task.id, agentId, step }),
+        onChunk: (t: string) => {
+          if (this.isAgentCancelled(task, agentId)) return
+          content += t
+          this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId, modelId, channel: "content", text: t })
+        },
+        onThought: (t: string) => {
+          if (!this.isAgentCancelled(task, agentId)) {
+            this.emit("stream", { kind: "delta", taskId: task.id, agentId, providerId, modelId, channel: "thinking", text: t })
+          }
+        },
+        onActivity: (step: any) => {
+          if (!this.isAgentCancelled(task, agentId)) {
+            this.emit("stream", { kind: "activity", taskId: task.id, agentId, step })
+          }
+        },
         onRequestPermission: (req: any) => this.requestAcpPermission(task, agentId, req)
-      }, mcpServers, sessionKey), () => { try { adapter.cancel() } catch { /* noop */ } })
-      if ((task as any).status === "cancelled") return { content }
+      }, mcpServers, sessionKey), () => {
+        if (typeof adapter.cancelAndStopAfterGrace === "function") return adapter.cancelAndStopAfterGrace()
+        try { adapter.cancel() } catch { /* noop */ }
+      })
+      if (this.isAgentCancelled(task, agentId)) return { content, error: "已暂停该 Agent。" }
       // refusal 且无任何内容 → 作为错误外显；否则按已收内容正常收尾
       if (stopReason === "refusal" && !content) {
         const err = "ACP agent 拒绝了本次请求（refusal）"
@@ -1410,7 +2065,8 @@ export class Dispatcher extends EventEmitter {
   }
 
   private async requestAcpPermission(task: DispatchTask, agentId: string, req: any): Promise<boolean> {
-    if (!req?.tool) return true
+    if (this.isAgentCancelled(task, agentId)) return false
+    if (!req?.tool) return req?.readOnly === true
     const stepId = String(
       req.raw?.toolCall?.toolCallId ||
       req.raw?.toolCall?.id ||
@@ -1421,7 +2077,10 @@ export class Dispatcher extends EventEmitter {
     const toolName = req.toolName || (tool === "exec" ? "exec" : "fs_write")
     const label = req.label || toolName
     const detail = req.detail || ""
-    const policy = getApprovalConfig().policyFor(agentId, tool)
+    const rawArgs = acpPermissionArgs(req)
+    const riskToolName = tool === "exec" ? "exec" : "fs_write"
+    const risk = assessApprovalRisk(riskToolName, rawArgs)
+    const policy = getApprovalConfig().policyForWithRisk(agentId, tool, risk)
 
     if (policy === "allow") return true
 
@@ -1450,9 +2109,11 @@ export class Dispatcher extends EventEmitter {
       step: { id: stepId, kind: "tool", tool: toolName, label, detail, status: "awaiting" }
     })
     const action: 'write_file' | 'run_command' = tool === 'exec' ? 'run_command' : 'write_file'
-    const target = detail || label || toolName
-    const risk = assessApprovalRisk(toolName, req.raw || {})
-    const reason = approvalReason(toolName, risk, target)
+    const targetValue = tool === 'exec'
+      ? (rawArgs.command ?? rawArgs.cmd ?? detail)
+      : (rawArgs.path ?? rawArgs.file_path ?? rawArgs.filepath ?? detail)
+    const target = String(targetValue || label || toolName)
+    const reason = approvalReason(riskToolName, risk, target)
     const preview = detail || ''
     const approved = await this.requestApprovalFor(task, agentId, {
       stepId, agentId, tool, toolName, label, detail,

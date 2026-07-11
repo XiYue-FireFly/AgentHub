@@ -199,7 +199,7 @@ export function applyAppearance(preferences: AppearancePreferences): void {
   root.style.setProperty('--glass-blur', '28px')
   root.style.setProperty('--wb-shadow', '0 14px 40px rgba(47, 111, 235, 0.1)')
   root.style.setProperty('--wb-shadow-lg', '0 24px 60px rgba(47, 111, 235, 0.16)')
-  root.style.setProperty('--wb-sidebar-width', '260px')
+  root.style.setProperty('--wb-sidebar-width', '312px')
   root.style.setProperty('--wb-titlebar-height', '40px')
   root.style.setProperty('--wb-transition', 'all 0.25s cubic-bezier(0.22, 1, 0.36, 1)')
   root.style.setProperty('--ease-spring', 'cubic-bezier(0.34, 1.56, 0.64, 1)')

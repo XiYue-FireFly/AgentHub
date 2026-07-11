@@ -7,7 +7,7 @@
  * P2-2: Settings.tsx splitting.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react'
 import { Icon, IC, Switch } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { styledConfirm } from '../lib/confirm'
@@ -47,6 +47,10 @@ function dedupeMcpServers(servers: McpServerConfig[]): McpServerConfig[] {
   return out
 }
 
+interface McpWorkspaceRequestOwner {
+  workspaceId: string | null
+}
+
 export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) {
   const [servers, setServers] = useState<McpServerConfig[]>([])
   const [loading, setLoading] = useState(false)
@@ -60,24 +64,63 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
   // MCP 系统级控制状态
   const [systemConfig, setSystemConfig] = useState<McpSystemConfig | null>(null)
   const [systemLoading, setSystemLoading] = useState(false)
+  const workspaceOwner = useMemo<McpWorkspaceRequestOwner>(() => ({ workspaceId }), [workspaceId])
+  const activeWorkspaceOwner = useRef<McpWorkspaceRequestOwner | null>(null)
+  const listRequestId = useRef(0)
+  const listToolsRequestId = useRef(0)
+  const mounted = useRef(false)
+  const systemToggleRequestId = useRef(0)
 
-  const refresh = useCallback(async () => {
+  const refreshForOwner = useCallback(async (owner: McpWorkspaceRequestOwner) => {
+    if (activeWorkspaceOwner.current !== owner) return
+    const requestId = ++listRequestId.current
     setLoading(true)
+    setError(null)
     try {
-      setServers(dedupeMcpServers(await window.electronAPI.mcp.list(workspaceId)))
+      const nextServers = await window.electronAPI.mcp.list(owner.workspaceId)
+      if (activeWorkspaceOwner.current !== owner || listRequestId.current !== requestId) return
+      setServers(dedupeMcpServers(nextServers))
       setError(null)
     } catch (err: any) {
+      if (activeWorkspaceOwner.current !== owner || listRequestId.current !== requestId) return
       setError(err?.message || tr('加载 MCP 失败', 'Failed to load MCP servers'))
     } finally {
-      setLoading(false)
+      if (activeWorkspaceOwner.current === owner && listRequestId.current === requestId) setLoading(false)
     }
-  }, [workspaceId])
+  }, [])
 
-  useEffect(() => {
-    let alive = true
-    refresh().catch(() => {})
-    return () => { alive = false }
-  }, [refresh])
+  const refresh = useCallback(
+    () => refreshForOwner(workspaceOwner),
+    [refreshForOwner, workspaceOwner]
+  )
+
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      systemToggleRequestId.current += 1
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    activeWorkspaceOwner.current = workspaceOwner
+    listRequestId.current += 1
+    listToolsRequestId.current += 1
+    setServers([])
+    setError(null)
+    setToolsForServer(null)
+    setToolsList([])
+    setToolsLoading(false)
+    setToolsError(null)
+    refreshForOwner(workspaceOwner).catch(() => {})
+
+    return () => {
+      if (activeWorkspaceOwner.current !== workspaceOwner) return
+      activeWorkspaceOwner.current = null
+      listRequestId.current += 1
+      listToolsRequestId.current += 1
+    }
+  }, [refreshForOwner, workspaceOwner])
 
   // 加载 MCP 系统配置
   useEffect(() => {
@@ -89,21 +132,26 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
   }, [])
 
   const toggleSystemEnabled = async () => {
-    if (!systemConfig) return
+    if (!systemConfig || !mounted.current) return
+    const requestId = ++systemToggleRequestId.current
+    const currentConfig = systemConfig
+    const newEnabled = !currentConfig.enabled
     setSystemLoading(true)
     try {
-      const newEnabled = !systemConfig.enabled
       await window.electronAPI.mcp.setSystemEnabled(newEnabled)
-      setSystemConfig({ ...systemConfig, enabled: newEnabled })
+      if (!mounted.current || systemToggleRequestId.current !== requestId) return
+      setSystemConfig({ ...currentConfig, enabled: newEnabled })
     } catch (err: any) {
+      if (!mounted.current || systemToggleRequestId.current !== requestId) return
       setError(err?.message || tr('更新系统配置失败', 'Failed to update system config'))
     } finally {
-      setSystemLoading(false)
+      if (mounted.current && systemToggleRequestId.current === requestId) setSystemLoading(false)
     }
   }
 
   const add = async () => {
-    if (!draft.name.trim()) return
+    const owner = workspaceOwner
+    if (activeWorkspaceOwner.current !== owner || !draft.name.trim()) return
     try {
       await window.electronAPI.mcp.upsert({
         name: draft.name.trim(),
@@ -113,49 +161,67 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
         url: draft.transport !== 'stdio' ? draft.url.trim() : undefined,
         enabled: true
       })
+      if (activeWorkspaceOwner.current !== owner) return
       setDraft({ name: '', transport: 'stdio', command: '', args: '', url: '' })
       setAdding(false)
-      await refresh()
+      await refreshForOwner(owner)
+      if (activeWorkspaceOwner.current !== owner) return
     } catch (err: any) {
+      if (activeWorkspaceOwner.current !== owner) return
       setError(err?.message || tr('添加 MCP 失败', 'Failed to add MCP server'))
     }
   }
 
   const scan = async () => {
+    const owner = workspaceOwner
+    if (activeWorkspaceOwner.current !== owner) return
+    const requestId = ++listRequestId.current
     setLoading(true)
+    setError(null)
     try {
-      await window.electronAPI.mcp.scanLocal(workspaceId)
-      setServers(dedupeMcpServers(await window.electronAPI.mcp.list(workspaceId)))
+      await window.electronAPI.mcp.scanLocal(owner.workspaceId)
+      if (activeWorkspaceOwner.current !== owner || listRequestId.current !== requestId) return
+      const nextServers = await window.electronAPI.mcp.list(owner.workspaceId)
+      if (activeWorkspaceOwner.current !== owner || listRequestId.current !== requestId) return
+      setServers(dedupeMcpServers(nextServers))
       setError(null)
     } catch (err: any) {
+      if (activeWorkspaceOwner.current !== owner || listRequestId.current !== requestId) return
       setError(err?.message || tr('扫描 MCP 失败', 'Failed to scan MCP servers'))
     } finally {
-      setLoading(false)
+      if (activeWorkspaceOwner.current === owner && listRequestId.current === requestId) setLoading(false)
     }
   }
 
-  const listToolsRequestId = useRef(0)
-
   const listTools = async (serverId: string) => {
-    if (toolsForServer === serverId) { setToolsForServer(null); return }
+    const owner = workspaceOwner
+    if (activeWorkspaceOwner.current !== owner) return
+    if (toolsForServer === serverId) {
+      listToolsRequestId.current += 1
+      setToolsForServer(null)
+      setToolsList([])
+      setToolsLoading(false)
+      setToolsError(null)
+      return
+    }
     const requestId = ++listToolsRequestId.current
     setToolsForServer(serverId)
     setToolsLoading(true)
     setToolsError(null)
     setToolsList([])
     try {
-      const result = await window.electronAPI.mcp.listTools(serverId, workspaceId)
+      const result = await window.electronAPI.mcp.listTools(serverId, owner.workspaceId)
       // Only apply if this is still the latest request
-      if (requestId !== listToolsRequestId.current) return
+      if (activeWorkspaceOwner.current !== owner || requestId !== listToolsRequestId.current) return
       if (result.ok) setToolsList(result.tools || [])
       else setToolsError(result.error || tr('获取工具列表失败', 'Failed to list tools'))
     } catch (err: any) {
       // Only apply if this is still the latest request
-      if (requestId !== listToolsRequestId.current) return
+      if (activeWorkspaceOwner.current !== owner || requestId !== listToolsRequestId.current) return
       setToolsError(err?.message || tr('获取工具列表失败', 'Failed to list tools'))
     } finally {
       // Only update loading state if this is still the latest request
-      if (requestId === listToolsRequestId.current) setToolsLoading(false)
+      if (activeWorkspaceOwner.current === owner && requestId === listToolsRequestId.current) setToolsLoading(false)
     }
   }
 
@@ -244,31 +310,47 @@ export function McpSettingsTab({ workspaceId }: { workspaceId: string | null }) 
               <span className="ah-chip">{mcpSourceLabel(server.source)}</span>
               <span className={'wb-mcp-clean-status ' + (server.status || 'unknown')} title={server.error || ''}>{mcpStatusLabel(server.status || 'unknown')}</span>
                <Switch on={server.enabled} onChange={async value => {
+                const owner = workspaceOwner
+                if (activeWorkspaceOwner.current !== owner) return
                 try {
-                  await window.electronAPI.mcp.setEnabled(server.id, value, workspaceId)
-                  await refresh()
+                  await window.electronAPI.mcp.setEnabled(server.id, value, owner.workspaceId)
+                  if (activeWorkspaceOwner.current !== owner) return
+                  await refreshForOwner(owner)
+                  if (activeWorkspaceOwner.current !== owner) return
                 } catch (err: any) {
+                  if (activeWorkspaceOwner.current !== owner) return
                   setError(err?.message || tr('设置状态失败', 'Failed to set state'))
                 }
               }} />
               <span className="wb-card-actions">
                 <button className="ah-btn sm" onClick={async () => {
+                  const owner = workspaceOwner
+                  if (activeWorkspaceOwner.current !== owner) return
                   try {
-                    await window.electronAPI.mcp.test(server.id, workspaceId)
-                    await refresh()
+                    await window.electronAPI.mcp.test(server.id, owner.workspaceId)
+                    if (activeWorkspaceOwner.current !== owner) return
+                    await refreshForOwner(owner)
+                    if (activeWorkspaceOwner.current !== owner) return
                   } catch (err: any) {
+                    if (activeWorkspaceOwner.current !== owner) return
                     setError(err?.message || tr('测试失败', 'Test failed'))
                   }
                 }}>{tr('测试', 'Test')}</button>
                 {server.transport === 'stdio' && <button className="ah-btn sm" onClick={() => listTools(server.id)}>{toolsForServer === server.id ? tr('收起工具', 'Hide tools') : tr('工具列表', 'Tools')}</button>}
                 <button className="ah-btn sm" onClick={() => copyCommand(server)}>{tr('复制命令', 'Copy')}</button>
                 {server.source === 'user' && <button className="ah-btn sm danger" onClick={async () => {
+                  const owner = workspaceOwner
+                  if (activeWorkspaceOwner.current !== owner) return
                   try {
                     const ok = await styledConfirm({ message: tr(`删除 MCP 服务「${server.name}」？`, `Delete MCP service "${server.name}"?`), danger: true })
+                    if (activeWorkspaceOwner.current !== owner) return
                     if (!ok) return
                     await window.electronAPI.mcp.remove(server.id)
-                    await refresh()
+                    if (activeWorkspaceOwner.current !== owner) return
+                    await refreshForOwner(owner)
+                    if (activeWorkspaceOwner.current !== owner) return
                   } catch (err: any) {
+                    if (activeWorkspaceOwner.current !== owner) return
                     setError(err?.message || tr('删除失败', 'Failed to delete'))
                   }
                 }}>{tr('删除', 'Delete')}</button>}

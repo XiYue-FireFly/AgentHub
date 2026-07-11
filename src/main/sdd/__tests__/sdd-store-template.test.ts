@@ -77,4 +77,16 @@ describe('SDD draft persistence', () => {
     expect(updated?.designContext?.designType).toBe('product')
     expect(updated?.designContext?.brandColor).toBe('#2563eb')
   })
+
+  it.each(['deleted', 'never-created'] as const)('rejects updates for a %s draft instead of creating it', async state => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agenthub-sdd-'))
+    const store = createSddStore(workspace)
+    const draftId = state === 'deleted'
+      ? (await store.createDraft({ workspaceRoot: workspace, title: 'Temporary' })).id
+      : 'missing-draft'
+    if (state === 'deleted') await store.deleteDraft(draftId)
+
+    await expect(store.updateDraft(draftId, { content: '# Must not exist' })).rejects.toThrow(`Failed to update draft ${draftId}`)
+    await expect(store.getDraft(draftId)).resolves.toBeNull()
+  })
 })

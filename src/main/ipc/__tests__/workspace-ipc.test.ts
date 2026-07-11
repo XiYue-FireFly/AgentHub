@@ -1,4 +1,6 @@
-import { resolve } from 'node:path'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const electronMock = vi.hoisted(() => ({
@@ -199,6 +201,34 @@ describe('workspace IPC file path trust', () => {
     expect(await electronMock.handlers.get('workspaceFiles:search')?.({}, srcDir, 'readme', 10)).toEqual([{ relativePath: 'README.md' }])
     expect(workspaceFilesMock.listWorkspaceFiles).toHaveBeenCalledWith(srcDir, 10)
     expect(workspaceFilesMock.searchWorkspaceFiles).toHaveBeenCalledWith(srcDir, 'readme', 10)
+  })
+
+  it('rejects list/search/preview/listDirectory through workspace symlinks that resolve outside the root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agenthub-workspace-root-'))
+    const outside = mkdtempSync(join(tmpdir(), 'agenthub-workspace-outside-'))
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'secret')
+      const link = join(root, 'linked-outside')
+      symlinkSync(outside, link, 'junction')
+      workspaceMock.workspaces = [{ id: 'ws-1', rootPath: root }]
+      workspaceMock.activeId = 'ws-1'
+      await setup()
+
+      expect(await electronMock.handlers.get('workspaceFiles:list')?.({}, link, 10)).toEqual([])
+      expect(await electronMock.handlers.get('workspaceFiles:search')?.({}, link, 'secret', 10)).toEqual([])
+      expect(await electronMock.handlers.get('workspaceFiles:preview')?.({}, join(link, 'secret.txt'), 20))
+        .toMatchObject({ ok: false, error: expect.stringContaining('Access denied') })
+      await expect(electronMock.handlers.get('workspaceFiles:listDirectory')?.({}, root, 'linked-outside'))
+        .resolves.toMatchObject({ ok: false, error: 'Invalid path' })
+
+      expect(workspaceFilesMock.listWorkspaceFiles).not.toHaveBeenCalled()
+      expect(workspaceFilesMock.searchWorkspaceFiles).not.toHaveBeenCalled()
+      expect(workspaceFilesMock.readFilePreview).not.toHaveBeenCalled()
+      expect(fsMock.readdir).not.toHaveBeenCalled()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('delegates workspace CRUD and active workspace requests', async () => {

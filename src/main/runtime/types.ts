@@ -1,4 +1,8 @@
-export type WorkbenchTurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
+import type { WorkbenchTurnStatus } from "../../shared/turn-status"
+import type { DecisionRequest, DecisionResolution, DecisionState } from "../../shared/decision-contract"
+import type { TurnCreateInputLike } from "../../shared/ipc-contract"
+
+export type { WorkbenchTurnStatus } from "../../shared/turn-status"
 
 export type DispatchPreset =
   | "auto"
@@ -111,6 +115,7 @@ export interface WorkbenchTurn {
   thinking?: any
   status: WorkbenchTurnStatus
   taskIds: string[]
+  ownerWebContentsId?: number
   createdAt: number
   completedAt?: number
 }
@@ -120,6 +125,8 @@ export interface AgentRunNode {
   turnId: string
   agentId: string
   role: "lead" | "worker" | "reviewer" | "synthesizer" | "target" | "router" | "executor" | "gatekeeper"
+  taskId?: string
+  scheduleStepId?: string
   status: WorkbenchTurnStatus
   parentRunId?: string
   startedAt: number
@@ -148,9 +155,44 @@ export interface RuntimeEvent {
     | "memory:candidate"
     | "schedule:preview"
     | "turn:summary"
+    | "decision:requested"
+    | "decision:resolved"
   agentId?: string
   payload: any
   createdAt: number
+}
+
+export interface DurableDecisionRecord {
+  request: DecisionRequest
+  state: DecisionState
+  activatedAt?: number
+  expiresAt?: number
+  resolution?: DecisionResolution
+}
+
+export interface QueuedThreadSubmission {
+  id: string
+  threadId: string
+  turnId: string
+  ownerWebContentsId: number
+  input: TurnCreateInputLike
+  source: "create" | "retry"
+  retryOfTurnId?: string
+  state: "queued" | "starting"
+  createdAt: number
+}
+
+export interface PersistedRuntime {
+  version: 1
+  threads: WorkbenchThread[]
+  turns: WorkbenchTurn[]
+  runs: AgentRunNode[]
+  events: RuntimeEvent[]
+  hiddenTaskTurnIds: string[]
+  decisions: DurableDecisionRecord[]
+  queuedSubmissions: QueuedThreadSubmission[]
+  activeThreadId: string | null
+  nextSeqByThread: Record<string, number>
 }
 
 export interface WorkbenchSnapshot {

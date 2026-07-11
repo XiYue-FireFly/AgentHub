@@ -22,6 +22,7 @@ export function acpDefaults(agentId: string): { binary: string; args: string[] }
 }
 
 const ACP_ENV: Record<string, string> = { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', NO_COLOR: '1' }
+const ACP_CANCEL_GRACE_MS = 1_000
 
 export class AcpAgentAdapter {
   id: string
@@ -63,6 +64,7 @@ export class AcpAgentAdapter {
     }
     this.currentSession = null
     this.sessions.clear()
+    this.sessionLocks.clear()
     this.status = 'idle'
   }
 
@@ -72,6 +74,22 @@ export class AcpAgentAdapter {
   /** 中断当前轮（发 session/cancel）。 */
   cancel(): void {
     if (this.client && this.currentSession) this.client.cancel(this.currentSession)
+  }
+
+  async cancelAndStopAfterGrace(graceMs = ACP_CANCEL_GRACE_MS): Promise<void> {
+    const client = this.client
+    const session = this.currentSession
+    if (client && session) {
+      try { client.cancel(session) } catch { /* best effort */ }
+    }
+    if (!client) {
+      await this.stop()
+      return
+    }
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, graceMs)))
+    if (this.client === client && (this.currentSession === session || this.status === 'busy')) {
+      await this.stop()
+    }
   }
 
   hasReusableSession(sessionKey: string | undefined, cwd: string, mcpServers: any[] = []): boolean {

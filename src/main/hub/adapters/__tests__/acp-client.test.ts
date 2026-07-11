@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -106,6 +106,124 @@ describe('acpPermissionRequest', () => {
 
     expect(req.tool).toBeNull()
     expect(req.toolName).toBe('read')
+  })
+
+  it('maps snake_case destructive ACP tool names to write', () => {
+    for (const name of ['delete_file', 'move_file', 'rename_file']) {
+      const req = acpPermissionRequest({
+        toolCall: { name, title: name, input: { path: 'src/app.ts' } }
+      })
+
+      expect(req.tool).toBe('write')
+      expect(req.toolName).toBe(name)
+    }
+  })
+
+  it('maps chmod and mkdir style ACP tool names to write', () => {
+    for (const name of ['chmod', 'mkdir', 'create_directory']) {
+      const req = acpPermissionRequest({
+        toolCall: { name, title: name, input: { path: 'scripts' } }
+      })
+
+      expect(req.tool).toBe('write')
+    }
+  })
+
+  it('maps run_command with nested rawInput to exec and exposes args', () => {
+    const req = acpPermissionRequest({
+      toolCall: { name: 'run_command', title: 'Run command', rawInput: { command: 'npm test' } }
+    })
+
+    expect(req.tool).toBe('exec')
+    expect(req.detail).toBe('npm test')
+    expect(req.args).toEqual({ command: 'npm test' })
+  })
+
+  it('marks unclassified permission requests as not read-only', () => {
+    const req = acpPermissionRequest({
+      toolCall: { name: 'custom_plugin_action', input: { target: 'workspace' } }
+    })
+
+    expect(req.tool).toBeNull()
+    expect(req.readOnly).toBe(false)
+  })
+})
+
+describe('AcpClient permission request handling', () => {
+  async function invokePermission(client: any, params: any) {
+    const responses: any[] = []
+    vi.spyOn(client, 'respond').mockImplementation((...args: unknown[]) => {
+      responses.push(args[1])
+    })
+    await client.handlePermissionRequest({ id: 7, method: 'session/request_permission', params })
+    return responses.at(-1)
+  }
+
+  it('cancels guarded permission requests without an active session handler', async () => {
+    const { AcpClient } = await import('../acp-client')
+    const client = new AcpClient('fake-acp', [])
+    ;(client as any).sessionRoots.set('s1', process.cwd())
+
+    const response = await invokePermission(client as any, {
+      sessionId: 's1',
+      options: [{ optionId: 'allow', kind: 'allow_once' }, { optionId: 'deny', kind: 'deny' }],
+      toolCall: { name: 'run_command', rawInput: { command: 'npm test' } }
+    })
+
+    expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+  })
+
+  it('honors active handler allow and deny decisions', async () => {
+    const { AcpClient } = await import('../acp-client')
+    const client = new AcpClient('fake-acp', [])
+    ;(client as any).sessionRoots.set('s1', process.cwd())
+    const handler = vi.fn()
+    ;(client as any).promptHandlers.set('s1', { onRequestPermission: handler })
+
+    handler.mockResolvedValueOnce(true)
+    await expect(invokePermission(client as any, {
+      sessionId: 's1',
+      options: [{ optionId: 'allow', kind: 'allow_once' }, { optionId: 'deny', kind: 'deny' }],
+      toolCall: { name: 'delete_file', input: { path: 'old.txt' } }
+    })).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+
+    handler.mockResolvedValueOnce(false)
+    await expect(invokePermission(client as any, {
+      sessionId: 's1',
+      options: [{ optionId: 'allow', kind: 'allow_once' }, { optionId: 'deny', kind: 'deny' }],
+      toolCall: { name: 'delete_file', input: { path: 'old.txt' } }
+    })).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+    expect(handler).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops the ACP client and clears session state when a JSON-RPC request times out', async () => {
+    vi.useFakeTimers()
+    try {
+      const { AcpClient } = await import('../acp-client')
+      const client = new AcpClient('fake-acp', [], undefined, 25)
+      const fakeProc = {
+        pid: 0,
+        stdin: { write: vi.fn() },
+        kill: vi.fn(),
+        removeAllListeners: vi.fn()
+      }
+      ;(client as any).proc = fakeProc
+      ;(client as any).promptHandlers.set('s1', {})
+      ;(client as any).sessionRoots.set('s1', process.cwd())
+
+      const request = (client as any).request('session/prompt', { sessionId: 's1' })
+      const expectation = expect(request).rejects.toThrow(/timed out: session\/prompt/)
+      await vi.advanceTimersByTimeAsync(25)
+
+      await expectation
+      expect(fakeProc.stdin.write).toHaveBeenCalled()
+      expect((client as any).proc).toBeNull()
+      expect((client as any).pending.size).toBe(0)
+      expect((client as any).promptHandlers.size).toBe(0)
+      expect((client as any).sessionRoots.size).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

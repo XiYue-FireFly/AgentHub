@@ -19,6 +19,7 @@ export interface AgentInfo {
 
 export class AgentRegistry extends EventEmitter {
   private agents: Map<string, AgentInfo> = new Map()
+  private adapterStops = new Map<string, Promise<void>>()
 
   register(adapter: AgentAdapter, capabilities: string[] = [], providerId?: string, modelId?: string): AgentInfo {
     const info: AgentInfo = {
@@ -96,16 +97,35 @@ export class AgentRegistry extends EventEmitter {
   }
 
   async stopAll(): Promise<void> {
-    for (const [, info] of this.agents) {
-      try { await info.adapter.stop() } catch {}
-      info.status = "offline"
-    }
+    await this.stopEveryAdapter()
   }
 
-  forceKillAll(): void {
-    for (const [, info] of this.agents) {
-      try { info.adapter.stop() } catch {}
-      info.status = "offline"
+  forceKillAll(): Promise<void> {
+    return this.stopEveryAdapter()
+  }
+
+  private async stopEveryAdapter(): Promise<void> {
+    await Promise.all(this.getAll().map(info => this.stopAdapter(info)))
+  }
+
+  private stopAdapter(info: AgentInfo): Promise<void> {
+    const existing = this.adapterStops.get(info.id)
+    if (existing) return existing
+
+    const stopping = Promise.resolve()
+      .then(() => info.adapter.stop())
+      .then(
+        () => { info.status = "offline" },
+        error => {
+          info.status = "error"
+          throw error
+        }
+      )
+    this.adapterStops.set(info.id, stopping)
+    const forgetStopping = (): void => {
+      if (this.adapterStops.get(info.id) === stopping) this.adapterStops.delete(info.id)
     }
+    void stopping.then(forgetStopping, forgetStopping)
+    return stopping
   }
 }

@@ -1,13 +1,17 @@
-import React, { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import React, { FormEvent, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC } from '../glass/ui'
 import { tr } from '../glass/i18n'
 import { WorkspaceItem } from './types'
 import { styledConfirm } from '../lib/confirm'
 import type { ViewMode } from './viewModes'
 import type { WorkbenchSettingsTabKey } from './NativeTitlebar'
+import { useModalFocus } from '../hooks/useModalFocus'
+import { isTerminalTurnStatus } from '../../shared/turn-status'
 
 const PERSONAL_WORKSPACE_KEY = '__personal__'
 const SIDEBAR_WIDTH_KEY = 'agenthub.workbench.sidebarWidth.v1'
+const SIDEBAR_WIDTH_PROPERTY = '--wb-sidebar-width'
+const DEFAULT_SIDEBAR_WIDTH = 312
 const MIN_SIDEBAR_WIDTH = 248
 const MAX_SIDEBAR_WIDTH = 420
 
@@ -50,11 +54,24 @@ export function SessionSidebar({
   proxyHost: string
   pendingThreadId: string | null
 }) {
-  const [sidebarWidth, setSidebarWidth] = useState(312)
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [renaming, setRenaming] = useState<WorkbenchThread | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [renamingBusy, setRenamingBusy] = useState(false)
+  const renameDialogRef = useRef<HTMLFormElement>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const renameTitleId = useId()
+  const renameDescriptionId = useId()
+  useModalFocus({
+    containerRef: renameDialogRef,
+    initialFocusRef: renameInputRef,
+    onEscape: () => {
+      if (!renamingBusy) setRenaming(null)
+    },
+    active: Boolean(renaming)
+  })
   // W-L4: Tick state to refresh relativeTime labels periodically
   const [, setTick] = useState(0)
   useEffect(() => {
@@ -84,7 +101,7 @@ export function SessionSidebar({
         workspace,
         allThreads: projectThreads,
         visibleThreads: workspaceHit ? projectThreads : visibleThreads,
-        runningCount: projectThreads.filter(thread => thread.lastTurnStatus === 'running' || thread.lastTurnStatus === 'queued').length
+        runningCount: projectThreads.filter(thread => Boolean(thread.lastTurnStatus && !isTerminalTurnStatus(thread.lastTurnStatus))).length
       }
     }).filter(Boolean) as Array<{
       workspace: WorkspaceItem
@@ -93,6 +110,15 @@ export function SessionSidebar({
       runningCount: number
     }>
   }, [grouped, query, workspaces])
+
+  useLayoutEffect(() => {
+    const owner = sidebarRef.current?.closest<HTMLElement>('.wb-shell')
+    if (!owner) return
+    owner.style.setProperty(SIDEBAR_WIDTH_PROPERTY, `${sidebarWidth}px`)
+    return () => {
+      owner.style.removeProperty(SIDEBAR_WIDTH_PROPERTY)
+    }
+  }, [sidebarWidth])
 
   useEffect(() => {
     window.electronAPI.store.get(SIDEBAR_WIDTH_KEY)
@@ -175,7 +201,12 @@ export function SessionSidebar({
   }
 
   return (
-    <aside className="wb-sidebar" style={{ width: sidebarWidth, flexBasis: sidebarWidth } as React.CSSProperties}>
+    <aside
+      ref={sidebarRef}
+      className="wb-sidebar"
+      aria-label={tr('工作台导航', 'Workbench navigation')}
+      style={{ width: sidebarWidth, flexBasis: sidebarWidth } as React.CSSProperties}
+    >
       <div className="wb-mode-tabs">
         <button className={view !== 'write' ? 'active' : ''} onClick={() => setView('chat')}><Icon d={IC.terminal} size={15} /> {tr('代码', 'Code')}</button>
         <button className={view === 'write' ? 'active' : ''} onClick={() => setView('write')}><Icon d={IC.pencil} size={15} /> {tr('写作', 'Write')}</button>
@@ -188,7 +219,7 @@ export function SessionSidebar({
         title={tr('调整侧边栏宽度', 'Resize sidebar')}
       />
 
-      <nav className="wb-nav">
+      <nav className="wb-nav" aria-label={tr('主要导航', 'Primary navigation')}>
         <button className={view === 'chat' ? 'active' : ''} onClick={() => createThread()}>
           <Icon d={IC.plus} size={16} /> {tr('新对话', 'New chat')}
         </button>
@@ -238,7 +269,11 @@ export function SessionSidebar({
           placeholder={tr('搜索工作目录和会话', 'Search folders and sessions')}
         />
         {search && (
-          <button title={tr('清空搜索', 'Clear search')} onClick={() => setSearch('')}>
+          <button
+            title={tr('清空搜索', 'Clear search')}
+            aria-label={tr('清空搜索', 'Clear search')}
+            onClick={() => setSearch('')}
+          >
             <Icon d={IC.x} size={12} />
           </button>
         )}
@@ -247,7 +282,11 @@ export function SessionSidebar({
       <div className="wb-sidebar-section">
         <div className="wb-sidebar-label">
           <span>{tr('工作台', 'Workbench')}</span>
-          <button title={tr('添加工作目录', 'Add working folder')} onClick={createProject}><Icon d={IC.plus} size={13} /></button>
+          <button
+            title={tr('添加工作目录', 'Add working folder')}
+            aria-label={tr('添加工作目录', 'Add working folder')}
+            onClick={createProject}
+          ><Icon d={IC.plus} size={13} /></button>
         </div>
       </div>
 
@@ -259,6 +298,7 @@ export function SessionSidebar({
                 className="wb-project-collapse"
                 onClick={() => setCollapsed(current => ({ ...current, [PERSONAL_WORKSPACE_KEY]: !current[PERSONAL_WORKSPACE_KEY] }))}
                 title={collapsed[PERSONAL_WORKSPACE_KEY] ? tr('展开个人会话', 'Expand personal chat') : tr('折叠个人会话', 'Collapse personal chat')}
+                aria-label={collapsed[PERSONAL_WORKSPACE_KEY] ? tr('展开个人会话', 'Expand personal chat') : tr('折叠个人会话', 'Collapse personal chat')}
               >
                 <Icon d={collapsed[PERSONAL_WORKSPACE_KEY] ? IC.chev : IC.chevDown} size={13} />
               </button>
@@ -272,6 +312,7 @@ export function SessionSidebar({
               <button
                 className="wb-project-add"
                 title={tr('新建个人会话', 'New personal chat')}
+                aria-label={tr('新建个人会话', 'New personal chat')}
                 onClick={() => createThread(null)}
               >
                 <Icon d={IC.plus} size={13} />
@@ -326,6 +367,7 @@ export function SessionSidebar({
                   className="wb-project-collapse"
                   onClick={() => setCollapsed(current => ({ ...current, [workspace.id]: !isCollapsed }))}
                   title={isCollapsed ? tr('展开工作目录', 'Expand folder') : tr('折叠工作目录', 'Collapse folder')}
+                  aria-label={isCollapsed ? tr('展开工作目录', 'Expand folder') : tr('折叠工作目录', 'Collapse folder')}
                 >
                   <Icon d={isCollapsed ? IC.chev : IC.chevDown} size={13} />
                 </button>
@@ -340,6 +382,7 @@ export function SessionSidebar({
                 <button
                   className="wb-project-add"
                   title={tr('在工作目录中新建会话', 'New session in folder')}
+                  aria-label={tr('在工作目录中新建会话', 'New session in folder')}
                   onClick={() => createThreadInWorkspace(workspace.id)}
                 >
                   <Icon d={IC.plus} size={13} />
@@ -381,18 +424,28 @@ export function SessionSidebar({
 
       {renaming && (
         <div className="wb-modal-backdrop" onMouseDown={() => !renamingBusy && setRenaming(null)}>
-          <form className="wb-rename-modal" onMouseDown={event => event.stopPropagation()} onSubmit={submitRename}>
+          <form
+            className="wb-rename-modal"
+            onMouseDown={event => event.stopPropagation()}
+            onSubmit={submitRename}
+            ref={renameDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={renameTitleId}
+            aria-describedby={renameDescriptionId}
+            tabIndex={-1}
+          >
             <div className="wb-project-modal-head">
               <div>
-                <strong>{tr('重命名会话', 'Rename session')}</strong>
-                <span>{tr('给这个会话起一个方便在列表里扫描的短名称。', 'Give this thread a short name that stays easy to scan in the list.')}</span>
+                <strong id={renameTitleId}>{tr('重命名会话', 'Rename session')}</strong>
+                <span id={renameDescriptionId}>{tr('给这个会话起一个方便在列表里扫描的短名称。', 'Give this thread a short name that stays easy to scan in the list.')}</span>
               </div>
-              <button type="button" disabled={renamingBusy} onClick={() => setRenaming(null)}>
+              <button type="button" disabled={renamingBusy} onClick={() => setRenaming(null)} aria-label={tr('关闭重命名对话框', 'Close rename dialog')}>
                 <Icon d={IC.x} size={14} />
               </button>
             </div>
             <input
-              autoFocus
+              ref={renameInputRef}
               value={renameValue}
               onChange={event => setRenameValue(event.target.value)}
               onFocus={event => event.currentTarget.select()}
@@ -430,7 +483,7 @@ function ThreadItem({
   onRename: (thread: WorkbenchThread) => void
   onDelete: (thread: WorkbenchThread) => void
 }) {
-  const running = thread.lastTurnStatus === 'running' || thread.lastTurnStatus === 'queued'
+  const running = Boolean(thread.lastTurnStatus && !isTerminalTurnStatus(thread.lastTurnStatus))
   return (
     <div className={'wb-thread-item' + (active ? ' active' : '') + (pending ? ' pending' : '')}>
       <button className="wb-thread-main" onClick={() => selectThread(thread.id)} title={thread.title} aria-busy={pending}>
@@ -443,10 +496,10 @@ function ThreadItem({
       </button>
       <div className="wb-thread-actions">
         {running && <span className="wb-thread-running" title={tr('运行中', 'Running')}></span>}
-        <button title={tr('重命名会话', 'Rename session')} onClick={() => onRename(thread)}>
+        <button title={tr('重命名会话', 'Rename session')} aria-label={tr('重命名会话', 'Rename session')} onClick={() => onRename(thread)}>
           <Icon d={IC.pencil} size={12} />
         </button>
-        <button title={tr('删除会话', 'Delete session')} onClick={() => onDelete(thread)}>
+        <button title={tr('删除会话', 'Delete session')} aria-label={tr('删除会话', 'Delete session')} onClick={() => onDelete(thread)}>
           <Icon d={IC.trash} size={12} />
         </button>
       </div>
@@ -471,14 +524,16 @@ function statusLabel(status?: WorkbenchTurnStatus): string {
   if (status === 'completed') return tr('完成', 'done')
   if (status === 'running') return tr('运行中', 'running')
   if (status === 'queued') return tr('排队中', 'queued')
+  if (status === 'awaiting-decision') return tr('等待决定', 'Waiting for decision')
   if (status === 'failed') return tr('失败', 'failed')
   if (status === 'cancelled') return tr('已取消', 'cancelled')
+  if (status === 'interrupted') return tr('已中断', 'Interrupted')
   return status
 }
 
 function statusClass(status?: WorkbenchTurnStatus): string {
-  if (status === 'running' || status === 'queued') return 'busy'
-  if (status === 'failed') return 'error'
+  if (status && !isTerminalTurnStatus(status)) return 'busy'
+  if (status === 'failed' || status === 'interrupted') return 'error'
   if (status === 'completed') return 'idle'
   return 'off'
 }

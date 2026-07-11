@@ -27,6 +27,59 @@ describe('orchestrator helpers', () => {
     expect(parsePlan('')).toBeNull()
   })
 
+  it('parsePlan 将超大计划限制为最多 5 个子任务', () => {
+    const raw = JSON.stringify({
+      subtasks: Array.from({ length: 100 }, (_, index) => ({
+        id: String(index + 1),
+        title: `任务 ${index + 1}`,
+        detail: `执行任务 ${index + 1}`
+      }))
+    })
+
+    const plan = parsePlan(raw)
+
+    expect(plan?.subtasks).toHaveLength(5)
+    expect(plan?.subtasks.map(subtask => subtask.id)).toEqual(['1', '2', '3', '4', '5'])
+  })
+
+  it('parsePlan 去重重复 ID 并限制所有文本字段长度', () => {
+    const longId = 'i'.repeat(200)
+    const raw = JSON.stringify({
+      subtasks: [
+        { id: longId, title: 't'.repeat(200), detail: 'd'.repeat(5000), agent: 'codex' },
+        { id: longId, title: '重复任务', detail: '不应保留', agent: 'codex' }
+      ]
+    })
+
+    const plan = parsePlan(raw)
+
+    expect(plan?.subtasks).toHaveLength(1)
+    expect(plan?.subtasks[0].id.length).toBeLessThanOrEqual(64)
+    expect(plan?.subtasks[0].title.length).toBeLessThanOrEqual(80)
+    expect(plan?.subtasks[0].detail?.length).toBeLessThanOrEqual(4000)
+  })
+
+  it('parsePlan 保留截断后冲突的不同长 ID，同时继续去重真正重复的原始 ID', () => {
+    const sharedPrefix = 'x'.repeat(64)
+    const firstId = `${sharedPrefix}-first`
+    const secondId = `${sharedPrefix}-second`
+    const raw = JSON.stringify({
+      subtasks: [
+        { id: firstId, title: '任务一', detail: '执行一' },
+        { id: secondId, title: '任务二', detail: '执行二' },
+        { id: firstId, title: '重复任务', detail: '不应保留' }
+      ]
+    })
+
+    const plan = parsePlan(raw)
+    const ids = plan?.subtasks.map(subtask => subtask.id) || []
+
+    expect(plan?.subtasks.map(subtask => subtask.detail)).toEqual(['执行一', '执行二'])
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+    expect(ids.every(id => id.length <= 64)).toBe(true)
+  })
+
   it('decompositionPrompt 含任务文本与 JSON 指令', () => {
     const s = decompositionPrompt('做个网站')
     expect(s).toContain('做个网站')

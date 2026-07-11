@@ -42,6 +42,7 @@ export interface RunAgenticParams {
   /** 工作区根目录；null = 无工作区（降级只读，禁止写/执行） */
   root: string | null
   isCancelled: () => boolean
+  signal?: AbortSignal
   emit: AgenticEmit
   maxRounds?: number
   /** 派发的 agentId（用于审批请求标注）；缺省 'agent' */
@@ -87,7 +88,8 @@ function summarizeArgs(name: string, args: any): string {
 
 export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: string; usage?: any; error?: string }> {
   const client = buildProviderClient(p.resolved)
-  const ctx: ToolContext = { root: p.root || process.cwd(), readOnly: !p.root }
+  const ctx: ToolContext = { root: p.root || process.cwd(), readOnly: !p.root, signal: p.signal }
+  const isStopped = () => p.signal?.aborted === true || p.isCancelled()
   const messages: ChatCompletionMessage[] = p.messages?.length
     ? p.messages.map(message => ({ ...message }))
     : [{ role: 'user', content: p.userText }]
@@ -97,27 +99,59 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
   let stepSeq = 0
 
   for (let round = 0; round < maxRounds; round++) {
-    if (p.isCancelled()) break
+    if (isStopped()) break
     let roundContent = ''
     let toolCalls: any[] | undefined
     let finishReason: string | undefined
     try {
-      await new Promise<void>((resolve, reject) => {
-        client.stream(
-          { messages, systemPrompt: p.systemPrompt, thinkingOverride: p.thinking, tools: AGENTIC_TOOLS, toolChoice: 'auto' },
-          {
-            onContent: (delta) => { roundContent += delta; p.emit.delta('content', delta) },
-            onThinking: (delta) => { p.emit.delta('thinking', delta) },
-            onDone: (final) => { finishReason = final.finishReason; toolCalls = final.toolCalls; if (final.usage) lastUsage = final.usage; resolve() },
-            onError: (err) => reject(err)
-          }
-        )
+      let settleCallback!: () => void
+      let rejectCallback!: (error: unknown) => void
+      const callbackCompletion = new Promise<void>((resolve, reject) => {
+        settleCallback = resolve
+        rejectCallback = reject
       })
+      let source: Promise<void>
+      try {
+        source = Promise.resolve(client.stream(
+          { messages, systemPrompt: p.systemPrompt, thinkingOverride: p.thinking, tools: AGENTIC_TOOLS, toolChoice: 'auto', signal: p.signal },
+          {
+            onContent: (delta) => {
+              if (isStopped()) return
+              roundContent += delta
+              p.emit.delta('content', delta)
+            },
+            onThinking: (delta) => {
+              if (!isStopped()) p.emit.delta('thinking', delta)
+            },
+            onDone: (final) => {
+              if (isStopped()) {
+                settleCallback()
+                return
+              }
+              finishReason = final.finishReason
+              toolCalls = final.toolCalls
+              if (final.usage) lastUsage = final.usage
+              settleCallback()
+            },
+            onError: (err) => {
+              if (isStopped()) settleCallback()
+              else rejectCallback(err)
+            }
+          }
+        ))
+      } catch (error) {
+        source = Promise.reject(error)
+      }
+      void source.catch(rejectCallback)
+      const [callbackResult, sourceResult] = await Promise.allSettled([callbackCompletion, source])
+      if (isStopped()) break
+      if (callbackResult.status === 'rejected') throw callbackResult.reason
+      if (sourceResult.status === 'rejected') throw sourceResult.reason
     } catch (e: any) {
       return { content: fullContent, usage: lastUsage, error: e?.message || String(e) }
     }
     fullContent += roundContent
-    if (p.isCancelled()) break
+    if (isStopped()) break
 
     if (finishReason === 'tool_calls' && toolCalls && toolCalls.length) {
       messages.push({
@@ -126,7 +160,7 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
         tool_calls: toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.function?.name, arguments: tc.function?.arguments || '{}' } }))
       })
       for (const tc of toolCalls) {
-        if (p.isCancelled()) break
+        if (isStopped()) break
         const name = tc.function?.name || 'unknown'
         let parsed: any = {}
         try { parsed = JSON.parse(tc.function?.arguments || '{}') } catch { parsed = {} }
@@ -173,7 +207,7 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
               stepId, agentId: p.agentId || 'agent', tool: guarded, toolName: name,
               label, detail, action, target, risk, reason, preview
             })
-            if (p.isCancelled()) break
+            if (isStopped()) break
             if (!approved) {
               const out = 'Rejected by user (approval denied).'
               if (p.tracker) p.tracker.endTool(stepId, 'declined', out)
@@ -184,9 +218,11 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
           }
         }
 
+        if (isStopped()) break
         p.emit.activity({ id: stepId, kind: 'tool', tool: name, label, detail, status: 'running' })
         if (p.tracker) p.tracker.startTool(stepId, name, detail)
         const result = await executeTool(name, parsed, ctx)
+        if (isStopped()) break
         if (p.tracker) {
           p.tracker.endTool(stepId, result.ok ? 'succeeded' : 'failed', result.output)
           if (name === 'fs_write' && result.ok && parsed.path) {

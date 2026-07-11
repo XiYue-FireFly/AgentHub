@@ -1,9 +1,545 @@
+// @vitest-environment happy-dom
+import React from "react"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
+import { act, cleanup, render, waitFor } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { WorkbenchLayout } from "../WorkbenchLayout"
+import { resetWorkbenchUiStoreForTests } from "../state/ui-store"
 import { isTaskHistoryEvent, mergeRuntimeEventLists, runtimeAgentStatusFromEvent, shouldFlushFirstStreamDelta } from "../utils/eventUtils"
 
+const observedMainContent = vi.hoisted(() => ({
+  workspaceId: null as string | null,
+  activeThreadId: null as string | null,
+  activeThreadTitle: null as string | null,
+  sendError: null as string | null,
+  renderCount: 0,
+  selectWorkspace: null as ((workspaceId: string | null) => Promise<void>) | null
+}))
+
+const observedSidebar = vi.hoisted(() => ({
+  threads: [] as WorkbenchThread[],
+  renderCount: 0
+}))
+
+vi.mock("../../glass/approval-dialog", () => ({ ApprovalDialog: () => null }))
+vi.mock("../CommandPalette", () => ({ CommandPalette: () => null }))
+vi.mock("../CreateWorkspaceDialog", () => ({ CreateWorkspaceDialog: () => null }))
+vi.mock("../NativeTitlebar", () => ({ NativeTitlebar: () => null }))
+vi.mock("../SessionSidebar", () => ({
+  SessionSidebar: (props: { threads: WorkbenchThread[] }) => {
+    observedSidebar.threads = props.threads
+    observedSidebar.renderCount += 1
+    return null
+  }
+}))
+vi.mock("../WorkbenchAnnouncementModal", () => ({ WorkbenchAnnouncementModal: () => null }))
+vi.mock("../WorkbenchMainContent", () => ({
+  WorkbenchMainContent: (props: {
+    workspaceId: string | null
+    activeThreadId: string | null
+    activeThread: WorkbenchThread | null
+    sendError: string | null
+    selectWorkspace: (workspaceId: string | null) => Promise<void>
+  }) => {
+    observedMainContent.workspaceId = props.workspaceId
+    observedMainContent.activeThreadId = props.activeThreadId
+    observedMainContent.activeThreadTitle = props.activeThread?.title ?? null
+    observedMainContent.sendError = props.sendError
+    observedMainContent.renderCount += 1
+    observedMainContent.selectWorkspace = props.selectWorkspace
+    return null
+  }
+}))
+vi.mock("../WorkbenchPanelContainers", () => ({ WorkbenchPanelContainers: () => null }))
+
+const stableEmptyArray: never[] = []
+const stableAgents = {}
+const stableProviders: never[] = []
+const stableBindings: never[] = []
+const stableFallbackChain: string[] = []
+const stableProviderActions = {
+  onSetEnabled: vi.fn(),
+  onSetKey: vi.fn(),
+  onSetBinding: vi.fn(),
+  onSetFallback: vi.fn(),
+  onReload: vi.fn(),
+  onUpsertProvider: vi.fn(),
+  onDeleteProvider: vi.fn(),
+  onReorderProvidersForClaude: vi.fn()
+}
+const stableLayoutProps = {
+  hubRunning: true,
+  proxyHost: "127.0.0.1",
+  agents: stableAgents,
+  providers: stableProviders,
+  bindings: stableBindings,
+  fallbackChain: stableFallbackChain,
+  providerActions: stableProviderActions,
+  motion: "off" as const,
+  setMotion: vi.fn()
+}
+
+const workspaceA = { id: "workspace-a", name: "A", rootPath: "E:\\Repo-A", createdAt: 1, updatedAt: 1 }
+const workspaceB = { id: "workspace-b", name: "B", rootPath: "E:\\Repo-B", createdAt: 2, updatedAt: 2 }
+const stableWorkspaces = [workspaceA, workspaceB]
+const threadA = { id: "thread-a", workspaceId: workspaceA.id, title: "A", createdAt: 1, updatedAt: 1 }
+const threadB = { id: "thread-b", workspaceId: workspaceB.id, title: "B", createdAt: 2, updatedAt: 2 }
+const stableKnownThreads = [threadA, threadB]
+const stableVisibleOnlyThreads = [threadA]
+
+function makePlanTodo(threadId: string, workspaceRoot: string): ThreadTodo {
+  return {
+    id: `todo-${threadId}`,
+    threadId,
+    content: "T-1: capture evidence",
+    status: "in_progress",
+    source: {
+      kind: "plan",
+      threadId,
+      turnId: `turn-${threadId}`,
+      gitHeadAtDispatch: "base-b",
+      gitRootAtDispatch: workspaceRoot,
+      workspaceRoot,
+      draftId: `draft-${threadId}`,
+      planItemId: "T-1"
+    },
+    updatedAt: 1
+  }
+}
+
+function completedEvent(threadId: string): RuntimeEvent {
+  return {
+    id: `event-${threadId}`,
+    threadId,
+    turnId: `turn-${threadId}`,
+    seq: 1,
+    kind: "turn:status",
+    payload: { status: "completed" },
+    createdAt: 2
+  } as RuntimeEvent
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function runtimeSnapshot(threads: WorkbenchThread[], activeThreadId: string | null): WorkbenchSnapshot {
+  return {
+    threads,
+    turns: stableEmptyArray,
+    runs: stableEmptyArray,
+    activeThreadId
+  }
+}
+
+function refreshEvent(id: string, seq: number): RuntimeEvent {
+  return {
+    id,
+    threadId: threadA.id,
+    turnId: `turn-${id}`,
+    seq,
+    kind: "turn:created",
+    payload: {},
+    createdAt: seq
+  } as RuntimeEvent
+}
+
+async function renderRuntimeEventHarness(input: {
+  allThreads: WorkbenchThread[]
+  todo: ThreadTodo
+  platform?: string
+  workspaces?: Array<typeof workspaceA>
+}) {
+  let runtimeListener: ((event: RuntimeEvent) => void) | null = null
+  const eventTodos = [input.todo]
+  const workspaces = input.workspaces ?? stableWorkspaces
+  const visibleSnapshot = {
+    threads: stableVisibleOnlyThreads,
+    turns: stableEmptyArray,
+    runs: stableEmptyArray,
+    activeThreadId: threadA.id
+  }
+  const allSnapshot = {
+    threads: input.allThreads,
+    turns: stableEmptyArray,
+    runs: stableEmptyArray,
+    activeThreadId: threadA.id
+  }
+  const trace = {
+    draftId: input.todo.source?.draftId || "draft",
+    requirementBlocks: stableEmptyArray,
+    planItems: [{
+      id: "T-1",
+      text: input.todo.content,
+      covers: stableEmptyArray,
+      status: "in_progress",
+      lineNumber: 1,
+      turnId: input.todo.source?.turnId
+    }],
+    coverage: {},
+    derivedStatuses: {},
+    uncoveredRequirementIds: stableEmptyArray,
+    timestamp: "2026-07-10T00:00:00.000Z"
+  }
+  const api = {
+    agentic: {
+      getPendingApprovalIds: vi.fn(async () => stableEmptyArray),
+      resolveApproval: vi.fn(async () => true),
+      setApprovalOverride: vi.fn(async () => undefined)
+    },
+    app: { onMenuCommand: vi.fn(() => vi.fn()) },
+    git: {
+      status: vi.fn(async (workspaceId: string) => ({
+        isRepo: true,
+        rootPath: workspaces.find(workspace => workspace.id === workspaceId)?.rootPath ?? ""
+      })),
+      log: vi.fn(async () => ({ entries: [{ sha: "head-b" }, { sha: "base-b" }] })),
+      commitDetails: vi.fn(async () => ({ sha: "head-b", shortSha: "head-b", summary: "done", files: stableEmptyArray }))
+    },
+    goals: { get: vi.fn(async () => null) },
+    localAgents: { status: vi.fn(async () => stableEmptyArray) },
+    runtime: {
+      eventsSince: vi.fn(async () => stableEmptyArray),
+      onEvent: vi.fn((listener: (event: RuntimeEvent) => void) => {
+        runtimeListener = listener
+        return vi.fn()
+      }),
+      snapshot: vi.fn(async (workspaceId?: string | null): Promise<WorkbenchSnapshot> => workspaceId === undefined ? allSnapshot : visibleSnapshot)
+    },
+    schedules: { list: vi.fn(async () => stableEmptyArray) },
+    sdd: {
+      getTrace: vi.fn(async () => trace),
+      saveTrace: vi.fn(async (_workspaceRoot: string, _draftId: string, _trace: unknown) => undefined)
+    },
+    store: {
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => undefined)
+    },
+    terminal: { history: vi.fn(async () => stableEmptyArray) },
+    todos: {
+      list: vi.fn(async (threadId: string) => threadId === input.todo.threadId ? eventTodos : stableEmptyArray),
+      upsert: vi.fn(async (next: Partial<ThreadTodo>) => ({ ...input.todo, ...next, updatedAt: 2 }))
+    },
+    workspaces: {
+      getActive: vi.fn(async () => workspaceA.id),
+      list: vi.fn(async () => workspaces),
+      setActive: vi.fn(async () => workspaceA.id)
+    },
+    platform: input.platform ?? "win32"
+  }
+  ;(window as any).electronAPI = api
+
+  const rendered = render(React.createElement(WorkbenchLayout, stableLayoutProps))
+  await waitFor(() => expect(api.runtime.onEvent.mock.calls.length).toBeGreaterThan(1))
+
+  return {
+    api,
+    unmount: rendered.unmount,
+    emit: async (event: RuntimeEvent) => {
+      expect(runtimeListener).toBeTypeOf("function")
+      await act(async () => {
+        runtimeListener?.(event)
+        await Promise.resolve()
+      })
+    }
+  }
+}
+
+beforeEach(() => {
+  localStorage.clear()
+  resetWorkbenchUiStoreForTests()
+  observedMainContent.workspaceId = null
+  observedMainContent.activeThreadId = null
+  observedMainContent.activeThreadTitle = null
+  observedMainContent.sendError = null
+  observedMainContent.renderCount = 0
+  observedMainContent.selectWorkspace = null
+  observedSidebar.threads = []
+  observedSidebar.renderCount = 0
+})
+
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
+
 describe("Workbench runtime event loading", () => {
+  it("mounts runtime event wiring when there are no pending approvals", async () => {
+    const todo = makePlanTodo(threadB.id, workspaceB.rootPath)
+    const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo })
+
+    expect(harness.api.runtime.onEvent).toHaveBeenCalled()
+  })
+
+  it("does not let a late runtime-event snapshot from workspace A overwrite workspace B", async () => {
+    const todo = makePlanTodo(threadB.id, workspaceB.rootPath)
+    const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo })
+    const snapshotA = {
+      threads: [threadA],
+      turns: stableEmptyArray,
+      runs: stableEmptyArray,
+      activeThreadId: threadA.id
+    }
+    const snapshotB = {
+      threads: [threadB],
+      turns: stableEmptyArray,
+      runs: stableEmptyArray,
+      activeThreadId: threadB.id
+    }
+    const allSnapshot = {
+      threads: stableKnownThreads,
+      turns: stableEmptyArray,
+      runs: stableEmptyArray,
+      activeThreadId: threadB.id
+    }
+    const lateWorkspaceA = deferred<typeof snapshotA>()
+    let workspaceARefreshes = 0
+    harness.api.runtime.snapshot.mockImplementation((workspaceId?: string | null) => {
+      if (workspaceId === undefined) return Promise.resolve(allSnapshot)
+      if (workspaceId === workspaceB.id) return Promise.resolve(snapshotB)
+      workspaceARefreshes += 1
+      return lateWorkspaceA.promise
+    })
+
+    await harness.emit({
+      id: "event-refresh-a",
+      threadId: threadA.id,
+      turnId: "turn-a",
+      seq: 2,
+      kind: "turn:created",
+      payload: {},
+      createdAt: 2
+    } as RuntimeEvent)
+    await waitFor(() => expect(workspaceARefreshes).toBe(1))
+
+    let switching!: Promise<void>
+    act(() => {
+      switching = observedMainContent.selectWorkspace?.(workspaceB.id) ?? Promise.resolve()
+    })
+    await act(async () => { await switching })
+    await waitFor(() => {
+      expect(observedMainContent.workspaceId).toBe(workspaceB.id)
+      expect(observedMainContent.activeThreadId).toBe(threadB.id)
+    })
+
+    await act(async () => {
+      lateWorkspaceA.resolve(snapshotA)
+      await lateWorkspaceA.promise
+      await Promise.resolve()
+    })
+
+    expect(observedMainContent.workspaceId).toBe(workspaceB.id)
+    expect(observedMainContent.activeThreadId).toBe(threadB.id)
+  })
+
+  it.each(["scoped", "all", "both"] as const)(
+    "keeps workspace B when the %s workspace-A refresh branch resolves late",
+    async lateBranch => {
+      const todo = makePlanTodo(threadB.id, workspaceB.rootPath)
+      const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo })
+      const snapshotA = runtimeSnapshot([threadA], threadA.id)
+      const snapshotB = runtimeSnapshot([threadB], threadB.id)
+      const lateScoped = deferred<WorkbenchSnapshot>()
+      const lateAll = deferred<WorkbenchSnapshot>()
+      let scopedRefreshes = 0
+      let allRefreshes = 0
+
+      harness.api.runtime.snapshot.mockImplementation((owner?: string | null) => {
+        if (owner === undefined) {
+          allRefreshes += 1
+          if (allRefreshes === 1) {
+            return lateBranch === "all" || lateBranch === "both"
+              ? lateAll.promise
+              : Promise.resolve(snapshotA)
+          }
+          return Promise.resolve(snapshotB)
+        }
+        if (owner === workspaceA.id) {
+          scopedRefreshes += 1
+          return lateBranch === "scoped" || lateBranch === "both"
+            ? lateScoped.promise
+            : Promise.resolve(snapshotA)
+        }
+        return Promise.resolve(snapshotB)
+      })
+
+      await harness.emit(refreshEvent(`event-late-${lateBranch}`, 20))
+      await waitFor(() => {
+        expect(scopedRefreshes).toBe(1)
+        expect(allRefreshes).toBe(1)
+      })
+
+      let switching!: Promise<void>
+      act(() => {
+        switching = observedMainContent.selectWorkspace?.(workspaceB.id) ?? Promise.resolve()
+      })
+      await act(async () => { await switching })
+      await waitFor(() => {
+        expect(observedMainContent.workspaceId).toBe(workspaceB.id)
+        expect(observedMainContent.activeThreadId).toBe(threadB.id)
+        expect(observedSidebar.threads.map(thread => thread.id)).toEqual([threadB.id])
+      })
+
+      const latePromises: Promise<WorkbenchSnapshot>[] = []
+      await act(async () => {
+        if (lateBranch === "scoped" || lateBranch === "both") {
+          lateScoped.resolve(snapshotA)
+          latePromises.push(lateScoped.promise)
+        }
+        if (lateBranch === "all" || lateBranch === "both") {
+          lateAll.resolve(snapshotA)
+          latePromises.push(lateAll.promise)
+        }
+        await Promise.all(latePromises)
+        await Promise.resolve()
+      })
+
+      expect(observedMainContent.workspaceId).toBe(workspaceB.id)
+      expect(observedMainContent.activeThreadId).toBe(threadB.id)
+      expect(observedSidebar.threads.map(thread => thread.id)).toEqual([threadB.id])
+    }
+  )
+
+  it("ignores late workspace-A refresh rejections after workspace B owns the view", async () => {
+    const todo = makePlanTodo(threadB.id, workspaceB.rootPath)
+    const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo })
+    const snapshotB = runtimeSnapshot([threadB], threadB.id)
+    const lateScoped = deferred<WorkbenchSnapshot>()
+    const lateAll = deferred<WorkbenchSnapshot>()
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    let allRefreshes = 0
+
+    harness.api.runtime.snapshot.mockImplementation((owner?: string | null) => {
+      if (owner === undefined) {
+        allRefreshes += 1
+        return allRefreshes === 1 ? lateAll.promise : Promise.resolve(snapshotB)
+      }
+      return owner === workspaceA.id ? lateScoped.promise : Promise.resolve(snapshotB)
+    })
+
+    await harness.emit(refreshEvent("event-reject-a", 30))
+    await waitFor(() => expect(allRefreshes).toBe(1))
+
+    let switching!: Promise<void>
+    act(() => {
+      switching = observedMainContent.selectWorkspace?.(workspaceB.id) ?? Promise.resolve()
+    })
+    await act(async () => { await switching })
+    await waitFor(() => {
+      expect(observedMainContent.activeThreadId).toBe(threadB.id)
+      expect(observedSidebar.threads.map(thread => thread.id)).toEqual([threadB.id])
+    })
+
+    await act(async () => {
+      lateScoped.reject(new Error("stale scoped failure"))
+      lateAll.reject(new Error("stale all-workspaces failure"))
+      await Promise.allSettled([lateScoped.promise, lateAll.promise])
+      await Promise.resolve()
+    })
+
+    expect(observedMainContent.workspaceId).toBe(workspaceB.id)
+    expect(observedMainContent.activeThreadId).toBe(threadB.id)
+    expect(observedMainContent.sendError).toBeNull()
+    expect(observedSidebar.threads.map(thread => thread.id)).toEqual([threadB.id])
+    expect(consoleError).not.toHaveBeenCalled()
+    consoleError.mockRestore()
+  })
+
+  it("does not update rendered state when a pending runtime refresh resolves after unmount", async () => {
+    const todo = makePlanTodo(threadB.id, workspaceB.rootPath)
+    const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo })
+    const lateScoped = deferred<WorkbenchSnapshot>()
+    const lateAll = deferred<WorkbenchSnapshot>()
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    let refreshCalls = 0
+
+    harness.api.runtime.snapshot.mockImplementation((owner?: string | null) => {
+      refreshCalls += 1
+      return owner === undefined ? lateAll.promise : lateScoped.promise
+    })
+
+    await harness.emit(refreshEvent("event-unmount", 40))
+    await waitFor(() => expect(refreshCalls).toBe(2))
+    harness.unmount()
+    const mainRenderCountAfterUnmount = observedMainContent.renderCount
+    const sidebarRenderCountAfterUnmount = observedSidebar.renderCount
+
+    await act(async () => {
+      lateScoped.resolve(runtimeSnapshot([threadA], threadA.id))
+      lateAll.resolve(runtimeSnapshot([threadA], threadA.id))
+      await Promise.all([lateScoped.promise, lateAll.promise])
+      await Promise.resolve()
+    })
+
+    expect(observedMainContent.renderCount).toBe(mainRenderCountAfterUnmount)
+    expect(observedSidebar.renderCount).toBe(sidebarRenderCountAfterUnmount)
+    expect(consoleError).not.toHaveBeenCalled()
+    consoleError.mockRestore()
+  })
+
+  it("lets only the newest of two runtime refreshes for the same workspace update the view", async () => {
+    const todo = makePlanTodo(threadB.id, workspaceB.rootPath)
+    const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo })
+    const staleVisibleThread = { ...threadA, title: "stale visible" }
+    const latestVisibleThread = { ...threadA, title: "latest visible" }
+    const staleAllThread = { ...threadA, id: "thread-stale-all", title: "stale all" }
+    const latestAllThread = { ...threadA, id: "thread-latest-all", title: "latest all" }
+    const firstScoped = deferred<WorkbenchSnapshot>()
+    const firstAll = deferred<WorkbenchSnapshot>()
+    const secondScoped = deferred<WorkbenchSnapshot>()
+    const secondAll = deferred<WorkbenchSnapshot>()
+    let scopedRefreshes = 0
+    let allRefreshes = 0
+
+    harness.api.runtime.snapshot.mockImplementation((owner?: string | null) => {
+      if (owner === undefined) {
+        allRefreshes += 1
+        return allRefreshes === 1 ? firstAll.promise : secondAll.promise
+      }
+      scopedRefreshes += 1
+      return scopedRefreshes === 1 ? firstScoped.promise : secondScoped.promise
+    })
+
+    await harness.emit(refreshEvent("event-refresh-first", 50))
+    await waitFor(() => {
+      expect(scopedRefreshes).toBe(1)
+      expect(allRefreshes).toBe(1)
+    })
+    await harness.emit(refreshEvent("event-refresh-second", 51))
+    await waitFor(() => {
+      expect(scopedRefreshes).toBe(2)
+      expect(allRefreshes).toBe(2)
+    })
+
+    await act(async () => {
+      secondScoped.resolve(runtimeSnapshot([latestVisibleThread], latestVisibleThread.id))
+      secondAll.resolve(runtimeSnapshot([latestAllThread], latestAllThread.id))
+      await Promise.all([secondScoped.promise, secondAll.promise])
+      await Promise.resolve()
+    })
+    await waitFor(() => {
+      expect(observedMainContent.activeThreadTitle).toBe(latestVisibleThread.title)
+      expect(observedSidebar.threads.map(thread => thread.id)).toEqual([latestAllThread.id])
+    })
+
+    await act(async () => {
+      firstScoped.resolve(runtimeSnapshot([staleVisibleThread], staleVisibleThread.id))
+      firstAll.resolve(runtimeSnapshot([staleAllThread], staleAllThread.id))
+      await Promise.all([firstScoped.promise, firstAll.promise])
+      await Promise.resolve()
+    })
+
+    expect(observedMainContent.activeThreadTitle).toBe(latestVisibleThread.title)
+    expect(observedSidebar.threads.map(thread => thread.id)).toEqual([latestAllThread.id])
+  })
+
   it("merges live runtime events that arrive while a snapshot is loading", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
 
@@ -18,7 +554,8 @@ describe("Workbench runtime event loading", () => {
     expect(source).toContain("const pendingForSelected = selected ? pendingRuntimeEvents.current.filter(event => event.threadId === selected)")
     expect(source).toContain("...prev.filter(event => event.threadId === selected)")
     expect(source).toContain("...pendingForSelected")
-    expect(source).toContain("[selected]: mergeRuntimeEventLists(loadedEvents, pendingForSelected)")
+    expect(source).toContain("const mergedLoadedEvents = mergeRuntimeEventLists(loadedEvents, pendingForSelected)")
+    expect(source).toContain("[selected]: mergedLoadedEvents")
     expect(source).not.toContain("setEvents(await window.electronAPI.runtime.eventsSince")
   })
 
@@ -156,8 +693,110 @@ describe("Workbench runtime event loading", () => {
     expect(layout).toContain("const todosForEventThread = [...persistedTodos, ...seedOnlyTodos]")
     expect(layout).toContain("void syncSddPlanTodoForRuntimeEvent(event).catch(() => {})")
     expect(layout).toContain("await syncSddPlanTodoForRuntimeEvent({")
-    expect(layout).toContain("latestTurn.status === 'completed'")
+    expect(layout).toContain("isTerminalTurnStatus(latestTurn.status)")
     expect(layout).toContain("targetAgent, workspaceId]")
+  })
+
+  it("attributes background SDD completion Git evidence to the event thread workspace", async () => {
+    const todo = makePlanTodo(threadB.id, "e:\\repo-b\\")
+    const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo })
+
+    await harness.emit(completedEvent(threadB.id))
+
+    await waitFor(() => expect(harness.api.git.status).toHaveBeenCalled())
+    expect(harness.api.git.status).toHaveBeenCalledWith(workspaceB.id)
+    expect(harness.api.git.status).not.toHaveBeenCalledWith(workspaceA.id)
+    expect(harness.api.git.log).toHaveBeenCalledWith(workspaceB.id, 80)
+    expect(harness.api.git.commitDetails).toHaveBeenCalledWith(workspaceB.id, "head-b")
+    expect(harness.api.sdd.saveTrace.mock.calls.every(([root]) => root === todo.source?.workspaceRoot)).toBe(true)
+  })
+
+  it("falls back to a normalized todo source root only while the event thread is absent", async () => {
+    const backgroundThreadId = "thread-b-not-yet-snapshotted"
+    const todo = makePlanTodo(backgroundThreadId, "e:/repo-b/")
+    const harness = await renderRuntimeEventHarness({ allThreads: stableVisibleOnlyThreads, todo })
+
+    await harness.emit(completedEvent(backgroundThreadId))
+
+    await waitFor(() => expect(harness.api.git.status).toHaveBeenCalled())
+    expect(harness.api.git.status).toHaveBeenCalledWith(workspaceB.id)
+    expect(harness.api.git.status).not.toHaveBeenCalledWith(workspaceA.id)
+    expect(harness.api.git.commitDetails).toHaveBeenCalledWith(workspaceB.id, "head-b")
+  })
+
+  it("keeps Linux workspace root fallback case-sensitive when both case variants exist", async () => {
+    const backgroundThreadId = "thread-linux-lower"
+    const linuxUpperWorkspace = { id: "workspace-linux-upper", name: "Linux upper", rootPath: "/srv/Repo", createdAt: 3, updatedAt: 3 }
+    const linuxLowerWorkspace = { id: "workspace-linux-lower", name: "Linux lower", rootPath: "/srv/repo", createdAt: 4, updatedAt: 4 }
+    const stableLinuxWorkspaces = [workspaceA, linuxUpperWorkspace, linuxLowerWorkspace]
+    const todo = makePlanTodo(backgroundThreadId, "/srv/repo")
+    const harness = await renderRuntimeEventHarness({
+      allThreads: stableVisibleOnlyThreads,
+      todo,
+      platform: "linux",
+      workspaces: stableLinuxWorkspaces
+    })
+
+    await harness.emit(completedEvent(backgroundThreadId))
+
+    await waitFor(() => expect(harness.api.git.status).toHaveBeenCalled())
+    expect(harness.api.git.status).toHaveBeenCalledWith(linuxLowerWorkspace.id)
+    expect(harness.api.git.status).not.toHaveBeenCalledWith(linuxUpperWorkspace.id)
+  })
+
+  it("fails Linux Git evidence closed for a case-only root mismatch while completing the todo", async () => {
+    const backgroundThreadId = "thread-linux-unknown-case"
+    const linuxUpperWorkspace = { id: "workspace-linux-upper", name: "Linux upper", rootPath: "/srv/Repo", createdAt: 3, updatedAt: 3 }
+    const stableLinuxWorkspaces = [workspaceA, linuxUpperWorkspace]
+    const todo = makePlanTodo(backgroundThreadId, "/srv/repo")
+    const harness = await renderRuntimeEventHarness({
+      allThreads: stableVisibleOnlyThreads,
+      todo,
+      platform: "linux",
+      workspaces: stableLinuxWorkspaces
+    })
+
+    await harness.emit(completedEvent(backgroundThreadId))
+
+    await waitFor(() => {
+      expect(harness.api.todos.list.mock.calls.filter(([threadId]) => threadId === backgroundThreadId)).toHaveLength(2)
+    })
+    expect(harness.api.todos.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: backgroundThreadId,
+      status: "completed"
+    }))
+    expect(harness.api.sdd.saveTrace).toHaveBeenCalledWith(
+      todo.source?.workspaceRoot,
+      todo.source?.draftId,
+      expect.any(Object)
+    )
+    expect(harness.api.git.status).not.toHaveBeenCalled()
+    expect(harness.api.git.log).not.toHaveBeenCalled()
+    expect(harness.api.git.commitDetails).not.toHaveBeenCalled()
+  })
+
+  it("fails Git evidence closed for an unknown event workspace without skipping todo completion", async () => {
+    const unknownThreadId = "thread-unknown"
+    const todo = makePlanTodo(unknownThreadId, "E:\\Unknown-Repo")
+    const harness = await renderRuntimeEventHarness({ allThreads: stableVisibleOnlyThreads, todo })
+
+    await harness.emit(completedEvent(unknownThreadId))
+
+    await waitFor(() => {
+      expect(harness.api.todos.list.mock.calls.filter(([threadId]) => threadId === unknownThreadId)).toHaveLength(2)
+    })
+    expect(harness.api.todos.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: unknownThreadId,
+      status: "completed"
+    }))
+    expect(harness.api.sdd.saveTrace).toHaveBeenCalledWith(
+      todo.source?.workspaceRoot,
+      todo.source?.draftId,
+      expect.any(Object)
+    )
+    expect(harness.api.git.status).not.toHaveBeenCalled()
+    expect(harness.api.git.log).not.toHaveBeenCalled()
+    expect(harness.api.git.commitDetails).not.toHaveBeenCalled()
   })
 
   it("drives approval requests from runtime events instead of legacy dispatch stream", () => {
@@ -165,10 +804,33 @@ describe("Workbench runtime event loading", () => {
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
 
     expect(layout).toContain("appendApprovalFromRuntimeEvent(event)")
-    expect(layout).toContain("approvalItemFromRuntimeEvent(event)")
-    expect(layout).toContain("<ApprovalDialog items={approvals} onDecide={onApprovalDecide} />")
+    expect(layout).toContain("reduceApprovalItemsFromRuntimeEvent(prev, event)")
+    expect(layout).toContain("getPendingApprovalIds")
+    expect(layout).toContain("reconcileApprovalItemsWithHistory")
+    expect(layout).toContain("createApprovalDecisionHandler")
+    expect(layout).toContain("approvalDecisionPresentation(result)")
+    expect(layout).toContain("const [approvalNotice, setApprovalNotice]")
+    expect(layout).toContain("setApprovalNotice(null)")
+    expect(layout).toContain("setApprovalNotice(presentation.notice)")
+    expect(layout).not.toContain("setSendError(presentation.notice)")
+    expect(layout).toContain("<ApprovalNotice notice={approvalNotice}")
+    expect(layout).toContain("busy={approvalBusyId === approvals[0]?.id}")
+    expect(layout).toContain("error={approvalError && approvalError.approvalId === approvals[0]?.id ? approvalError.message : null}")
     expect(app).not.toContain("e.kind === 'approval'")
     expect(app).not.toContain("setApprovals")
+  })
+
+  it("treats a created turn as sent even when the follow-up view refresh fails", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const mainContent = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchMainContent.tsx"), "utf8")
+
+    expect(layout).toContain("createTurnAndRefresh(")
+    expect(layout).toContain("if (outcome.refreshError)")
+    expect(layout).toContain("return { ok: true as const, value: outcome.value }")
+    expect(layout).toContain("const sendComposerPrompt = async")
+    expect(layout).toContain("return outcome.ok ? { ok: true } : outcome")
+    expect(mainContent).toContain("onSend: sendComposerPrompt")
+    expect(mainContent).not.toContain("const sendFromComposer = async")
   })
 
   it("drives agent busy display from runtime events instead of legacy dispatch stream", () => {

@@ -322,6 +322,7 @@ const api = {
     setMode: (mode: IpcArgs<'agentic:setMode'>[0]) => typedInvoke('agentic:setMode', mode),
     // 写/执行审批门禁
     getApprovalConfig: () => typedInvoke('agentic:getApprovalConfig'),
+    getPendingApprovalIds: () => typedInvoke('agentic:getPendingApprovalIds'),
     setApprovalPreset: (preset: IpcArgs<'agentic:setApprovalPreset'>[0]) =>
       typedInvoke('agentic:setApprovalPreset', preset),
     setApprovalDefault: (tool: IpcArgs<'agentic:setApprovalDefault'>[0], policy: IpcArgs<'agentic:setApprovalDefault'>[1]) =>
@@ -559,8 +560,8 @@ const api = {
       typedInvoke('sdd:createDraft', workspaceRoot, title, template),
     getDraft: (workspaceRoot: string, draftId: string) =>
       typedInvoke('sdd:getDraft', workspaceRoot, draftId),
-    updateDraft: (workspaceRoot: string, draftId: string, content: string) =>
-      typedInvoke('sdd:updateDraft', workspaceRoot, draftId, content),
+    updateDraft: (workspaceRoot: string, draftId: string, content: string, designContext?: IpcArgs<'sdd:updateDraft'>[3]) =>
+      typedInvoke('sdd:updateDraft', workspaceRoot, draftId, content, designContext),
     updateDesignContext: (workspaceRoot: string, draftId: string, designContext: IpcArgs<'sdd:updateDesignContext'>[2]) =>
       typedInvoke('sdd:updateDesignContext', workspaceRoot, draftId, designContext),
     deleteDraft: (workspaceRoot: string, draftId: string) =>

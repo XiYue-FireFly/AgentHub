@@ -23,6 +23,7 @@ import { registerAgentLoopIpc } from './agent-loop-ipc'
 import { registerSddIpc } from './sdd-ipc'
 import { typedHandle } from './typed-ipc'
 import { BrowserWindow, dialog } from 'electron'
+import type { RuntimeProducerTracker } from '../runtime/producer-tracker'
 
 interface IpcRegistrationDeps {
   memory: () => any
@@ -37,6 +38,7 @@ interface IpcRegistrationDeps {
   hub: any
   router: any
   proxy: any
+  runtimeProducers: Pick<RuntimeProducerTracker, 'run'>
   getMainWindow: () => BrowserWindow | null
   getActiveWindow?: () => BrowserWindow | null
   openWorkbench?: () => BrowserWindow
@@ -120,7 +122,8 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
     runtimeStore: deps.runtimeStore,
     memory: deps.memory,
     proxy: deps.proxy,
-    getWorkspaceManager: deps.getWorkspaceManager
+    getWorkspaceManager: deps.getWorkspaceManager,
+    runtimeProducers: deps.runtimeProducers
   })
 
   // Missing handlers: skills, agentic, app, proxy, takeover, AI quick-complete

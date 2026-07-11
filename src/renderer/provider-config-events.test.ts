@@ -17,7 +17,7 @@ describe('provider config events', () => {
     expect(app).toContain('onReload: reloadConfig')
   })
 
-  it('does not call loadConfig after normal provider writes that already return or broadcast config', () => {
+  it('reloads only through the guarded mutation failure path after provider writes', () => {
     const app = readFileSync(join(process.cwd(), 'src/renderer/App.tsx'), 'utf8')
     const settingsStart = app.indexOf('const onSetEnabled')
     const settingsEnd = app.indexOf('const onRuntimeAgentStatus', settingsStart)
@@ -26,6 +26,6 @@ describe('provider config events', () => {
     expect(settingsStart).toBeGreaterThan(-1)
     expect(settingsEnd).toBeGreaterThan(settingsStart)
     expect(settingsActions).not.toContain('loadConfig(); refreshStatus()')
-    expect(settingsActions).toContain('catch { loadConfig() }')
+    expect(settingsActions).toContain('catch { finishConfigMutation(resourceKey, revision, true) }')
   })
 })

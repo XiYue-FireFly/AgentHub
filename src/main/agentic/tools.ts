@@ -7,7 +7,7 @@
  *
  * 路径安全逻辑与 src/main/hub/workspace.ts 一致（此处小份复刻，避免改动其脏文件）。
  */
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { statSync, readFileSync, writeFileSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
 import { resolve as resolvePath, relative as relativePath, isAbsolute, dirname, sep as pathSep } from 'node:path'
 import { decodeProcessChunk } from '../runtime/process-decoder'
@@ -17,6 +17,8 @@ export interface ToolContext {
   root: string
   /** 只读模式（无工作区降级时）：禁止写文件与执行命令 */
   readOnly: boolean
+  /** Cancels an in-flight exec process during task or application shutdown. */
+  signal?: AbortSignal
 }
 
 export interface ToolResult {
@@ -156,11 +158,31 @@ function splitCommand(command: string): [string, string[]] | null {
   return [parts[0], parts.slice(1)]
 }
 
-function runCommand(command: string, cwd: string, shellOverride?: boolean): Promise<ToolResult> {
+function runCommand(command: string, cwd: string, shellOverride?: boolean, signal?: AbortSignal): Promise<ToolResult> {
+  if (signal?.aborted) {
+    return Promise.resolve({ ok: false, output: '[aborted before command execution]' })
+  }
   return new Promise<ToolResult>((resolve) => {
     let out = ''
     let done = false
-    const finish = (ok: boolean, text: string) => { if (!done) { done = true; resolve({ ok, output: clip(text, MAX_OUTPUT_CHARS) }) } }
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let sigkillTimer: ReturnType<typeof setTimeout> | null = null
+    let abortListener: (() => void) | null = null
+    let stopReason: 'aborted' | 'timed-out' | null = null
+    const cleanup = () => {
+      if (timer) clearTimeout(timer)
+      if (sigkillTimer) clearTimeout(sigkillTimer)
+      timer = null
+      sigkillTimer = null
+      if (abortListener) signal?.removeEventListener('abort', abortListener)
+      abortListener = null
+    }
+    const finish = (ok: boolean, text: string) => {
+      if (done) return
+      done = true
+      cleanup()
+      resolve({ ok, output: clip(text, MAX_OUTPUT_CHARS) })
+    }
     try {
       // P0-2: Default to shell:false for security. Only use shell:true when
       // explicitly requested (shellOverride=true) or when the command contains
@@ -168,30 +190,71 @@ function runCommand(command: string, cwd: string, shellOverride?: boolean): Prom
       const useShell = shellOverride === true
       let child: ReturnType<typeof spawn>
       if (useShell) {
-        child = spawn(command, { cwd, shell: true, windowsHide: true })
+        child = spawn(command, { cwd, shell: true, windowsHide: true, detached: process.platform !== 'win32' })
       } else {
         const split = splitCommand(command)
         if (split) {
           const [cmd, args] = split
-          child = spawn(cmd, args, { cwd, shell: false, windowsHide: true })
+          child = spawn(cmd, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32' })
         } else {
           // Command has shell metacharacters but shell not approved — reject
           finish(false, '[security] Command contains shell metacharacters (|, &, ;, >, <, $, etc.) and requires explicit shell approval. Use shellOverride=true after approval.')
           return
         }
       }
-      let sigkillTimer: ReturnType<typeof setTimeout> | null = null
-      const timer = setTimeout(() => {
-        try { child.kill() } catch { /* noop */ }
-        sigkillTimer = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* noop */ } }, 500)
-        finish(false, out + `\n[timed out after ${EXEC_TIMEOUT_MS / 1000}s]`)
-      }, EXEC_TIMEOUT_MS)
+      const forceKillDirectly = (signalName: NodeJS.Signals = 'SIGTERM') => {
+        if (done) return
+        if (process.platform !== 'win32' && child.pid) {
+          try { process.kill(-child.pid, signalName) } catch { try { child.kill(signalName) } catch { /* process may already have exited */ } }
+        } else {
+          try { child.kill(signalName) } catch { /* process may already have exited */ }
+        }
+        sigkillTimer = setTimeout(() => {
+          if (done) return
+          if (process.platform !== 'win32' && child.pid) {
+            try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* process may already have exited */ } }
+          } else {
+            try { child.kill('SIGKILL') } catch { /* process may already have exited */ }
+          }
+        }, 500)
+      }
+      const requestStop = (reason: 'aborted' | 'timed-out') => {
+        if (done || stopReason) return
+        stopReason = reason
+        if (timer) {
+          clearTimeout(timer)
+          timer = null
+        }
+        if (process.platform === 'win32' && child.pid) {
+          try {
+            execFile('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }, error => {
+              if (error && !done) forceKillDirectly()
+            })
+          } catch {
+            forceKillDirectly()
+          }
+          return
+        }
+        forceKillDirectly('SIGTERM')
+      }
       // LOW-12: Cap intermediate output buffer to prevent unbounded memory growth
       const MAX_BUFFER = MAX_OUTPUT_CHARS * 2
       child.stdout?.on('data', d => { if (out.length < MAX_BUFFER) out += decodeProcessChunk(d) })
       child.stderr?.on('data', d => { if (out.length < MAX_BUFFER) out += decodeProcessChunk(d) })
-      child.on('error', e => { clearTimeout(timer); if (sigkillTimer) clearTimeout(sigkillTimer); finish(false, out + '\n[spawn error] ' + (e as Error).message) })
-      child.on('close', code => { clearTimeout(timer); if (sigkillTimer) clearTimeout(sigkillTimer); finish(code === 0, (out || '(no output)') + `\n[exit code ${code}]`) })
+      child.on('error', e => {
+        if (stopReason === 'aborted') finish(false, (out || '(no output)') + '\n[aborted]')
+        else if (stopReason === 'timed-out') finish(false, out + `\n[timed out after ${EXEC_TIMEOUT_MS / 1000}s]`)
+        else finish(false, out + '\n[spawn error] ' + (e as Error).message)
+      })
+      child.on('close', code => {
+        if (stopReason === 'aborted') finish(false, (out || '(no output)') + '\n[aborted]')
+        else if (stopReason === 'timed-out') finish(false, out + `\n[timed out after ${EXEC_TIMEOUT_MS / 1000}s]`)
+        else finish(code === 0, (out || '(no output)') + `\n[exit code ${code}]`)
+      })
+      timer = setTimeout(() => { requestStop('timed-out') }, EXEC_TIMEOUT_MS)
+      abortListener = () => { requestStop('aborted') }
+      signal?.addEventListener('abort', abortListener, { once: true })
+      if (signal?.aborted) abortListener()
     } catch (e) {
       finish(false, '[exec failed] ' + (e as Error).message)
     }
@@ -201,6 +264,7 @@ function runCommand(command: string, cwd: string, shellOverride?: boolean): Prom
 /** 执行一个工具调用；name 未知或参数非法 → ok:false（喂回模型让它纠正）。 */
 export async function executeTool(name: string, args: any, ctx: ToolContext): Promise<ToolResult> {
   const a = args && typeof args === 'object' ? args : {}
+  if (ctx.signal?.aborted) return { ok: false, output: '[aborted before tool execution]' }
   try {
     if (name === 'fs_read') {
       const abs = resolveWithin(ctx.root, a.path)
@@ -230,7 +294,7 @@ export async function executeTool(name: string, args: any, ctx: ToolContext): Pr
       if (typeof a.command !== 'string' || !a.command.trim()) return { ok: false, output: 'Rejected: empty command.' }
       // P0-2: shellOverride must be explicitly approved via the approval system
       const shellApproved = a.shellOverride === true
-      return await runCommand(a.command, ctx.root, shellApproved)
+      return await runCommand(a.command, ctx.root, shellApproved, ctx.signal)
     }
     return { ok: false, output: 'Unknown tool: ' + name }
   } catch (e) {
