@@ -87,6 +87,10 @@ export const AGENTIC_TOOLS = [
   }
 ]
 
+export const READ_ONLY_AGENTIC_TOOLS = AGENTIC_TOOLS.filter(tool =>
+  tool.function.name === 'fs_read' || tool.function.name === 'fs_list'
+)
+
 /** 把相对路径安全解析到 root 之内；返回 null = 非法。 */
 function resolveWithin(root: string, rel: unknown): string | null {
   if (rel === undefined || rel === null) return root // 空 = root（用于 fs_list）
@@ -281,7 +285,7 @@ export async function executeTool(name: string, args: any, ctx: ToolContext): Pr
       return { ok: true, output: entries.length ? entries.join('\n') : '(empty)' }
     }
     if (name === 'fs_write') {
-      if (ctx.readOnly) return { ok: false, output: 'Rejected: read-only (no workspace set). Set a workspace to allow writes.' }
+      if (ctx.readOnly) return { ok: false, output: 'Rejected: read-only capability forbids file writes.' }
       const abs = resolveWithin(ctx.root, a.path)
       if (!abs || !isRealPathWithin(ctx.root, abs)) return { ok: false, output: 'Rejected: path escapes the workspace.' }
       if (typeof a.content !== 'string') return { ok: false, output: 'Rejected: content must be a string.' }
@@ -290,7 +294,7 @@ export async function executeTool(name: string, args: any, ctx: ToolContext): Pr
       return { ok: true, output: `Wrote ${a.content.length} chars to ${a.path}` }
     }
     if (name === 'exec') {
-      if (ctx.readOnly) return { ok: false, output: 'Rejected: read-only (no workspace set). Set a workspace to allow command execution.' }
+      if (ctx.readOnly) return { ok: false, output: 'Rejected: read-only capability forbids command execution.' }
       if (typeof a.command !== 'string' || !a.command.trim()) return { ok: false, output: 'Rejected: empty command.' }
       // P0-2: shellOverride must be explicitly approved via the approval system
       const shellApproved = a.shellOverride === true

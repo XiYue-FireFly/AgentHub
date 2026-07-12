@@ -52,7 +52,7 @@ function providerUsable(provider?: ProviderDef): boolean {
 }
 
 function isStdioBinding(binding?: BindingDef): boolean {
-  return binding?.protocol === 'stdio-plain' || binding?.protocol === 'acp'
+  return binding?.protocol === 'stdio-plain' || binding?.protocol === 'stdio-ndjson' || binding?.protocol === 'acp'
 }
 
 function stdioReady(binding?: BindingDef): boolean {

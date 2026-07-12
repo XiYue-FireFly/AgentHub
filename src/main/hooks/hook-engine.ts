@@ -38,7 +38,12 @@ export type HookInvocation =
   | { phase: 'PostDispatch'; threadId: string; prompt: string; result: unknown; workspace?: string }
 
 export interface HookResult {
-  decision?: 'allow' | 'deny'
+  decision?: 'allow' | 'deny' | 'request-approval'
+  requestApproval?: {
+    pluginId: string
+    hookId: string
+    message: string
+  }
   message?: string
   arguments?: Record<string, unknown>
   output?: unknown
@@ -71,6 +76,11 @@ export interface PostToolUseOutcome {
 
 export interface DispatchOutcome {
   denied?: string
+  approvalRequests: Array<{
+    pluginId: string
+    hookId: string
+    message: string
+  }>
   additionalContext: string[]
   warnings: string[]
 }
@@ -159,6 +169,7 @@ export async function runPreDispatchHooks(
   input: { threadId: string; prompt: string; workspace?: string }
 ): Promise<DispatchOutcome> {
   const additionalContext: string[] = []
+  const approvalRequests: DispatchOutcome['approvalRequests'] = []
   const warnings: string[] = []
 
   for (const hook of hooksForPhase(hooks, 'PreDispatch')) {
@@ -176,14 +187,18 @@ export async function runPreDispatchHooks(
     if (result.decision === 'deny') {
       return {
         denied: result.message || 'dispatch denied by PreDispatch hook',
+        approvalRequests,
         additionalContext,
         warnings
       }
     }
+    if (result.decision === 'request-approval' && result.requestApproval) {
+      approvalRequests.push(result.requestApproval)
+    }
     if (result.additionalContext?.trim()) additionalContext.push(result.additionalContext.trim())
   }
 
-  return { additionalContext, warnings }
+  return { approvalRequests, additionalContext, warnings }
 }
 
 /**

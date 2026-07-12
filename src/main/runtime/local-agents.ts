@@ -146,9 +146,13 @@ function buildProbeInvocation(command: string, args: string[]): { file: string; 
 
 function manualAgentDispatchReady(agent: { manualOnly?: boolean; requiresPromptArg?: boolean }, binding?: { protocol?: string; args?: string }): boolean {
   if (!agent.manualOnly) return true
-  if (binding?.protocol === "acp") return true
+  if (binding?.protocol === "acp" || binding?.protocol === "stdio-ndjson") return true
   if (!agent.requiresPromptArg) return true
   return /\{prompt\}/i.test(binding?.args || "")
+}
+
+function isLocalProtocol(protocol?: string): boolean {
+  return protocol === "stdio-plain" || protocol === "stdio-ndjson" || protocol === "acp"
 }
 
 async function readVersion(binary?: string, args: string[] = ["--version"]): Promise<string | undefined> {
@@ -187,12 +191,12 @@ function buildCachedFallbackStatuses(): LocalAgentStatus[] {
   const bindings = getProviderManager().getBindings()
   return DETECTABLE_LOCAL_AGENTS.map(agent => {
     const binding = bindings.find(b => b.agentId === agent.agentId)
-    const isLocalProtocol = binding?.protocol === "stdio-plain" || binding?.protocol === "acp"
+    const localProtocol = isLocalProtocol(binding?.protocol)
     const manualDispatchReady = manualAgentDispatchReady(agent, binding)
     const normalizedBindingBinary = normalizeConfiguredBinary(binding?.binary)
     const configuredBinaryAvailable = unprobedConfiguredBinaryAvailable(binding?.binary)
-    const userConfigured = !!binding && isLocalProtocol && !!binding.binary && manualDispatchReady && configuredBinaryAvailable
-    const staleConfiguredBinary = !!binding && isLocalProtocol && !!binding.binary && isAbsoluteExecutablePath(normalizedBindingBinary.command || stripSurroundingQuotes(binding.binary)) && !configuredBinaryAvailable
+    const userConfigured = !!binding && localProtocol && !!binding.binary && manualDispatchReady && configuredBinaryAvailable
+    const staleConfiguredBinary = !!binding && localProtocol && !!binding.binary && isAbsoluteExecutablePath(normalizedBindingBinary.command || stripSurroundingQuotes(binding.binary)) && !configuredBinaryAvailable
     const diagnostic = staleConfiguredBinary
       ? {
           code: "configured-binary-missing",
@@ -230,17 +234,17 @@ export async function detectLocalAgentStatuses(): Promise<LocalAgentStatus[]> {
       const normalizedBindingBinary = normalizeConfiguredBinary(binding?.binary)
       const normalizedCandidateBinary = normalizeConfiguredBinary(candidates[0]?.path)
       const binary = normalizedBindingBinary.command || normalizedCandidateBinary.command || (binding?.binary ? stripSurroundingQuotes(binding.binary) : candidates[0]?.path?.trim()) || undefined
-      const isLocalProtocol = binding?.protocol === "stdio-plain" || binding?.protocol === "acp"
+      const localProtocol = isLocalProtocol(binding?.protocol)
       const manualDispatchReady = manualAgentDispatchReady(agent, binding)
       const configuredProbe = binding?.binary ? await probeBinary(binding.binary, agent.versionArgs) : undefined
       const configuredBinaryAvailable = configuredProbe?.available === true
-      const userConfigured = !!binding && isLocalProtocol && !!binding.binary && manualDispatchReady && configuredBinaryAvailable
+      const userConfigured = !!binding && localProtocol && !!binding.binary && manualDispatchReady && configuredBinaryAvailable
       const candidateInstalled = !agent.manualOnly && candidates.some(candidate => candidate.verification !== "manual")
       const installed = candidateInstalled || userConfigured
-      const configured = userConfigured || (!agent.manualOnly && !!binding && isLocalProtocol && !binding.binary && candidates.length > 0)
+      const configured = userConfigured || (!agent.manualOnly && !!binding && localProtocol && !binding.binary && candidates.length > 0)
       const agentNote = "note" in agent && typeof agent.note === "string" ? agent.note : undefined
       const candidateNote = candidates.find(candidate => typeof candidate.note === "string")?.note
-      const staleConfiguredBinary = !!binding && isLocalProtocol && !!binding.binary && !configuredBinaryAvailable
+      const staleConfiguredBinary = !!binding && localProtocol && !!binding.binary && !configuredBinaryAvailable
       const diagnostic = staleConfiguredBinary
         ? {
             code: configuredProbe?.reason === "missing" ? "configured-binary-missing" : "configured-binary-unavailable",
@@ -310,8 +314,8 @@ export function getCachedLocalAgentStatuses(): LocalAgentStatus[] {
 export function isUsableLocalAgentStatus(agent: LocalAgentStatus): boolean {
   if (!agent.agentId || (!agent.configured && !agent.installed)) return false
   if (agent.loginState === "needs-login" || agent.loginState === "not-installed") return false
-  if (agent.configured && (agent.protocol === "stdio-plain" || agent.protocol === "acp") && !agent.binary?.trim()) return false
-  if (agent.manualOnly && agent.requiresPromptArg && agent.protocol !== "acp" && !/\{prompt\}/i.test(agent.args || "")) return false
+  if (agent.configured && isLocalProtocol(agent.protocol) && !agent.binary?.trim()) return false
+  if (agent.manualOnly && agent.requiresPromptArg && agent.protocol !== "acp" && agent.protocol !== "stdio-ndjson" && !/\{prompt\}/i.test(agent.args || "")) return false
   return true
 }
 
@@ -354,8 +358,8 @@ async function revalidateConfiguredStatuses(cached: LocalAgentStatus[]): Promise
   const next = await Promise.all(cached.map(async status => {
     const agent = DETECTABLE_LOCAL_AGENTS.find(item => item.agentId === status.agentId)
     const binding = bindings.find(b => b.agentId === status.agentId)
-    const isLocalProtocol = binding?.protocol === "stdio-plain" || binding?.protocol === "acp"
-    if (!agent || !binding?.binary || !isLocalProtocol) return status
+    const localProtocol = isLocalProtocol(binding?.protocol)
+    if (!agent || !binding?.binary || !localProtocol) return status
 
     const manualDispatchReady = manualAgentDispatchReady(agent, binding)
     const probe = await probeBinary(binding.binary, agent.versionArgs)
@@ -399,21 +403,21 @@ async function revalidateConfiguredStatuses(cached: LocalAgentStatus[]): Promise
   statusCache = { value: next, updatedAt: Date.now() }
 }
 
-export async function configureLocalAgent(agentId: string, patch: { binary?: string; args?: string; protocol?: "stdio-plain" | "acp" }): Promise<LocalAgentStatus[]> {
+export async function configureLocalAgent(agentId: string, patch: { binary?: string; args?: string; protocol?: "stdio-plain" | "stdio-ndjson" | "acp" }): Promise<LocalAgentStatus[]> {
   const agent = DETECTABLE_LOCAL_AGENTS.find(item => item.agentId === agentId)
   if (!agent) throw new Error(`Unsupported local agent: ${agentId}`)
   if (agent.manualOnly && !patch.binary?.trim()) throw new Error(`${agent.label} needs an explicit executable path before it can be used`)
-  if (agent.manualOnly && agent.requiresPromptArg && (patch.protocol || "stdio-plain") !== "acp" && !/\{prompt\}/i.test(patch.args || "")) {
-    throw new Error(`${agent.label} needs non-interactive CLI args containing {prompt}, or ACP protocol, before it can be used`)
+  if (agent.manualOnly && agent.requiresPromptArg && (patch.protocol || "stdio-plain") !== "acp" && (patch.protocol || "stdio-plain") !== "stdio-ndjson" && !/\{prompt\}/i.test(patch.args || "")) {
+    throw new Error(`${agent.label} needs non-interactive CLI args containing {prompt}, structured NDJSON, or ACP protocol, before it can be used`)
   }
   const providerMgr = getProviderManager()
   const prev = providerMgr.getBinding(agentId)
   const protocol = patch.protocol || prev?.protocol || "stdio-plain"
-  const isLocalProtocol = protocol === "stdio-plain" || protocol === "acp"
+  const localProtocol = isLocalProtocol(protocol)
   providerMgr.upsertBinding({
     agentId,
-    providerId: isLocalProtocol ? "local-cli" : prev?.providerId || "local-cli",
-    modelId: isLocalProtocol ? "local" : prev?.modelId || "local",
+    providerId: localProtocol ? "local-cli" : prev?.providerId || "local-cli",
+    modelId: localProtocol ? "local" : prev?.modelId || "local",
     thinking: prev?.thinking || { mode: "auto", level: "medium", collapseInUI: true },
     protocol,
     binary: patch.binary !== undefined ? (normalizeConfiguredBinary(patch.binary).command || stripSurroundingQuotes(patch.binary)) : prev?.binary ?? "",

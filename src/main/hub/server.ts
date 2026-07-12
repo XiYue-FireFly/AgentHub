@@ -101,6 +101,14 @@ export class HubServer extends EventEmitter {
     }
   }
 
+  /** Sends a private protocol frame to the server-minted authenticated session. */
+  sendToClient(clientId: string, data: any): boolean {
+    const client = this.clients.get(clientId)
+    if (!client || client.ws.readyState !== WebSocket.WebSocket.OPEN) return false
+    client.ws.send(JSON.stringify(data))
+    return true
+  }
+
   private send(ws: any, data: any): void {
     if (ws.readyState === WebSocket.WebSocket.OPEN) {
       ws.send(JSON.stringify(data))

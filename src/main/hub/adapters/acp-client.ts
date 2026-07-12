@@ -14,6 +14,7 @@
 import { spawn, ChildProcess } from 'node:child_process'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { ACP_PROTOCOL_OPTION_ID_MAX_CHARS } from '../../../shared/acp-permission'
 
 export interface AcpActivityStep {
   id: string
@@ -35,7 +36,81 @@ export interface AcpPromptHandlers {
   onChunk?: (text: string) => void
   onThought?: (text: string) => void
   onActivity?: (step: AcpActivityStep) => void
-  onRequestPermission?: (req: AcpPermissionRequest) => Promise<boolean>
+  onRequestPermission?: (req: AcpPermissionRequest) => Promise<AcpPermissionResolution>
+}
+
+export interface AcpPermissionOption {
+  optionId: string
+  name?: string
+  kind?: string
+  description?: string
+}
+
+export type AcpPermissionResolution =
+  | { outcome: 'selected'; optionId: string }
+  | { outcome: 'cancelled' }
+
+const ACP_PERMISSION_OPTION_LIMIT = 8
+const ACP_PERMISSION_OPTION_NAME_LIMIT = 256
+const ACP_PERMISSION_OPTION_KIND_LIMIT = 64
+const ACP_PERMISSION_OPTION_DESCRIPTION_LIMIT = 4096
+const ACP_PERMISSION_OPTION_FIELDS = new Set(['optionId', 'name', 'kind', 'description'])
+const ACP_WRITE_TEXT_FILE_ALLOW_OPTION_ID = 'agenthub.acp.fs.write_text_file.allow_once'
+const ACP_WRITE_TEXT_FILE_PERMISSION_OPTIONS: readonly AcpPermissionOption[] = [
+  { optionId: 'agenthub.acp.fs.write_text_file.deny', name: 'Deny', kind: 'deny_once' },
+  { optionId: ACP_WRITE_TEXT_FILE_ALLOW_OPTION_ID, name: 'Allow once', kind: 'allow_once' }
+]
+
+function writeTextFilePermissionOptions(): AcpPermissionOption[] {
+  return ACP_WRITE_TEXT_FILE_PERMISSION_OPTIONS.map(option => ({ ...option }))
+}
+
+function ownDataValue(record: Record<PropertyKey, unknown>, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key)
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined
+}
+
+function boundedOptionText(value: unknown, limit: number): string | undefined {
+  return typeof value === 'string' ? value.slice(0, limit) : undefined
+}
+
+function isPlainAcpOption(value: unknown): value is Record<PropertyKey, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const proto = Object.getPrototypeOf(value)
+  if (proto !== Object.prototype && proto !== null) return false
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || !ACP_PERMISSION_OPTION_FIELDS.has(key)) return false
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (!descriptor || !('value' in descriptor)) return false
+  }
+  return true
+}
+
+/** Normalizes untrusted ACP options while retaining exact protocol option IDs. */
+export function normalizeAcpPermissionOptions(value: unknown): AcpPermissionOption[] {
+  if (!Array.isArray(value)) return []
+  const normalized: AcpPermissionOption[] = []
+  const seen = new Set<string>()
+  for (const candidate of value) {
+    if (normalized.length >= ACP_PERMISSION_OPTION_LIMIT || !isPlainAcpOption(candidate)) continue
+    const optionId = ownDataValue(candidate, 'optionId')
+    if (
+      typeof optionId !== 'string' ||
+      !optionId.trim() ||
+      optionId.length > ACP_PROTOCOL_OPTION_ID_MAX_CHARS ||
+      seen.has(optionId)
+    ) continue
+    const option: AcpPermissionOption = { optionId }
+    const name = boundedOptionText(ownDataValue(candidate, 'name'), ACP_PERMISSION_OPTION_NAME_LIMIT)
+    const kind = boundedOptionText(ownDataValue(candidate, 'kind'), ACP_PERMISSION_OPTION_KIND_LIMIT)
+    const description = boundedOptionText(ownDataValue(candidate, 'description'), ACP_PERMISSION_OPTION_DESCRIPTION_LIMIT)
+    if (name !== undefined) option.name = name
+    if (kind !== undefined) option.kind = kind
+    if (description !== undefined) option.description = description
+    seen.add(optionId)
+    normalized.push(option)
+  }
+  return normalized
 }
 
 export interface AcpPermissionRequest {
@@ -45,6 +120,7 @@ export interface AcpPermissionRequest {
   label: string
   detail: string
   args: Record<string, unknown>
+  options: AcpPermissionOption[]
   raw: any
 }
 
@@ -286,7 +362,31 @@ export function acpPermissionRequest(params: any): AcpPermissionRequest {
     800
   )
 
-  return { tool, readOnly, toolName, label, detail, args: input, raw: params }
+  return {
+    tool,
+    readOnly,
+    toolName,
+    label,
+    detail,
+    args: input,
+    options: normalizeAcpPermissionOptions(params?.options),
+    raw: params
+  }
+}
+
+function selectedAcpPermissionOption(
+  resolution: unknown,
+  options: readonly AcpPermissionOption[]
+): string | null {
+  if (!resolution || typeof resolution !== 'object' || Array.isArray(resolution)) return null
+  const proto = Object.getPrototypeOf(resolution)
+  if (proto !== Object.prototype && proto !== null) return null
+  const keys = Reflect.ownKeys(resolution)
+  if (keys.length !== 2 || !keys.includes('outcome') || !keys.includes('optionId')) return null
+  const outcome = ownDataValue(resolution as Record<PropertyKey, unknown>, 'outcome')
+  const optionId = ownDataValue(resolution as Record<PropertyKey, unknown>, 'optionId')
+  if (outcome !== 'selected' || typeof optionId !== 'string') return null
+  return options.some(option => option.optionId === optionId) ? optionId : null
 }
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> | null }
@@ -522,21 +622,29 @@ export class AcpClient {
     const handler = this.promptHandlers.get(sid)?.onRequestPermission
     if (!handler) return this.respondError(msg.id, -32000, 'write_text_file requires an active prompt approval context')
 
-    let approved = false
+    const options = writeTextFilePermissionOptions()
+    let resolution: AcpPermissionResolution = { outcome: 'cancelled' }
     try {
-      approved = await handler({
+      resolution = await handler({
         tool: 'write',
         toolName: 'fs/write_text_file',
         label: 'Write file',
         detail: firstString(msg.params?.path) || safeJson(msg.params),
         readOnly: false,
         args: firstRecord(msg.params),
+        options,
         raw: msg.params
       })
     } catch {
-      approved = false
+      resolution = { outcome: 'cancelled' }
     }
-    if (!approved) return this.respondError(msg.id, -32000, 'write_text_file denied by approval policy')
+    const selectedOptionId = selectedAcpPermissionOption(resolution, options)
+    const allowOption = options.find(option => (
+      option.optionId === ACP_WRITE_TEXT_FILE_ALLOW_OPTION_ID && option.kind === 'allow_once'
+    ))
+    if (selectedOptionId !== allowOption?.optionId) {
+      return this.respondError(msg.id, -32000, 'write_text_file denied by approval policy')
+    }
 
     const res = acpWriteTextFile(root, msg.params)
     if (res.ok) this.respond(msg.id, null)
@@ -544,34 +652,22 @@ export class AcpClient {
   }
 
   private async handlePermissionRequest(msg: any): Promise<void> {
-    const opts: any[] = Array.isArray(msg.params?.options) ? msg.params.options : []
-    const pick = opts.find(o => /allow/i.test(String(o.kind || o.optionId || o.name || '')))
-    const deny = opts.find(o => /deny|reject/i.test(String(o.kind || o.optionId || o.name || '')))
     const req = acpPermissionRequest(msg.params)
-    let approved = false
     // MED-09: Ensure sid is a string (server may send numeric sessionId)
     const sid = String(msg.params?.sessionId || '')
     const handlers = sid && this.sessionRoots.has(sid) ? this.promptHandlers.get(sid) : undefined
-    if (handlers) {
-      if (req.tool) {
-        const handler = handlers.onRequestPermission
-        if (handler) {
-          try { approved = await handler(req) } catch { approved = false }
-        }
-      } else if (req.readOnly) {
-        approved = true
-      }
-    }
-    if (approved && pick) {
-      this.respond(msg.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
-    } else if (approved) {
-      // MED-10: No options provided but approved — return default "allow" outcome
-      this.respond(msg.id, { outcome: { outcome: 'allow' } })
-    } else if (!approved && deny) {
-      this.respond(msg.id, { outcome: { outcome: 'selected', optionId: deny.optionId } })
-    } else {
+    const handler = handlers?.onRequestPermission
+    if (!handler || req.options.length === 0) {
       this.respond(msg.id, { outcome: { outcome: 'cancelled' } })
+      return
     }
+    let resolution: AcpPermissionResolution = { outcome: 'cancelled' }
+    try { resolution = await handler(req) } catch { /* fail closed */ }
+    const optionId = selectedAcpPermissionOption(resolution, req.options)
+    this.respond(msg.id, optionId
+      ? { outcome: { outcome: 'selected', optionId } }
+      : { outcome: { outcome: 'cancelled' } })
+    return
   }
 
   private handleNotification(msg: any): void {

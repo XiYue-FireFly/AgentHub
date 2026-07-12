@@ -28,7 +28,6 @@ function renderAgentOutput(output: string): string {
     }] as any,
     onRetry: () => {},
     onCancelAgent: () => {},
-    onResolveGuard: () => {},
     openSetup: () => {},
     onCreateProject: () => {},
     onCreateThread: () => {},

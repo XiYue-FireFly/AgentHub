@@ -73,8 +73,8 @@ describe("ThreadView agent output status", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
     expect(source).toContain("eventsOrSummary.routeEvents.length > 0 || eventsOrSummary.guardEvents.length > 0")
-    expect(source).toContain("pendingGuard && !isTerminalTurnStatus(turnStatus)")
     expect(source).toContain("turnStatus === 'queued' ? 'running' : turnStatus")
+    expect(source).not.toContain("return pendingGuard")
   })
 
   it("groups repeated agent runs by schedule role so reviewer failures do not overwrite main output", () => {
@@ -153,5 +153,22 @@ describe("ThreadView agent output status", () => {
     expect(source).toContain("'Waiting for decision'")
     expect(source).toContain("status === 'interrupted'")
     expect(source).toContain("'Interrupted'")
+  })
+
+  it("routes normal terminal retries separately from interrupted recovery", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("isTerminalTurnStatus(turn.status) && turn.status !== 'interrupted'")
+    expect(source).toContain("onClick={() => onRetry(turn.id)}")
+    expect(source).toContain("turn.status === 'interrupted' && <InterruptedDecisionRecovery")
+  })
+
+  it("renders guard history as read-only audit text", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).not.toContain('onResolveGuard')
+    expect(source).not.toContain('wb-role-event-actions')
+    expect(source).not.toContain("'Continue'")
+    expect(source).not.toContain("'Stop'")
   })
 })

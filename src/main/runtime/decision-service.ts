@@ -27,6 +27,7 @@ export interface DecisionServiceOptions {
 export interface DecisionRequestOptions {
   signal?: AbortSignal
   onRemember?: (resolution: DecisionResolution) => Promise<void>
+  onAdmitted?: (request: DecisionRequest) => void
 }
 
 export type DecisionSender =
@@ -53,6 +54,7 @@ interface DecisionEntry {
   signal?: AbortSignal
   abortListener?: () => void
   onRemember?: (resolution: DecisionResolution) => Promise<void>
+  onAdmitted?: (request: DecisionRequest) => void
   rememberAttempted: boolean
 }
 
@@ -187,6 +189,7 @@ export class DecisionService {
       timer: null,
       signal: options.signal,
       onRemember: options.onRemember,
+      onAdmitted: options.onAdmitted,
       rememberAttempted: false
     }
     this.entriesById.set(request.id, entry)
@@ -299,6 +302,88 @@ export class DecisionService {
       )
       for (const resolution of resolutions) this.settleEntry(resolution)
       this.cleanupTerminalTurn(turnId)
+    })
+  }
+
+  /**
+   * Cancels only durable tool or ACP decisions owned by one agent on a Turn. This is
+   * used before that agent's provider loop is stopped, so a pending approval
+   * cannot hold the shared Turn in awaiting-decision until its deadline.
+   */
+  cancelAgentDecisions(turnId: string, agentId: string): Promise<void> {
+    if (!turnId.trim() || !agentId.trim()) return Promise.resolve()
+    return this.enqueueOperation(async () => {
+      const result = await this.runtimeStore.commitRuntimeMutation(tx => {
+        const decisions = tx.listDecisions()
+        const targets = decisions.filter(record => (
+          unresolved(record) &&
+          record.request.owner.type === "turn" &&
+          record.request.owner.turnId === turnId &&
+          (record.request.source === "tool" || record.request.source === "acp") &&
+          record.request.metadata?.agentId === agentId
+        ))
+        if (targets.length === 0) return { resolutions: [] as DecisionResolution[] }
+
+        const resolutions = targets.map(record => ({
+          requestId: record.request.id,
+          status: "cancelled" as const,
+          resolvedAt: Date.now()
+        }))
+        for (const [index, record] of targets.entries()) {
+          const resolution = resolutions[index]
+          tx.upsertDecision({ ...record, state: "terminal", resolution })
+          const owner = record.request.owner
+          if (owner.type === "turn") {
+            tx.appendEvent(
+              owner.threadId,
+              owner.turnId,
+              "decision:resolved",
+              record.request.metadata?.agentId,
+              resolutionAudit(record.request, "cancelled")
+            )
+          }
+        }
+
+        const remaining = decisions.filter(record => (
+          unresolved(record) &&
+          record.request.owner.type === "turn" &&
+          record.request.owner.turnId === turnId &&
+          !targets.some(target => target.request.id === record.request.id)
+        ))
+        let promotedRequestId: string | undefined
+        if (!remaining.some(record => record.state === "active" || record.state === "resolving")) {
+          const queued = remaining.filter(record => record.state === "queued")
+          const ownerKeyForTurn = targets[0].request.owner.type === "turn"
+            ? ownerKey(targets[0].request)
+            : ""
+          const next = (this.ownerQueues.get(ownerKeyForTurn) ?? [])
+            .map(id => queued.find(record => record.request.id === id))
+            .find((record): record is NonNullable<typeof record> => record !== undefined)
+            ?? queued[0]
+          if (next) {
+            const activatedAt = Date.now()
+            tx.upsertDecision({
+              ...next,
+              state: "active",
+              activatedAt,
+              expiresAt: next.request.deadlineMs === undefined
+                ? undefined
+                : activatedAt + next.request.deadlineMs
+            })
+            promotedRequestId = next.request.id
+          }
+        }
+
+        const turn = tx.getTurn(turnId)
+        if (turn && !isTerminalTurnStatus(turn.status)) {
+          tx.setTurnStatus(turnId, remaining.length > 0 ? "awaiting-decision" : "running", {
+            decisionStatus: "cancelled"
+          })
+        }
+        return { resolutions, promotedRequestId }
+      })
+      for (const resolution of result.resolutions) this.settleEntry(resolution)
+      if (result.promotedRequestId) this.activatePromoted(result.promotedRequestId)
     })
   }
 
@@ -603,6 +688,9 @@ export class DecisionService {
       return record
     })
     entry.visible = true
+    const onAdmitted = entry.onAdmitted
+    entry.onAdmitted = undefined
+    try { onAdmitted?.(clone(entry.request)) } catch { /* admission is already durable */ }
     if (persisted.state === "terminal" && persisted.resolution) {
       this.settleEntry(persisted.resolution)
       return

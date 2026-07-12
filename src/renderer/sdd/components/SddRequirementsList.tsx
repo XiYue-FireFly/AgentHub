@@ -524,6 +524,7 @@ export function SddRequirementsList({ workspaceRoot, threadId = null, threadTodo
     }
 
     const result = await window.electronAPI.ai.quickComplete({
+      origin: 'quick-complete:sdd-requirements',
       prompt: userPrompt,
       systemPrompt,
       providerId: modelSelection?.source === 'provider' ? modelSelection.providerId : undefined,

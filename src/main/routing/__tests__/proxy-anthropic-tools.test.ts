@@ -1,4 +1,19 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+const h = vi.hoisted(() => ({ streamOptions: [] as any[], auditEvents: [] as any[] }))
+
+vi.mock('../../providers/client', () => ({
+  buildProviderClient: () => ({
+    stream: async (options: any, callbacks: any) => {
+      h.streamOptions.push(options)
+      callbacks.onDone?.({ content: 'ok' })
+    }
+  })
+}))
+
+vi.mock('../../runtime/app-event-log', () => ({
+  appendAppEventLog: (...args: any[]) => h.auditEvents.push(args)
+}))
 import {
   anthropicToolsToOpenai, anthropicToolChoiceToOpenai, anthropicToolResultContent,
   anthropicMessagesToOpenai, AnthropicWire
@@ -107,5 +122,105 @@ describe('AnthropicWire 工具块回写', () => {
     const body = JSON.parse(chunks.join(''))
     expect(body.content.some((b: any) => b.type === 'tool_use' && b.name === 'calc' && b.input.a === 1)).toBe(true)
     expect(body.stop_reason).toBe('tool_use')
+  })
+})
+
+describe('proxy provider dispatch envelopes', () => {
+  it.each([
+    ['openai', 'external-proxy:openai'],
+    ['anthropic', 'external-proxy:anthropic']
+  ] as const)('uses a passthrough envelope for %s ingress', async (wire, origin) => {
+    h.streamOptions = []
+    h.auditEvents = []
+    const { res } = fakeRes()
+    const proxy = new (await import('../proxy')).LocalProxy()
+    const candidate = {
+      agentId: 'proxy-test',
+      provider: {
+        id: 'provider-1',
+        name: 'Provider',
+        kind: 'openai-compatible',
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'test-key',
+        enabled: true,
+        models: [],
+        capabilities: { protocol: 'chat_completions', stream: true, nativeThinking: false, budgetTokens: false, toolCalls: true, systemPrompt: true },
+        defaultThinking: { mode: 'off', level: 'low' }
+      },
+      model: { id: 'model-1', label: 'Model', contextWindow: 128000, supportsTools: true, supportsVision: false, supportsThinking: false },
+      thinking: { mode: 'off', level: 'low' }
+    }
+    const messages = [{ role: 'user' as const, content: 'forward this' }]
+
+    await (proxy as any).tryOne(res, wire, true, 'inbound-model', candidate, messages, 'system', {}, origin)
+
+    expect(h.streamOptions).toHaveLength(1)
+    expect(h.streamOptions[0].dispatchEnvelope).toMatchObject({
+      origin,
+      policy: 'passthrough',
+      providerId: 'provider-1',
+      modelId: 'model-1'
+    })
+    expect(h.auditEvents).toHaveLength(1)
+    expect(h.auditEvents[0]).toEqual(['dispatch:prepared', expect.objectContaining({
+      dispatchId: h.streamOptions[0].dispatchEnvelope.dispatchId,
+      providerId: 'provider-1',
+      modelId: 'model-1',
+      canonicalPayloadHash: expect.any(String),
+      origin,
+      policy: 'passthrough',
+      rootInputId: undefined,
+      rootEnvelopeId: undefined,
+      rootPreparedTextHash: undefined,
+      parentDispatchId: undefined
+    })])
+    expect(h.auditEvents[0][1]).not.toHaveProperty('messages')
+    expect(h.auditEvents[0][1]).not.toHaveProperty('apiKey')
+  })
+
+  it('preserves the agent ingress origin when agent-routed traffic uses the OpenAI wire format', async () => {
+    h.streamOptions = []
+    h.auditEvents = []
+    const { res } = fakeRes()
+    const proxy = new (await import('../proxy')).LocalProxy()
+    const candidate = {
+      agentId: 'proxy-agent',
+      provider: {
+        id: 'provider-1',
+        name: 'Provider',
+        kind: 'openai-compatible',
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'test-key',
+        enabled: true,
+        models: [],
+        capabilities: { protocol: 'chat_completions', stream: true, nativeThinking: false, budgetTokens: false, toolCalls: true, systemPrompt: true },
+        defaultThinking: { mode: 'off', level: 'low' }
+      },
+      model: { id: 'model-1', label: 'Model', contextWindow: 128000, supportsTools: true, supportsVision: false, supportsThinking: false },
+      thinking: { mode: 'off', level: 'low' }
+    }
+
+    await (proxy as any).streamWithFailover(
+      res,
+      'openai',
+      true,
+      'inbound-agent-model',
+      [candidate],
+      [{ role: 'user', content: 'route this to the selected agent' }],
+      undefined,
+      {},
+      'external-proxy:agent'
+    )
+
+    expect(h.streamOptions[0].dispatchEnvelope).toMatchObject({
+      origin: 'external-proxy:agent',
+      policy: 'passthrough'
+    })
+    expect(h.auditEvents[0]).toEqual(['dispatch:prepared', expect.objectContaining({
+      origin: 'external-proxy:agent',
+      policy: 'passthrough'
+    })])
+    expect(h.auditEvents[0][1]).not.toHaveProperty('messages')
+    expect(h.auditEvents[0][1]).not.toHaveProperty('apiKey')
   })
 })

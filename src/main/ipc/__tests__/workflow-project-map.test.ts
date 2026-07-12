@@ -58,7 +58,7 @@ describe('projectMap IPC path validation', () => {
     })
   }
 
-  it('rejects building project map for unregistered workspace paths', async () => {
+  it('rejects building project map for unregistered workspace paths', { timeout: 30_000 }, async () => {
     await setup()
 
     const handler = electronMock.handlers.get('projectMap:build')

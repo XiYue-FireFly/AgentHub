@@ -11,9 +11,18 @@
  */
 import { buildProviderClient, ResolvedCall } from '../providers/client'
 import { ChatCompletionMessage, ThinkingConfig } from '../providers/types'
-import { AGENTIC_TOOLS, executeTool, ToolContext } from './tools'
+import type { DispatchEnvelope, PromptDispatchLineage } from '../../shared/prompt-contract'
+import { canonicalProviderPayload, childDispatchLineage, createDispatchEnvelope, createDispatchId, verifyDispatchEnvelope } from '../runtime/dispatch-envelope'
+import { appendAppEventLog } from '../runtime/app-event-log'
+import { AGENTIC_TOOLS, READ_ONLY_AGENTIC_TOOLS, executeTool, ToolContext } from './tools'
 import { ApprovalPolicy, ApprovalRequest, GuardedTool, guardedToolFor, assessApprovalRisk, approvalReason, type ApprovalRisk } from './approval'
 import type { ExecutionTracker } from '../runtime/execution-tracker'
+import {
+  REQUEST_USER_DECISION_TOOL,
+  REQUEST_USER_DECISION_TOOL_NAME,
+  parseAgentDecisionInput,
+  type AgentDecisionRequester
+} from './user-decision-tool'
 
 export interface AgenticActivityStep {
   id: string
@@ -54,9 +63,27 @@ export interface RunAgenticParams {
   requestApproval?: (req: ApprovalRequest) => Promise<boolean>
   /** 可选的执行追踪器，用于记录工具调用和生成报告 */
   tracker?: ExecutionTracker
+  lineage?: PromptDispatchLineage
+  parentDispatchId?: string
+  attachments?: readonly unknown[]
+  contextLayers?: readonly string[]
+  requestUserDecision?: AgentDecisionRequester
+  onDispatchEnvelope?: (envelope: DispatchEnvelope) => void
+  capabilityMode?: 'normal' | 'read-only'
 }
 
 const DEFAULT_MAX_ROUNDS = 8
+
+const LOOP_BRANCH_ORIGINS = new Set<PromptDispatchLineage['origin']>([
+  'internal:loop-candidate',
+  'internal:loop-synthesizer',
+  'internal:loop-judge',
+  'internal:loop-executor'
+])
+
+function isLoopBranchLineage(lineage: PromptDispatchLineage): boolean {
+  return LOOP_BRANCH_ORIGINS.has(lineage.origin)
+}
 
 function labelFor(name: string, args: any): string {
   if (name === 'fs_read') return 'Read · ' + (args.path ?? '')
@@ -88,7 +115,13 @@ function summarizeArgs(name: string, args: any): string {
 
 export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: string; usage?: any; error?: string }> {
   const client = buildProviderClient(p.resolved)
-  const ctx: ToolContext = { root: p.root || process.cwd(), readOnly: !p.root, signal: p.signal }
+  const ctx: ToolContext = {
+    root: p.root || process.cwd(),
+    readOnly: p.capabilityMode === 'read-only' || !p.root,
+    signal: p.signal
+  }
+  const workspaceTools = p.capabilityMode === 'read-only' ? READ_ONLY_AGENTIC_TOOLS : AGENTIC_TOOLS
+  const availableTools = [...workspaceTools, REQUEST_USER_DECISION_TOOL]
   const isStopped = () => p.signal?.aborted === true || p.isCancelled()
   const messages: ChatCompletionMessage[] = p.messages?.length
     ? p.messages.map(message => ({ ...message }))
@@ -97,6 +130,12 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
   let fullContent = ''
   let lastUsage: any = undefined
   let stepSeq = 0
+  let previousDispatchId = p.parentDispatchId
+  const rootLineage: PromptDispatchLineage = p.lineage || {
+    origin: 'internal:model-diagnostic',
+    policy: 'internal'
+  }
+  const preserveLoopBranchAnchor = isLoopBranchLineage(rootLineage)
 
   for (let round = 0; round < maxRounds; round++) {
     if (isStopped()) break
@@ -104,6 +143,40 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
     let toolCalls: any[] | undefined
     let finishReason: string | undefined
     try {
+      const payload = canonicalProviderPayload({
+        providerId: p.resolved.provider?.id || 'agentic',
+        modelId: p.resolved.model?.id || 'agentic',
+        protocol: p.resolved.provider?.capabilities?.protocol || 'chat_completions',
+        systemPrompt: p.systemPrompt,
+        messages,
+        tools: availableTools,
+        toolChoice: 'auto',
+        thinking: p.thinking,
+        attachments: p.attachments || [],
+        contextLayers: p.contextLayers || []
+      })
+      const dispatchEnvelope = createDispatchEnvelope({
+        dispatchId: createDispatchId(),
+        lineage: preserveLoopBranchAnchor && round === 0
+          ? rootLineage
+          : childDispatchLineage(rootLineage, previousDispatchId, 'internal:agentic-round'),
+        payload
+      })
+      verifyDispatchEnvelope(dispatchEnvelope, payload)
+      if (!preserveLoopBranchAnchor || round === 0) p.onDispatchEnvelope?.(dispatchEnvelope)
+      previousDispatchId = dispatchEnvelope.dispatchId
+      appendAppEventLog('dispatch:prepared', {
+        dispatchId: dispatchEnvelope.dispatchId,
+        providerId: dispatchEnvelope.providerId,
+        modelId: dispatchEnvelope.modelId,
+        canonicalPayloadHash: dispatchEnvelope.canonicalPayloadHash,
+        origin: dispatchEnvelope.origin,
+        policy: dispatchEnvelope.policy,
+        rootInputId: dispatchEnvelope.rootInputId,
+        rootEnvelopeId: dispatchEnvelope.rootEnvelopeId,
+        rootPreparedTextHash: dispatchEnvelope.rootPreparedTextHash,
+        parentDispatchId: dispatchEnvelope.parentDispatchId
+      })
       let settleCallback!: () => void
       let rejectCallback!: (error: unknown) => void
       const callbackCompletion = new Promise<void>((resolve, reject) => {
@@ -113,7 +186,7 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
       let source: Promise<void>
       try {
         source = Promise.resolve(client.stream(
-          { messages, systemPrompt: p.systemPrompt, thinkingOverride: p.thinking, tools: AGENTIC_TOOLS, toolChoice: 'auto', signal: p.signal },
+          { messages, systemPrompt: p.systemPrompt, thinkingOverride: p.thinking, tools: availableTools, toolChoice: 'auto', signal: p.signal, dispatchEnvelope, attachments: p.attachments, contextLayers: p.contextLayers },
           {
             onContent: (delta) => {
               if (isStopped()) return
@@ -167,6 +240,27 @@ export async function runAgenticHttp(p: RunAgenticParams): Promise<{ content: st
         const stepId = 'tool-' + (++stepSeq)
         const label = labelFor(name, parsed)
         const detail = summarizeArgs(name, parsed)
+
+        if (name === REQUEST_USER_DECISION_TOOL_NAME) {
+          p.emit.activity({ id: stepId, kind: 'decision', tool: name, label, detail, status: 'awaiting' })
+          let content: string
+          try {
+            const input = parseAgentDecisionInput(parsed)
+            if (!p.requestUserDecision) throw new Error('No interactive decision channel is available.')
+            const resolution = await p.requestUserDecision(input)
+            content = JSON.stringify(resolution)
+            p.emit.activity({ id: stepId, kind: 'decision', tool: name, label, detail, output: content, status: 'done' })
+          } catch (error) {
+            content = JSON.stringify({
+              status: 'unavailable',
+              error: error instanceof Error ? error.message : String(error)
+            })
+            p.emit.activity({ id: stepId, kind: 'decision', tool: name, label, detail, output: content, status: 'error' })
+          }
+          messages.push({ role: 'tool', tool_call_id: tc.id, content })
+          if (p.isCancelled()) break
+          continue
+        }
 
         // 写/执行审批门禁：只读工具（fs_read/fs_list）guarded=null，不门禁。
         // deny/ask-denied 也要回灌一条 role:'tool' 结果，否则下一轮请求缺 tool_call 应答会 400。

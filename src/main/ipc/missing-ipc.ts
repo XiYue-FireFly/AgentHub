@@ -22,6 +22,13 @@ import { ProviderClient } from '../providers/client'
 import type { AgentRouteBinding, ThinkingConfig } from '../providers/types'
 import { workspaceContextPromptForRoot } from '../runtime/workspace-context'
 import { compactTextByTokenBudget } from '../runtime/token-economy'
+import { canonicalProviderPayload, createDispatchEnvelope, createDispatchId } from '../runtime/dispatch-envelope'
+import { PromptCandidateGenerator } from '../runtime/prompt-candidate-generator'
+import { promptCacheContext } from '../runtime/prompt-cache-context'
+import { requirePromptIngress } from '../runtime/prompt-ingress-registry'
+import type { PromptPreparationService } from '../runtime/prompt-preparation-service'
+import { appendAppEventLog } from '../runtime/app-event-log'
+import { promptLineageFromEnvelope } from '../../shared/prompt-contract'
 import { safeBrowserUrl } from '../security/webview-guards'
 import { resolvePathWithinAllowedBases } from './path-guards'
 import { assertRegisteredWorkspaceRoot } from './workspace-root-guard'
@@ -48,12 +55,13 @@ interface MissingIpcDeps {
   hub: any
   getMainWindow: () => any
   memory: () => any
+  promptPreparationService?: Pick<PromptPreparationService, 'prepareRoot'>
 }
 
 export function registerMissingIpc(deps: MissingIpcDeps): void {
-  const { dispatcher, runtimeStore, providerMgr, proxy, getMainWindow } = deps
+  const { dispatcher, runtimeStore, providerMgr, proxy, getMainWindow, promptPreparationService } = deps
 
-  // --- Turns (turns:create/cancel/cancelAgent/resolveGuard/retry are in index.ts) ---
+  // --- Turns (turns:create/cancel/cancelAgent/retry are registered centrally) ---
 
   // --- Tasks ---
   typedHandle('tasks:delete', async (_event, taskId) => {
@@ -122,9 +130,6 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   typedHandle("agentic:getApprovalConfig", async () => {
     return getApprovalConfig().getConfig()
   })
-  typedHandle("agentic:getPendingApprovalIds", async () => {
-    return dispatcher?.getPendingApprovalIds() ?? []
-  })
   typedHandle("agentic:setApprovalPreset", async (_e, preset) => {
     return getApprovalConfig().setPreset(preset)
   })
@@ -133,9 +138,6 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   })
   typedHandle("agentic:setApprovalOverride", async (_e, agentId, tool, policy) => {
     return getApprovalConfig().setOverride(agentId, tool, policy)
-  })
-  typedHandle("agentic:resolveApproval", async (_e, requestId, approved) => {
-    return dispatcher?.resolveApproval(requestId, approved) ?? false
   })
 
   // --- App ---
@@ -233,9 +235,9 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
   typedHandle("ai:quickComplete", async (_e, input) => {
     let timeout: ReturnType<typeof setTimeout> | null = null
     try {
-      if (typeof input?.prompt !== 'string' || !input.prompt.trim()) {
-        return { ok: false, error: 'empty prompt' }
-      }
+      const registration = requirePromptIngress(input.origin)
+      if (registration.policy !== 'structured') return { ok: false, error: 'QuickComplete origin must be structured' }
+      if (!promptPreparationService) return { ok: false, error: 'Prompt preparation service is unavailable' }
       const provider = input.providerId ? providerMgr.getProvider(input.providerId) : providerMgr.getEnabledProviders()?.[0]
       if (!provider) return { ok: false, error: 'No provider available' }
       const modelId = input.modelId || provider.models?.[0]?.id || 'gpt-4'
@@ -263,12 +265,55 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       timeout = setTimeout(() => controller.abort(), input.timeoutMs || 30000)
       let content = ''
       let errorMessage = ''
+      const prepared = await promptPreparationService.prepareRoot({
+        origin: input.origin,
+        prompt: input.prompt,
+        cacheContext: promptCacheContext({
+          locale: 'en-US',
+          workspaceRoot: input.workspaceRoot || null,
+          contextProjection: { workspaceRoot: input.workspaceRoot || null },
+          plugins: [],
+          skills: [],
+          attachments: [],
+          providerId: provider.id,
+          modelId: model.id
+        })
+      })
+      if (prepared.kind !== 'ready') return { ok: false, error: 'Prompt preparation did not produce a dispatchable prompt' }
       const workspaceContext = compactTextByTokenBudget(workspaceContextPromptForRoot(input.workspaceRoot), 2_000).text
-      const prompt = compactTextByTokenBudget([workspaceContext, input.prompt].filter(Boolean).join('\n\n'), 12_000).text
+      const prompt = compactTextByTokenBudget([workspaceContext, prepared.envelope.effectivePrompt].filter(Boolean).join('\n\n'), 12_000).text
+      const messages = [{ role: 'user' as const, content: prompt }]
+      const dispatchEnvelope = createDispatchEnvelope({
+        dispatchId: createDispatchId(),
+        lineage: promptLineageFromEnvelope(prepared.envelope),
+        payload: canonicalProviderPayload({
+          providerId: provider.id,
+          modelId: model.id,
+          protocol: provider.capabilities.protocol,
+          systemPrompt: input.systemPrompt || '',
+          messages,
+          tools: [],
+          toolChoice: null,
+          thinking
+        })
+      })
+      appendAppEventLog('dispatch:prepared', {
+        dispatchId: dispatchEnvelope.dispatchId,
+        providerId: dispatchEnvelope.providerId,
+        modelId: dispatchEnvelope.modelId,
+        canonicalPayloadHash: dispatchEnvelope.canonicalPayloadHash,
+        origin: dispatchEnvelope.origin,
+        policy: dispatchEnvelope.policy,
+        rootInputId: dispatchEnvelope.rootInputId,
+        rootEnvelopeId: dispatchEnvelope.rootEnvelopeId,
+        rootPreparedTextHash: dispatchEnvelope.rootPreparedTextHash,
+        parentDispatchId: dispatchEnvelope.parentDispatchId
+      })
       await client.stream({
-        messages: [{ role: 'user', content: prompt }],
+        messages,
         systemPrompt: input.systemPrompt,
-        signal: controller.signal
+        signal: controller.signal,
+        dispatchEnvelope
       }, {
         onContent: delta => { content += delta },
         onDone: final => { content = final.content || content },
@@ -278,6 +323,99 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       if (errorMessage) return { ok: false, error: errorMessage }
       return { ok: true, content }
     } catch (e: any) { if (timeout) clearTimeout(timeout); return { ok: false, error: e?.message } }
+  })
+
+  typedHandle('ai:promptCandidates', async (_e, input) => {
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    try {
+      const registration = requirePromptIngress(input.origin)
+      if (registration.scope !== 'draft' || registration.policy !== 'structured') {
+        return { candidates: [], draftHash: input.draftHash, error: 'Prompt candidates require a draft structured origin' }
+      }
+      const provider = providerMgr.getEnabledProviders()?.[0]
+      if (!provider) return { candidates: [], draftHash: input.draftHash, error: 'No provider available' }
+      const modelId = provider.models?.[0]?.id || 'gpt-4'
+      const model = provider.models?.find((item: any) => item.id === modelId) || {
+        id: modelId,
+        label: modelId,
+        contextWindow: 258_000,
+        supportsTools: false,
+        supportsVision: false,
+        supportsThinking: false
+      }
+      const binding: AgentRouteBinding = {
+        agentId: 'prompt-candidate-generator',
+        providerId: provider.id,
+        modelId,
+        thinkingAllow: ['off'],
+        thinking: { mode: 'off', level: 'medium' },
+        maxOutputTokens: 2048,
+        temperature: 0.2,
+        protocol: 'http'
+      }
+      const thinking: ThinkingConfig = { mode: 'off', level: 'medium' }
+      const client = new ProviderClient(provider, model, binding, thinking)
+      const controller = new AbortController()
+      timeout = setTimeout(() => controller.abort(), 30_000)
+      const generator = new PromptCandidateGenerator({
+        invoke: async request => {
+          const messages = [{ role: 'user' as const, content: request.userPrompt }]
+          const dispatchEnvelope = createDispatchEnvelope({
+            dispatchId: createDispatchId(),
+            lineage: { origin: 'internal:prompt-candidate', policy: 'internal' },
+            payload: canonicalProviderPayload({
+              providerId: provider.id,
+              modelId: model.id,
+              protocol: provider.capabilities.protocol,
+              systemPrompt: request.systemPrompt,
+              messages,
+              tools: [],
+              toolChoice: null,
+              thinking
+            })
+          })
+          appendAppEventLog('dispatch:prepared', {
+            dispatchId: dispatchEnvelope.dispatchId,
+            providerId: dispatchEnvelope.providerId,
+            modelId: dispatchEnvelope.modelId,
+            canonicalPayloadHash: dispatchEnvelope.canonicalPayloadHash,
+            origin: dispatchEnvelope.origin,
+            policy: dispatchEnvelope.policy,
+            rootInputId: dispatchEnvelope.rootInputId,
+            rootEnvelopeId: dispatchEnvelope.rootEnvelopeId,
+            rootPreparedTextHash: dispatchEnvelope.rootPreparedTextHash,
+            parentDispatchId: dispatchEnvelope.parentDispatchId
+          })
+          let content = ''
+          let errorMessage = ''
+          await client.stream({
+            messages,
+            systemPrompt: request.systemPrompt,
+            tools: request.tools as never[],
+            toolChoice: request.toolChoice,
+            signal: controller.signal,
+            dispatchEnvelope
+          }, {
+            onContent: delta => { content += delta },
+            onDone: final => { content = final.content || content },
+            onError: error => { errorMessage = error.message }
+          })
+          if (errorMessage) throw new Error(errorMessage)
+          return content
+        }
+      })
+      const candidates = await generator.generate({
+        originalPrompt: input.prompt,
+        maxPromptChars: 512 * 1024,
+        providerId: provider.id,
+        modelId: model.id
+      })
+      return { candidates: [...candidates], draftHash: input.draftHash }
+    } catch (error: any) {
+      return { candidates: [], draftHash: input.draftHash, error: error?.message || 'Prompt candidate generation failed' }
+    } finally {
+      if (timeout) clearTimeout(timeout)
+    }
   })
 }
 

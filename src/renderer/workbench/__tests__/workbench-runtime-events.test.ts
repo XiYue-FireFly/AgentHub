@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { WorkbenchLayout } from "../WorkbenchLayout"
 import { resetWorkbenchUiStoreForTests } from "../state/ui-store"
 import { isTaskHistoryEvent, mergeRuntimeEventLists, runtimeAgentStatusFromEvent, shouldFlushFirstStreamDelta } from "../utils/eventUtils"
+import type { PendingDecision } from "../../../shared/decision-contract"
 
 const observedMainContent = vi.hoisted(() => ({
   workspaceId: null as string | null,
@@ -19,16 +20,17 @@ const observedMainContent = vi.hoisted(() => ({
 
 const observedSidebar = vi.hoisted(() => ({
   threads: [] as WorkbenchThread[],
+  decisionCount: {} as Record<string, number>,
   renderCount: 0
 }))
 
-vi.mock("../../glass/approval-dialog", () => ({ ApprovalDialog: () => null }))
 vi.mock("../CommandPalette", () => ({ CommandPalette: () => null }))
 vi.mock("../CreateWorkspaceDialog", () => ({ CreateWorkspaceDialog: () => null }))
 vi.mock("../NativeTitlebar", () => ({ NativeTitlebar: () => null }))
 vi.mock("../SessionSidebar", () => ({
-  SessionSidebar: (props: { threads: WorkbenchThread[] }) => {
+  SessionSidebar: (props: { threads: WorkbenchThread[]; decisionCount: Record<string, number> }) => {
     observedSidebar.threads = props.threads
+    observedSidebar.decisionCount = props.decisionCount
     observedSidebar.renderCount += 1
     return null
   }
@@ -151,15 +153,44 @@ function refreshEvent(id: string, seq: number): RuntimeEvent {
   } as RuntimeEvent
 }
 
+function pendingDecision(id: string, threadId: string, createdAt: number, state: PendingDecision['state'] = 'active'): PendingDecision {
+  return {
+    request: {
+      schemaVersion: 1,
+      id,
+      owner: {
+        type: 'turn',
+        threadId,
+        turnId: `turn-${id}`,
+        workspaceId: 'workspace-a',
+        webContentsId: 7
+      },
+      source: 'agent',
+      kind: 'single-select',
+      title: id,
+      options: [],
+      minSelections: 0,
+      maxSelections: 1,
+      allowCustom: false,
+      allowRemember: false,
+      createdAt
+    },
+    state
+  }
+}
+
 async function renderRuntimeEventHarness(input: {
   allThreads: WorkbenchThread[]
   todo: ThreadTodo
   platform?: string
   workspaces?: Array<typeof workspaceA>
+  pendingDecisions?: PendingDecision[]
+  listPendingDecisions?: () => Promise<PendingDecision[]>
 }) {
   let runtimeListener: ((event: RuntimeEvent) => void) | null = null
   const eventTodos = [input.todo]
   const workspaces = input.workspaces ?? stableWorkspaces
+  const listPendingDecisions = input.listPendingDecisions ?? vi.fn(async () => input.pendingDecisions ?? [])
   const visibleSnapshot = {
     threads: stableVisibleOnlyThreads,
     turns: stableEmptyArray,
@@ -189,11 +220,6 @@ async function renderRuntimeEventHarness(input: {
     timestamp: "2026-07-10T00:00:00.000Z"
   }
   const api = {
-    agentic: {
-      getPendingApprovalIds: vi.fn(async () => stableEmptyArray),
-      resolveApproval: vi.fn(async () => true),
-      setApprovalOverride: vi.fn(async () => undefined)
-    },
     app: { onMenuCommand: vi.fn(() => vi.fn()) },
     git: {
       status: vi.fn(async (workspaceId: string) => ({
@@ -223,6 +249,7 @@ async function renderRuntimeEventHarness(input: {
       set: vi.fn(async () => undefined)
     },
     terminal: { history: vi.fn(async () => stableEmptyArray) },
+    turns: { listPendingDecisions },
     todos: {
       list: vi.fn(async (threadId: string) => threadId === input.todo.threadId ? eventTodos : stableEmptyArray),
       upsert: vi.fn(async (next: Partial<ThreadTodo>) => ({ ...input.todo, ...next, updatedAt: 2 }))
@@ -262,6 +289,7 @@ beforeEach(() => {
   observedMainContent.renderCount = 0
   observedMainContent.selectWorkspace = null
   observedSidebar.threads = []
+  observedSidebar.decisionCount = {}
   observedSidebar.renderCount = 0
 })
 
@@ -271,6 +299,87 @@ afterEach(() => {
 })
 
 describe("Workbench runtime event loading", () => {
+  it('refreshes the globally scoped decision list on decision runtime events and passes per-thread counts to the sidebar', async () => {
+    const pendingDecisions = [
+      pendingDecision('decision-a', threadA.id, 1),
+      pendingDecision('decision-b', threadB.id, 2, 'queued')
+    ]
+    const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo: makePlanTodo(threadB.id, workspaceB.rootPath), pendingDecisions })
+
+    await waitFor(() => expect(harness.api.turns.listPendingDecisions).toHaveBeenCalledTimes(1))
+    expect(harness.api.turns.listPendingDecisions).toHaveBeenLastCalledWith()
+    expect(observedSidebar.decisionCount).toEqual({ [threadA.id]: 1, [threadB.id]: 1 })
+
+    pendingDecisions.push(pendingDecision('decision-a-2', threadA.id, 3))
+    await harness.emit({
+      id: 'decision-requested',
+      threadId: threadA.id,
+      turnId: 'turn-decision-a-2',
+      seq: 1,
+      kind: 'decision:requested',
+      payload: { requestId: 'decision-a-2' },
+      createdAt: 3
+    } as RuntimeEvent)
+
+    await waitFor(() => expect(harness.api.turns.listPendingDecisions).toHaveBeenCalledTimes(2))
+    expect(observedSidebar.decisionCount).toEqual({ [threadA.id]: 2, [threadB.id]: 1 })
+  })
+
+  it('preserves current decision counts when an older bridge lacks the pending-decision method', async () => {
+    const harness = await renderRuntimeEventHarness({
+      allThreads: stableKnownThreads,
+      todo: makePlanTodo(threadB.id, workspaceB.rootPath),
+      pendingDecisions: [pendingDecision('decision-a', threadA.id, 1)]
+    })
+    await waitFor(() => expect(harness.api.turns.listPendingDecisions).toHaveBeenCalledTimes(1))
+    ;(harness.api.turns as { listPendingDecisions?: unknown }).listPendingDecisions = undefined
+
+    await harness.emit({
+      id: 'decision-requested-without-bridge',
+      threadId: threadA.id,
+      turnId: 'turn-decision-a',
+      seq: 2,
+      kind: 'decision:requested',
+      payload: { requestId: 'decision-a' },
+      createdAt: 2
+    } as RuntimeEvent)
+    await Promise.resolve()
+
+    expect(observedSidebar.decisionCount).toEqual({ [threadA.id]: 1 })
+  })
+
+  it('keeps the newest authoritative decision refresh when an older request resolves late', async () => {
+    const first = deferred<PendingDecision[]>()
+    const second = deferred<PendingDecision[]>()
+    const listPendingDecisions = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+    const harness = await renderRuntimeEventHarness({
+      allThreads: stableKnownThreads,
+      todo: makePlanTodo(threadB.id, workspaceB.rootPath),
+      listPendingDecisions
+    })
+
+    await waitFor(() => expect(listPendingDecisions).toHaveBeenCalledTimes(1))
+    await harness.emit({
+      id: 'decision-resolved',
+      threadId: threadA.id,
+      turnId: 'turn-decision',
+      seq: 2,
+      kind: 'decision:resolved',
+      payload: { requestId: 'decision-a', status: 'selected' },
+      createdAt: 4
+    } as RuntimeEvent)
+    await waitFor(() => expect(listPendingDecisions).toHaveBeenCalledTimes(2))
+
+    await act(async () => { second.resolve([pendingDecision('new-decision', threadB.id, 2)]) })
+    await waitFor(() => expect(observedSidebar.decisionCount).toEqual({ [threadB.id]: 1 }))
+    await act(async () => { first.resolve([pendingDecision('old-decision', threadA.id, 1)]) })
+    await Promise.resolve()
+
+    expect(observedSidebar.decisionCount).toEqual({ [threadB.id]: 1 })
+  })
+
   it("mounts runtime event wiring when there are no pending approvals", async () => {
     const todo = makePlanTodo(threadB.id, workspaceB.rootPath)
     const harness = await renderRuntimeEventHarness({ allThreads: stableKnownThreads, todo })
@@ -799,23 +908,15 @@ describe("Workbench runtime event loading", () => {
     expect(harness.api.git.commitDetails).not.toHaveBeenCalled()
   })
 
-  it("drives approval requests from runtime events instead of legacy dispatch stream", () => {
+  it("routes primary decisions through the durable DecisionService queue", () => {
     const app = readFileSync(join(process.cwd(), "src/renderer/App.tsx"), "utf8")
     const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
 
-    expect(layout).toContain("appendApprovalFromRuntimeEvent(event)")
-    expect(layout).toContain("reduceApprovalItemsFromRuntimeEvent(prev, event)")
-    expect(layout).toContain("getPendingApprovalIds")
-    expect(layout).toContain("reconcileApprovalItemsWithHistory")
-    expect(layout).toContain("createApprovalDecisionHandler")
-    expect(layout).toContain("approvalDecisionPresentation(result)")
-    expect(layout).toContain("const [approvalNotice, setApprovalNotice]")
-    expect(layout).toContain("setApprovalNotice(null)")
-    expect(layout).toContain("setApprovalNotice(presentation.notice)")
-    expect(layout).not.toContain("setSendError(presentation.notice)")
-    expect(layout).toContain("<ApprovalNotice notice={approvalNotice}")
-    expect(layout).toContain("busy={approvalBusyId === approvals[0]?.id}")
-    expect(layout).toContain("error={approvalError && approvalError.approvalId === approvals[0]?.id ? approvalError.message : null}")
+    expect(layout).toContain("refreshPendingDecisions")
+    expect(layout).toContain("event.kind === 'decision:requested' || event.kind === 'decision:resolved'")
+    expect(layout).not.toContain("ApprovalDialog")
+    expect(layout).not.toContain("createApprovalDecisionHandler")
+    expect(layout).not.toContain("getPendingApprovalIds")
     expect(app).not.toContain("e.kind === 'approval'")
     expect(app).not.toContain("setApprovals")
   })

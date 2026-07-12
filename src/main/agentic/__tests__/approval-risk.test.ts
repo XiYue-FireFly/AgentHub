@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   assessApprovalRisk,
-  approvalReason,
-  type PersistedPendingApproval
+  approvalReason
 } from '../approval'
 
 describe('P0-4 assessApprovalRisk', () => {
@@ -58,63 +57,5 @@ describe('P0-4 approvalReason', () => {
   it('generates correct reason for critical destructive commands', () => {
     const reason = approvalReason('exec', 'critical', 'rm -rf /')
     expect(reason).toContain('Destructive')
-  })
-})
-
-describe('P0-4 PersistedPendingApproval lifecycle', () => {
-  // Note: full persistence tests require the electron store stub.
-  // Here we test the data shape and status transitions directly.
-  it('PersistedPendingApproval has correct shape', () => {
-    const pa: PersistedPendingApproval = {
-      id: 'appr-task1-1',
-      request: {
-        stepId: 'step1',
-        agentId: 'codex',
-        tool: 'write',
-        toolName: 'fs_write',
-        label: 'Write · /test/file.ts',
-        detail: 'Action: write file\nPath: /test/file.ts',
-        action: 'write_file',
-        target: '/test/file.ts',
-        risk: 'medium',
-        reason: 'Writing to file: /test/file.ts',
-        preview: 'const x = 1'
-      },
-      agentId: 'codex',
-      createdAt: new Date().toISOString(),
-      status: 'pending'
-    }
-    expect(pa.request.action).toBe('write_file')
-    expect(pa.request.risk).toBe('medium')
-    expect(pa.request.target).toBe('/test/file.ts')
-    expect(pa.request.reason).toContain('Writing to file')
-    expect(pa.request.preview).toBe('const x = 1')
-    expect(pa.status).toBe('pending')
-  })
-
-  it('stale expired approval has correct shape', () => {
-    const pa: PersistedPendingApproval = {
-      id: 'appr-task1-2',
-      request: {
-        stepId: 'step2',
-        agentId: 'codex',
-        tool: 'exec',
-        toolName: 'exec',
-        label: 'Bash · npm test',
-        detail: 'Action: run command\nCommand: npm test',
-        action: 'run_command',
-        target: 'npm test',
-        risk: 'medium',
-        reason: 'Command execution: npm test',
-        preview: 'npm test'
-      },
-      agentId: 'codex',
-      createdAt: new Date().toISOString(),
-      staleAt: new Date().toISOString(),
-      status: 'stale'
-    }
-    expect(pa.status).toBe('stale')
-    expect(pa.staleAt).toBeDefined()
-    expect(pa.request.risk).toBe('medium')
   })
 })

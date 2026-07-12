@@ -37,15 +37,18 @@ describe("main task turn tracking wiring", () => {
     expect(cleanup).not.toContain("setImmediate")
   })
 
-  it("tracks create and retry handlers plus their detached settlements", () => {
+  it("routes create and retry through the central durable turns registrar", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main/index.ts"), "utf8")
+    const turnsIpc = readFileSync(resolve(process.cwd(), "src/main/ipc/turns-ipc.ts"), "utf8")
+    const ipcIndex = readFileSync(resolve(process.cwd(), "src/main/ipc/index.ts"), "utf8")
 
-    expect(source).toContain('typedHandle("turns:create", (_event, payload) => runtimeProducers.run(async () => {')
-    expect(source).toContain('typedHandle("turns:retry", (_event, turnId) => runtimeProducers.run(async () => {')
-    expect(source).toContain("const createSettlement = runner")
-    expect(source).toContain("runtimeProducers.track(createSettlement)")
-    expect(source).toContain("const retrySettlement = retryRunner")
-    expect(source).toContain("runtimeProducers.track(retrySettlement)")
+    expect(source).toContain("new WorkbenchTurnRunner")
+    expect(source).toContain("cancel: async turnId => { await dispatcher?.cancelTurn(turnId) }")
+    expect(source).toContain("new ThreadExecutionCoordinator(")
+    expect(source).not.toMatch(/typedHandle\(\s*["']turns:/)
+    expect(turnsIpc).toContain("coordinator.enqueueCreate")
+    expect(turnsIpc).toContain("coordinator.enqueueRetry")
+    expect(ipcIndex).toContain("registerTurnsIpc(")
     expect(source).toContain("stopTaskTurnTracking = installTaskTurnTracking(dispatcher, runtimeStore)")
   })
 
@@ -104,33 +107,57 @@ describe("main task turn tracking wiring", () => {
     expect(beforeQuit).not.toContain("store.flush()")
   })
 
-  it("settles create and retry runners through actor-local status transitions", () => {
+  it("settles runner work through actor-local status transitions", () => {
     const source = readFileSync(resolve(process.cwd(), "src/main/index.ts"), "utf8")
 
-    expect(source).toContain('runtimeStore.transitionTurnStatus(turn.id, ["running"]')
-    expect(source).toContain('runtimeStore.transitionTurnStatus(created.turn.id, ["running"]')
-    expect(source).not.toContain('if (runtimeStore.getTurn(turn.id)?.status === "cancelled") return')
-    expect(source).not.toContain('if (runtimeStore.getTurn(created.turn.id)?.status === "cancelled") return')
+    expect(source).toContain("runtimeStore.transitionTurnStatus(turn.id, ['running']")
+    expect(source).toContain('await runtimeProducers.track(settlement)')
+    expect(source).not.toContain('void runtimeProducers.track(settlement)')
+    expect(source).toContain("if (!input.isStillActive()) return")
+    expect(source).not.toContain("Legacy turns handlers")
   })
 
-  it("cancels an agent and conditionally settles its Turn inside one runtime actor operation", () => {
-    const source = readFileSync(resolve(process.cwd(), "src/main/index.ts"), "utf8")
-    const cancelTurnStart = source.indexOf('typedHandle("turns:cancel"')
-    const cancelAgentStart = source.indexOf('typedHandle("turns:cancelAgent"')
-    const cancelTurnHandler = source.slice(cancelTurnStart, cancelAgentStart)
-    const cancelAgentEnd = source.indexOf('typedHandle("turns:resolveGuard"', cancelAgentStart)
-    const cancelAgentHandler = source.slice(cancelAgentStart, cancelAgentEnd)
+  it('uses the immutable prepared root exactly once for plugin analysis and routing', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/main/index.ts'), 'utf8')
+    const runnerStart = source.indexOf('const workbenchTurnRunner = new WorkbenchTurnRunner')
+    const preflightStart = source.indexOf('async function approvePluginPreDispatch')
+    const executionStart = source.indexOf('async function executeQueuedWorkbenchTurn')
+    const preflight = source.slice(preflightStart, executionStart)
+    const execution = source.slice(executionStart)
 
+    expect(runnerStart).toBeGreaterThanOrEqual(0)
+    expect(source.slice(runnerStart, executionStart)).toContain('preDispatch: approvePluginPreDispatch')
+    expect(preflight).toContain('const promptEnvelope = input.turn.promptEnvelope')
+    expect(preflight).toContain('prompt: promptEnvelope.effectivePrompt')
+    expect(preflight).not.toContain('optimizePromptForDispatch(')
+    expect(source).toContain('const approved = await pluginDecisionAdapter.request({')
+    expect(source).toContain('if (!input.isStillActive()) return')
+    expect(execution).toContain('outcome: preDispatchOutcome')
+    expect(execution).toContain('makeRouteDecision(thread.id, turn.id, promptEnvelope.effectivePrompt')
+    expect(execution).not.toContain('optimizePromptForDispatch(')
+    expect(execution).not.toContain('runPreDispatchHooks(')
+    expect(execution).not.toContain('resolvePluginPreDispatchHooks(')
+  })
+
+  it('derives dispatcher tool-decision ownership from the durable Turn at bootstrap', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/main/index.ts'), 'utf8')
+
+    expect(source).toContain('requestToolDecision: async ({ task, agentId, request, idempotencyKey, onRequested }) =>')
+    expect(source).toContain('trustedDecisionOwnerForTurn(task.__turnId)')
+    expect(source).toContain('onRequested: decision => onRequested(decision.id)')
+    expect(source).toContain('requestAcpPermissionDecision: async ({ task, agentId, request, idempotencyKey, onRequested }) =>')
+    expect(source).toContain('return acpDecisionAdapter.request({')
+  })
+
+  it("centralizes durable turn and agent cancellation in turns IPC", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/main/ipc/turns-ipc.ts"), "utf8")
+
+    expect(source).toContain("decisionService.cancelTurn(turnId)")
+    expect(source).toContain("dispatcher?.preCancelTurn(turnId)")
+    expect(source).toContain("dispatcher?.cancelTurn(turnId, { decisionAlreadyCancelled: true })")
+    expect(source).toContain("coordinator.cancelTurn(turnId, { runnerAlreadyCancelled: true })")
     expect(source).toContain("runtimeStore.cancelAgentRun(turnId, agentId")
-    expect(cancelTurnHandler).toContain("runtimeStore.cancelTurn(turnId")
-    expect(cancelTurnHandler.indexOf("runtimeStore.cancelTurn(turnId"))
-      .toBeLessThan(cancelTurnHandler.indexOf("dispatcher?.cancelTurn(turnId)"))
-    expect(cancelTurnHandler).toContain("dispatcher?.cancelTurn(turnId)")
-    expect(cancelAgentHandler.indexOf("runtimeStore.cancelAgentRun(turnId, agentId"))
-      .toBeLessThan(cancelAgentHandler.indexOf("dispatcher?.cancelAgentForTurn(turnId, agentId)"))
-    expect(cancelAgentHandler).toContain("dispatcher?.cancelAgentForTurn(turnId, agentId)")
-    expect(source).not.toContain("runtimeStore.setRunStatus(turnId, agentId, \"cancelled\"")
-    expect(source).not.toContain("const freshSnapshot = runtimeStore.snapshot()")
-    expect(source).not.toContain("const remainingRunning = freshSnapshot.runs.filter")
+    expect(source).toContain("dispatcher?.preCancelAgentForTurn(turnId, agentId)")
+    expect(source).toContain("{ decisionAlreadyCancelled: true }")
   })
 })

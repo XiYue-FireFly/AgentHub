@@ -18,7 +18,7 @@
  *   --timeout <ms>
  *   --runs-dir <path>
  *
- * Exit: 0 ok | 2 bad args | 3 run failed | 4 auth | 5 timeout
+ * Exit: 0 ok | 2 bad args | 3 run failed | 4 auth | 5 timeout | 6 decision required
  */
 
 import { existsSync, readFileSync, statSync } from 'node:fs'
@@ -56,7 +56,7 @@ Run options:
   --dry-run
   --mock
 
-Exit codes: 0 ok | 2 bad args | 3 run failed | 4 auth | 5 timeout
+Exit codes: 0 ok | 2 bad args | 3 run failed | 4 auth | 5 timeout | 6 decision required
 `)
 }
 
@@ -166,6 +166,7 @@ async function cmdRun(args) {
     timeoutMs,
     mock,
     dryRun,
+    nonInteractive: process.stdin.isTTY !== true,
     runsDir: args.runsDir ? resolve(args.runsDir) : undefined
   })
 
@@ -189,6 +190,7 @@ async function cmdRun(args) {
   console.log(JSON.stringify(out, null, 2))
 
   if (result.exitCode === 5 || result.error?.includes('timeout')) return 5
+  if (result.exitCode === 6 || result.status === 'decision_required') return 6
   if (!result.ok) return result.exitCode === 2 ? 2 : 3
   return 0
 }

@@ -4,8 +4,11 @@ import { join, resolve } from "path"
 import { pathToFileURL } from "url"
 import { existsSync, mkdirSync, writeFileSync } from "fs"
 import { randomBytes } from "crypto"
+import type { DecisionOwner } from "../shared/decision-contract"
+import { promptLineageFromEnvelope } from "../shared/prompt-contract"
 import { isProviderDirectSelection } from "../shared/utils"
 import { HubServer } from "./hub/server"
+import { HubPromptDecisionChannel } from "./hub/prompt-decision-channel"
 import { AgentRegistry } from "./hub/registry"
 import { EventPipeline } from "./hub/pipeline"
 import { KeywordRouter, RouteDecision } from "./hub/router"
@@ -18,11 +21,19 @@ import { getLocalProxy } from "./routing/proxy"
 import { syncRegistryFromBindings } from "./hub/agent-connections"
 import { MemoryLibrary } from "./memory-library"
 import { getWorkspaceManager } from "./hub/workspace"
-import { optionalWorkbenchWorkspace } from "./runtime/workspace-helpers"
 // --- AgentHub skills + native agentic (Claude-B 新增) ---
 import { ChatCompletionMessage, ThinkingConfig } from "./providers/types"
 // --- /AgentHub skills + native agentic ---
 import { getWorkbenchRuntimeStore } from "./runtime/store"
+import { completeE2eRestartRecoveryTurn, installE2eDecisionFixture } from "./runtime/e2e-decision-fixture"
+import { ThreadExecutionCoordinator } from "./runtime/thread-execution-coordinator"
+import { WorkbenchTurnRunner } from "./runtime/workbench-turn-runner"
+import { createPromptPreparationComposition } from "./runtime/prompt-preparation-composition"
+import {
+  invokeProductionPromptCandidateModel,
+  resolveProductionPromptCandidateIdentity
+} from "./runtime/prompt-candidate-provider"
+import { hubPromptCacheContext, promptCacheContext } from "./runtime/prompt-cache-context"
 import { RuntimeProducerTracker } from "./runtime/producer-tracker"
 import {
   createSharedRuntimeDisposeForShutdown,
@@ -32,17 +43,26 @@ import {
 } from "./runtime/shutdown-quiescence"
 import { createWillQuitHandler } from "./runtime/will-quit"
 import { DecisionService } from "./runtime/decision-service"
+import { ToolDecisionAdapter } from "./runtime/decision-adapters/tool-decision-adapter"
+import { AcpDecisionAdapter } from "./runtime/decision-adapters/acp-decision-adapter"
+import { PluginDecisionAdapter } from "./runtime/decision-adapters/plugin-decision-adapter"
+import { GuardDecisionAdapter } from "./runtime/decision-adapters/guard-decision-adapter"
+import { createUserDecisionAdapter } from "./agentic/user-decision-adapter"
+import { getApprovalConfig } from "./agentic/approval"
 import { ModelSelection, WorkbenchAttachment, WorkbenchTurn } from "./runtime/types"
+import { degradeFusionIfUnavailable, dispatchPreparedTurn } from "./runtime/multi-model-dispatch"
+import { MultiModelLoopRunner, type LoopDispatchGateway } from "./runtime/multi-model-loop"
+import { resolveDistinctFusionRoutes } from "./runtime/multi-model-routes"
+import { dispatchBudgetReservations } from "./runtime/budget-reservations"
 import { refreshLocalAgentStatusCache } from "./runtime/local-agents"
-import { resolveGuardApproval, cancelGuardApprovalsForTurn, clearAllGuardApprovals } from "./runtime/guard-approval-service"
-import { getWorkbenchGoal, promptWithGoalContext } from "./runtime/goals"
 import { buildAgentOptions } from "./runtime/agent-options"
 import { getTerminalRuntime } from "./runtime/terminal"
 import { disposeAllTerminalSessions } from "./ipc/terminal-pty-ipc"
 import { upsertThreadTodo } from "./runtime/todos"
 import { buildContextProjection } from "./runtime/context-ledger"
-import { optimizePromptForDispatch } from "./runtime/prompt-optimizer"
-import { applyRouteDecisionToPlan, planDispatch } from "./runtime/dispatch-planner"
+import { analyzePromptForDispatch } from "./runtime/prompt-optimizer"
+import { applyRouteDecisionToPlan } from "./runtime/dispatch-planner"
+import { executeQueuedWorkbenchTurnDispatch, resolveQueuedWorkbenchTurnDispatch } from "./runtime/workbench-turn-execution"
 import { estimateDispatchBudget } from "./runtime/budget-center"
 import { resolvePluginPreDispatchHooks } from "./runtime/plugin-contributions"
 import { workspaceContextPrompt } from "./runtime/workspace-context"
@@ -58,7 +78,6 @@ import { appendAppEventLog, installGlobalAppEventLogging } from "./runtime/app-e
 import { registerAllIpcHandlers } from "./ipc"
 import { registerProviderIpc } from "./ipc/provider-ipc"
 import { registerModelsIpc } from "./ipc/models-ipc"
-import { typedHandle } from "./ipc/typed-ipc"
 import { installWebviewGuards } from "./security/webview-guards"
 import { hub as hubLog, window_ as windowLog, pipeline as pipelineLog, proxy as proxyLog } from "./logger"
 import {
@@ -90,7 +109,69 @@ const proxy = getLocalProxy()
 let memoryLibrary: MemoryLibrary | null = null
 const runtimeStore = getWorkbenchRuntimeStore()
 const decisionService = new DecisionService({ runtimeStore })
+const toolDecisionAdapter = new ToolDecisionAdapter({
+  decisionService,
+  approvalConfig: getApprovalConfig()
+})
+const acpDecisionAdapter = new AcpDecisionAdapter({ decisionService })
+const pluginDecisionAdapter = new PluginDecisionAdapter({ decisionService })
+const guardDecisionAdapter = new GuardDecisionAdapter({ decisionService })
 const runtimeProducers = new RuntimeProducerTracker()
+const hubPromptDecisionChannels = new Map<string, HubPromptDecisionChannel>()
+const promptPreparationComposition = createPromptPreparationComposition({
+  decisionService,
+  // Hub Prompt decisions are wired with the Hub protocol in its own ingress
+  // path. Workbench preparation must not fabricate a websocket decision.
+  hubDecisionPort: {
+    async decide(input) {
+      const sessionId = input.owner?.type === "hub" ? input.owner.sessionId : ""
+      const channel = hubPromptDecisionChannels.get(sessionId)
+      return channel ? channel.decide(input) : { kind: "decision-required" as const }
+    }
+  },
+  invokeCandidateModel: invokeProductionPromptCandidateModel,
+  audit: event => appendAppEventLog(event.kind, event.payload)
+})
+interface PluginPreDispatchResult {
+  attachments: WorkbenchAttachment[]
+  workspaceRoot: string | null
+  optimization: ReturnType<typeof analyzePromptForDispatch>
+  outcome: Awaited<ReturnType<typeof runPreDispatchHooks>>
+}
+
+const workbenchTurnRunner = new WorkbenchTurnRunner<PluginPreDispatchResult>({
+  runtimeStore,
+  promptPreparation: {
+    promptPreparationService: promptPreparationComposition.promptPreparationService,
+    cacheContext: ({ submission, thread, turn }) => {
+      const workspaceRoot = thread.workspaceId
+        ? getWorkspaceManager().getById(thread.workspaceId)?.rootPath ?? null
+        : null
+      const modelSelection = turn.modelSelection ?? submission.input.modelSelection
+      const candidateIdentity = resolveProductionPromptCandidateIdentity(modelSelection)
+      return promptCacheContext({
+        locale: "en-US",
+        workspaceRoot,
+        contextProjection: turn.contextProjection ?? {
+          threadId: thread.id,
+          workspaceId: thread.workspaceId
+        },
+        plugins: [],
+        skills: [],
+        attachments: turn.attachments ?? submission.input.attachments ?? [],
+        providerId: candidateIdentity.providerId,
+        modelId: candidateIdentity.modelId
+      })
+    }
+  },
+  preDispatch: approvePluginPreDispatch,
+  execute: executeQueuedWorkbenchTurn,
+  cancel: async turnId => { await dispatcher?.cancelTurn(turnId) }
+})
+const threadExecutionCoordinator = new ThreadExecutionCoordinator({
+  runtimeStore,
+  runner: workbenchTurnRunner
+})
 let stopTaskTurnTracking: (() => Promise<void>) | null = null
 const IMAGE_DATA_URL_BYTES = 2 * 1024 * 1024
 const MODEL_HISTORY_MAX_TOKENS = 24_000
@@ -217,7 +298,7 @@ function modelMessagesForTurn(threadId: string, currentPrompt: string, attachmen
     .slice(-8)
   const messages: ChatCompletionMessage[] = []
   for (const previous of completedTurns) {
-    messages.push({ role: "user", content: promptWithAttachments(previous.prompt, previous.attachments) })
+    messages.push({ role: "user", content: promptWithAttachments(previous.effectivePrompt || previous.prompt, previous.attachments) })
     const assistant = finalAssistantContentForTurn(previous)
     if (assistant) messages.push({ role: "assistant", content: assistant })
   }
@@ -259,7 +340,7 @@ function recentUserPrompts(threadId: string, excludeTurnId?: string): string[] {
     .filter(turn => turn.threadId === threadId && turn.id !== excludeTurnId)
     .sort((a, b) => a.createdAt - b.createdAt)
     .slice(-10)
-    .map(turn => turn.prompt)
+    .map(turn => turn.effectivePrompt || turn.prompt)
 }
 
 function availableRouteAgents(agentIds?: string[]) {
@@ -325,8 +406,6 @@ async function makeRouteDecision(threadId: string, turnId: string, prompt: strin
   return decision
 }
 
-// Guard-verdict lifecycle is now in runtime/guard-approval-service.ts.
-
 async function emitMemoryCandidates(threadId: string, turnId: string, prompt: string, content: string): Promise<void> {
   const candidates = memory().importConversation(`turn:${turnId}`, [`User: ${prompt}`, content ? `Assistant: ${content}` : ""].filter(Boolean).join("\n\n"), { includeRaw: false })
   for (const candidate of candidates.slice(0, 5)) {
@@ -361,7 +440,7 @@ function syncPlanTodosFromEvent(event: any): void {
 
 runtimeStore.on("event", (event) => {
   syncPlanTodosFromEvent(event)
-  if (event.kind === "guard:verdict" && event.payload?.requiresUserDecision) {
+  if (event.kind === "decision:requested" && event.payload?.source === "guard") {
     showWindowsNotification("AgentHub needs your choice", "A high-risk guard warning is waiting for Continue or Stop.")
   } else if (event.kind === "turn:status") {
     if (event.payload?.status === "completed") showWindowsNotification("AgentHub", "Task completed.")
@@ -377,6 +456,429 @@ function memory(): MemoryLibrary {
 
 async function dispatchableLocalAgentIds(): Promise<string[]> {
   return buildAgentOptions(await refreshLocalAgentStatusCache()).map(agent => agent.agentId)
+}
+
+function trustedDecisionOwnerForTurn(turnId: string): Extract<DecisionOwner, { type: 'turn' }> | null {
+  const turn = runtimeStore.getTurn(turnId)
+  const thread = turn ? runtimeStore.getThread(turn.threadId) : undefined
+  const webContentsId = turn?.ownerWebContentsId
+  if (!turn || !thread) return null
+  if (typeof webContentsId !== 'number' || !Number.isInteger(webContentsId) || webContentsId < 1) return null
+  return {
+    type: 'turn' as const,
+    threadId: thread.id,
+    turnId: turn.id,
+    workspaceId: thread.workspaceId,
+    webContentsId
+  }
+}
+
+async function approvePluginPreDispatch(input: {
+  submission: import('./runtime/types').QueuedThreadSubmission
+  thread: import('./runtime/types').WorkbenchThread
+  turn: WorkbenchTurn
+  isStillActive: () => boolean
+}): Promise<PluginPreDispatchResult> {
+  const workspaceId = input.thread.workspaceId
+  const workspaceRoot = workspaceId
+    ? getWorkspaceManager().getById(workspaceId)?.rootPath ?? null
+    : null
+  const attachments = materializeAttachments(
+    Array.isArray(input.submission.input.attachments) ? input.submission.input.attachments : [],
+    workspaceId
+  )
+  const promptEnvelope = input.turn.promptEnvelope
+  if (!promptEnvelope?.effectivePrompt) {
+    throw new Error('A finalized Prompt envelope is required before plugin pre-dispatch.')
+  }
+  const optimization = analyzePromptForDispatch({
+    prompt: promptEnvelope.effectivePrompt,
+    workspaceRoot,
+    attachments
+  })
+  const outcome = await runPreDispatchHooks(
+    resolvePluginPreDispatchHooks({ workspaceRoot }),
+    { threadId: input.thread.id, prompt: promptEnvelope.effectivePrompt, workspace: workspaceRoot || undefined }
+  )
+  const preDispatch = { attachments, workspaceRoot, optimization, outcome }
+  if (outcome.denied) throw new Error(outcome.denied)
+  for (const approval of outcome.approvalRequests) {
+    if (!input.isStillActive()) return preDispatch
+    const approved = await pluginDecisionAdapter.request({
+      owner: trustedDecisionOwnerForTurn(input.turn.id),
+      pluginId: approval.pluginId,
+      hookId: approval.hookId,
+      message: approval.message,
+      idempotencyKey: `plugin-pre-dispatch:${input.turn.id}:${approval.pluginId}:${approval.hookId}`
+    })
+    if (!input.isStillActive()) return preDispatch
+    if (!approved) throw new Error(approval.message)
+  }
+  return preDispatch
+}
+
+async function executeQueuedWorkbenchTurn(input: {
+  submission: import('./runtime/types').QueuedThreadSubmission
+  thread: import('./runtime/types').WorkbenchThread
+  turn: WorkbenchTurn
+  signal: AbortSignal
+  isStillActive: () => boolean
+  preDispatch: PluginPreDispatchResult
+}): Promise<void> {
+  if (await completeE2eRestartRecoveryTurn(runtimeStore, input.turn)) return
+  if (!dispatcher) {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    await Promise.race([
+      dispatcherReadyPromise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Dispatcher not ready after timeout')), 15000)
+      })
+    ]).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
+  }
+  const activeDispatcher = dispatcher!
+  const { submission, thread, turn } = input
+  const payload = submission.input
+  const promptEnvelope = turn.promptEnvelope
+  if (!promptEnvelope?.envelopeId || !promptEnvelope.effectivePrompt) {
+    throw new Error('A finalized Prompt envelope is required before routing.')
+  }
+  const usableLocalAgentIds = await dispatchableLocalAgentIds()
+  const workspaceId = thread.workspaceId
+  const { attachments, workspaceRoot, optimization, outcome: preDispatchOutcome } = input.preDispatch
+  const routing = resolveQueuedWorkbenchTurnDispatch({
+    payload,
+    availableAgentIds: usableLocalAgentIds,
+    attachments,
+    optimization
+  })
+  const { requestedMode, directTarget, providerDirect, directRun, turnModelSelection, dispatchPlan: dispatchPlanBase } = routing
+  const scheduleForTurn = dispatchPlanBase.schedule
+  const pluginContext = preDispatchOutcome.additionalContext.length
+    ? ['[Plugin PreDispatch Context]', ...preDispatchOutcome.additionalContext].join('\n\n')
+    : ''
+  const dispatchUserPrompt = [promptEnvelope.effectivePrompt, workspaceContextPrompt(workspaceId), pluginContext]
+    .filter(Boolean)
+    .join('\n\n')
+  const contextProjection = buildContextProjection({
+    thread,
+    workspaceId,
+    prompt: dispatchUserPrompt,
+    attachments,
+    snapshot: runtimeStore.snapshot(undefined),
+    events: runtimeStore.eventsSince(thread.id, 0),
+    memories: memory().selectContextEntries(dispatchUserPrompt, { limit: 8, tokenBudget: 3_000 }),
+    pinnedBlocks: [optimization.contextBlock]
+  })
+  const messages = modelMessagesForTurn(thread.id, dispatchUserPrompt, attachments)
+  const dispatchPrompt = messages.at(-1)?.content || promptWithAttachments(dispatchUserPrompt, attachments)
+  const budgetEstimate = estimateDispatchBudget({
+    prompt: dispatchPrompt,
+    attachments: [],
+    customSchedule: scheduleForTurn,
+    modelSelection: turnModelSelection,
+    targetAgent: directTarget || null
+  })
+  if (!budgetEstimate.check.allowed) {
+    throw new Error(budgetEstimate.check.reason || 'Budget guardrail blocked this dispatch.')
+  }
+  await runtimeStore.appendSystemEvent(thread.id, turn.id, 'turn:summary', 'prompt-optimizer', {
+    intent: optimization.intent,
+    matchedSkills: optimization.matchedSkills,
+    matchedPlugins: optimization.matchedPlugins,
+    contextProjection,
+    pluginPreDispatch: {
+      additionalContextCount: preDispatchOutcome.additionalContext.length,
+      warnings: preDispatchOutcome.warnings
+    }
+  })
+  await runtimeStore.appendSystemEvent(thread.id, turn.id, 'turn:summary', 'budget-guard', {
+    totalTokens: budgetEstimate.totalTokens,
+    estimatedRequests: budgetEstimate.estimatedRequests,
+    estimatedCostUsd: budgetEstimate.estimatedCostUsd,
+    hasUnpriced: budgetEstimate.hasUnpriced,
+    warning: budgetEstimate.check.warning
+  })
+  const routeDecision = !directRun && dispatchPlanBase.routeAgentIds?.length
+    ? await makeRouteDecision(thread.id, turn.id, promptEnvelope.effectivePrompt, dispatchPlanBase.routeAgentIds)
+    : undefined
+  const plan = applyRouteDecisionToPlan(dispatchPlanBase, routeDecision)
+  await runtimeStore.appendSystemEvent(thread.id, turn.id, 'turn:summary', 'dispatch-planner', {
+    strategy: plan.strategy,
+    requestedMode,
+    effectiveMode: plan.effectiveMode,
+    dispatchMode: plan.dispatchMode,
+    schedule: plan.schedule ? {
+      preset: plan.schedule.preset,
+      label: plan.schedule.label,
+      steps: plan.schedule.steps.map(step => ({ id: step.id, role: step.role, agentId: step.agentId, dependsOn: step.dependsOn }))
+    } : undefined,
+    reasons: plan.reasons,
+    selectedAgentId: routeDecision?.selectedAgentId
+  })
+  const preserveCurrentMessage = hasInlineTextAttachment(attachments)
+  const lineage = promptLineageFromEnvelope(promptEnvelope)
+  const contextLayers = [
+    workspaceId ? 'workspace' : 'no-workspace',
+    contextProjection ? 'context-projection' : ''
+  ].filter(Boolean)
+  const decisionOwner = trustedDecisionOwnerForTurn(turn.id)
+  const userDecisionAdapter = decisionOwner
+    ? createUserDecisionAdapter({ decisionService, owner: decisionOwner })
+    : undefined
+  // The preflight above can take time (attachments, plugins, routing and
+  // planning). Cancellation may settle the durable Turn while it is running;
+  // never hand a stale submission to a provider or dispatcher.
+  if (!input.isStillActive()) return
+  const dispatchOrdinary = () => executeQueuedWorkbenchTurnDispatch({
+      routing,
+      plan,
+      dispatcher: activeDispatcher,
+      prompt: dispatchPrompt,
+      providerOptions: {
+        thinking: payload.thinking as ThinkingConfig | undefined,
+        workspaceId,
+        turnId: turn.id,
+        threadId: thread.id,
+        conversationText: dispatchPrompt,
+        messages,
+        preserveCurrentMessage,
+        lineage,
+        attachments,
+        contextLayers,
+        userDecisionAdapter
+      },
+      dispatchOptions: {
+        thinking: payload.thinking as ThinkingConfig | undefined,
+        modelSelection: turnModelSelection,
+        workspaceId,
+        turnId: turn.id,
+        threadId: thread.id,
+        conversationText: dispatchPrompt,
+        messages,
+        preserveCurrentMessage,
+        lineage,
+        attachments,
+        contextLayers,
+        userDecisionAdapter
+      },
+      runSchedule: () => runCustomScheduleTurn({
+          dispatcher: activeDispatcher,
+          prompt: dispatchPrompt,
+          schedule: plan.schedule!,
+          workspaceId,
+          turnId: turn.id,
+          threadId: thread.id,
+          messages,
+          isCancelled: () => runtimeStore.getTurn(turn.id)?.status === 'cancelled',
+          thinking: payload.thinking as ThinkingConfig | undefined,
+          modelSelection: turnModelSelection,
+           preserveCurrentMessage,
+           userDecisionAdapter,
+           routeDecision,
+           recentUserMessages: recentUserPrompts(thread.id, turn.id),
+           emitMemoryCandidates,
+           guardDecisionAdapter,
+            guardDecisionOwner: trustedDecisionOwnerForTurn(turn.id),
+            lineage
+      })
+    })
+  const fusionConfig = turn.multiModelFusion ?? payload.multiModelFusion ?? {
+    enabled: false,
+    maxCandidates: 3 as const,
+    maxRounds: 3 as const,
+    allowExecutor: true
+  }
+  const execution = dispatchPreparedTurn({
+    envelope: promptEnvelope,
+    fusion: fusionConfig
+  }, {
+    dispatchOrdinary: async envelope => {
+      if (envelope.effectivePrompt !== promptEnvelope.effectivePrompt) {
+        throw new Error('Prepared Prompt envelope changed before ordinary dispatch.')
+      }
+      return dispatchOrdinary()
+    },
+    runFusion: async (envelope, config) => {
+      const routes = resolveDistinctFusionRoutes({
+        getBindings: () => providerMgr.getBindings(),
+        resolveBinding: agentId => providerMgr.resolveBinding(agentId)
+      })
+      const availability = await degradeFusionIfUnavailable({
+        envelope,
+        routeCount: routes.length,
+        emitDegraded: async event => {
+          await runtimeStore.appendSystemEvent(
+            thread.id,
+            turn.id,
+            'turn:summary',
+            'multi-model-loop',
+            event
+          )
+        }
+      }, async fallbackEnvelope => {
+        if (fallbackEnvelope.effectivePrompt !== promptEnvelope.effectivePrompt) {
+          throw new Error('Prepared Prompt envelope changed before degraded ordinary dispatch.')
+        }
+        return dispatchOrdinary()
+      })
+      if (availability.kind === 'degraded') {
+        return availability.result
+      }
+
+      const loopGateway: LoopDispatchGateway = {
+        start(request) {
+          const handle = activeDispatcher.startDispatch(
+            request.prompt,
+            'auto',
+            request.route.agentId,
+            {
+              workspaceId,
+              turnId: request.options.turnId,
+              threadId: request.options.threadId,
+              parentRunId: request.options.parentRunId,
+              branchId: request.branchId,
+              sessionKey: request.options.sessionKey,
+              signal: request.options.signal,
+              deadline: request.options.deadline,
+              budgetReservationId: request.options.budgetReservationId,
+              visibility: request.options.visibility,
+              capabilityMode: request.options.capabilityMode,
+              userDecisionAdapter,
+              lineage: request.options.lineage,
+              parentDispatchId: request.options.lineage.parentDispatchId,
+              messages: request.options.messages,
+              conversationText: request.options.conversationText,
+              attachments,
+              contextLayers,
+              streamMeta: {
+                visibility: 'run',
+                optimizationCount: 0,
+                role: request.role,
+                origin: request.origin,
+                gatedRelease: false
+              }
+            }
+          )
+          return {
+            taskId: handle.taskId,
+            cancel: handle.cancel,
+            result: handle.result.then(task => {
+              if (!task.latestDispatchEnvelope) {
+                throw new Error('Dispatcher send boundary did not return a verified DispatchEnvelope.')
+              }
+              return {
+                status: task.status === 'completed'
+                  ? 'completed' as const
+                  : task.status === 'cancelled'
+                    ? 'cancelled' as const
+                    : 'failed' as const,
+                content: task.results.get(request.route.agentId) || [...task.results.values()].join('\n\n'),
+                error: task.error || task.errors.get(request.route.agentId),
+                dispatchEnvelope: task.latestDispatchEnvelope
+              }
+            })
+          }
+        }
+      }
+
+      let finalRelease: Promise<boolean> | undefined
+      const loop = new MultiModelLoopRunner({
+        gateway: loopGateway,
+        reservations: dispatchBudgetReservations,
+        emit: event => {
+          if (event.kind === 'multi-model:final') {
+            finalRelease = runtimeStore.completeTurnWithFinalEvent(turn.id, {
+              agentId: 'multi-model-loop',
+              payload: {
+                kind: event.kind,
+                content: event.content || '',
+                visibility: 'chat',
+                gatedRelease: true,
+                metadata: event.metadata
+              }
+            })
+            return
+          }
+          void runtimeStore.appendSystemEvent(
+            thread.id,
+            turn.id,
+            event.kind as any,
+            'multi-model-loop',
+            { ...event, visibility: 'run', gatedRelease: false }
+          ).catch(error => {
+            console.error('[multi-model-loop] Failed to persist internal event', error)
+          })
+        },
+        estimateRound: candidateCount => ({
+          tokens: budgetEstimate.totalTokens * (candidateCount + 2),
+          costUsd: budgetEstimate.estimatedCostUsd === null
+            ? null
+            : budgetEstimate.estimatedCostUsd * (candidateCount + 2),
+          requests: candidateCount + 2
+        }),
+        estimateSingle: () => ({
+          tokens: budgetEstimate.totalTokens,
+          costUsd: budgetEstimate.estimatedCostUsd,
+          requests: 1
+        })
+      })
+      const result = await loop.run({
+        runId: turn.id,
+        envelope: promptEnvelope,
+        lineage,
+        routes,
+        turnId: turn.id,
+        threadId: thread.id,
+        signal: input.signal,
+        messages,
+        conversationText: dispatchPrompt,
+        deadline: Date.now() + 10 * 60 * 1000,
+        branchTimeoutMs: 2 * 60 * 1000,
+        maxCandidates: config.maxCandidates,
+        maxRounds: config.maxRounds,
+        // Side-effect execution stays disabled until a future structured Judge
+        // decision is paired with explicit user/Turn authorization. A persisted
+        // Fusion preference or lexical intent classification cannot authorize it.
+        requiresExecution: false
+      })
+      if (!finalRelease) throw new Error('Multi-model Loop did not publish a gated final result.')
+      const released = await finalRelease
+      return {
+        id: `multi-model-loop:${turn.id}`,
+        status: released ? 'completed' as const : 'cancelled' as const,
+        results: new Map([['multi-model-loop', result.content]]),
+        errors: new Map<string, string>(),
+        fusionReleased: true
+      }
+    }
+  })
+  const sanitizeError = (error: unknown): string | undefined => {
+    if (!error) return undefined
+    const message = error instanceof Error ? error.message : String(error)
+    return message.replace(/[A-Z]:\\[^\s]+/gi, '<path>').replace(/\/home\/[^\s]+/g, '<path>')
+  }
+  const settlement = execution.then(async (task: any) => {
+    // Fusion publishes and completes atomically through the single gated final
+    // event above; a second transition would duplicate completion/memory work.
+    if (task?.fusionReleased === true) return
+    if (plan.schedule && !('id' in task)) {
+      await runtimeStore.transitionTurnStatus(turn.id, ['running'], task.status, { error: sanitizeError(task.error) })
+      return
+    }
+    const status = task.status === 'cancelled' ? 'cancelled' : task.status === 'failed' ? 'failed' : 'completed'
+    const settled = await runtimeStore.transitionTurnStatus(turn.id, ['running'], status, {
+      taskId: task.id,
+      error: sanitizeError(task.error)
+    })
+    if (status === 'completed' && settled) {
+      await emitMemoryCandidates(thread.id, turn.id, payload.prompt, Array.from(task.results.values()).join('\n\n'))
+    }
+  }).catch(async error => {
+    await runtimeStore.transitionTurnStatus(turn.id, ['running'], 'failed', { error: sanitizeError(error) })
+  })
+  await runtimeProducers.track(settlement)
 }
 
 function appAssetPath(fileName: string): string {
@@ -531,7 +1033,46 @@ async function initHub(): Promise<void> {
       return event
     }
   })
-  dispatcher = new Dispatcher(registry, pipeline, (taskText = "") => memory().selectContextEntries(taskText, { limit: 12, tokenBudget: 4_000 }))
+  dispatcher = new Dispatcher(
+    registry,
+    pipeline,
+    (taskText = "") => memory().selectContextEntries(taskText, { limit: 12, tokenBudget: 4_000 }),
+    {
+      requestToolDecision: async ({ task, agentId, request, idempotencyKey, onRequested }) => {
+        const owner = task.__turnId ? trustedDecisionOwnerForTurn(task.__turnId) : null
+        if (!owner) return false
+        return toolDecisionAdapter.request({
+          owner,
+          agentId,
+          tool: request.tool,
+          toolName: request.toolName,
+          action: request.action,
+          target: request.target,
+          preview: request.preview,
+          risk: request.risk,
+          idempotencyKey
+        }, {
+          onRequested: decision => onRequested(decision.id)
+        })
+      },
+      requestAcpPermissionDecision: async ({ task, agentId, request, idempotencyKey, onRequested }) => {
+        const owner = task.__turnId ? trustedDecisionOwnerForTurn(task.__turnId) : null
+        if (!owner) return { outcome: 'cancelled' }
+        return acpDecisionAdapter.request({
+          owner,
+          agentId,
+          title: request.label || `Allow ${request.toolName}?`,
+          toolName: request.toolName,
+          options: request.options,
+          idempotencyKey
+        }, {
+          onRequested: decision => onRequested(decision.id)
+        })
+      },
+      cancelDecisionTurn: turnId => decisionService.cancelTurn(turnId),
+      cancelDecisionAgent: (turnId, agentId) => decisionService.cancelAgentDecisions(turnId, agentId)
+    }
+  )
   stopTaskTurnTracking = installTaskTurnTracking(dispatcher, runtimeStore)
   dispatcherReadyResolve?.()
   hub = new HubServer(registry)
@@ -542,31 +1083,92 @@ async function initHub(): Promise<void> {
     decisionService.openHubSession(sessionId)
   })
   hub.on("client:disconnected", ({ sessionId }) => {
+    hubPromptDecisionChannels.delete(sessionId)
     void decisionService.closeHubSession(sessionId).catch(error => {
       hubLog.error("[hub] Decision session cleanup failed:", error)
     })
   })
 
-  hub.on("client:message", async ({ clientId: _clientId, message }) => {
+  hub.on("client:message", async ({ clientId, message }) => {
     try {
+    if (message.type === "prompt:decision_resolve") {
+      const channel = hubPromptDecisionChannels.get(clientId)
+      if (!channel) return
+      await channel.resolve(message, { type: "hub", sessionId: clientId })
+      return
+    }
     if (message.type === "chat:message") {
       if (!dispatcher) {
         hubLog.error("[hub] dispatcher not initialized, dropping message")
         return
       }
-      const targetAgent = String(message.payload.targetAgent || "").trim() || undefined
-      const modelSelection = message.payload.modelSelection as ModelSelection | undefined
+      const payload = message.payload || {}
+      const originalPrompt = typeof payload.text === "string" ? payload.text.trim() : ""
+      if (!originalPrompt) {
+        hub?.sendToClient(clientId, { type: "chat:error", error: "Prompt text is required" })
+        return
+      }
+      const workspaceId = typeof payload.workspaceId === "string" ? payload.workspaceId : null
+      const workspaceRoot = workspaceId
+        ? getWorkspaceManager().getById(workspaceId)?.rootPath ?? null
+        : null
+      const targetAgent = String(payload.targetAgent || "").trim() || undefined
+      const modelSelection = payload.modelSelection as ModelSelection | undefined
+      const candidateIdentity = resolveProductionPromptCandidateIdentity(modelSelection)
+      const promptChannel = new HubPromptDecisionChannel({
+        sessionId: clientId,
+        supportsProtocol: payload.promptDecisionProtocol === true,
+        decisions: decisionService,
+        send: frame => { hub?.sendToClient(clientId, frame) }
+      })
+      hubPromptDecisionChannels.set(clientId, promptChannel)
+      const prepared = await promptPreparationComposition.promptPreparationService.prepareRoot({
+        origin: "hub:websocket",
+        prompt: originalPrompt,
+        cacheContext: hubPromptCacheContext({
+          locale: typeof payload.locale === "string" ? payload.locale : undefined,
+          workspaceRoot,
+          providerId: candidateIdentity.providerId,
+          modelId: candidateIdentity.modelId
+        }),
+        decisionOwner: { type: "hub", sessionId: clientId }
+      })
+      if (prepared.kind === "decision-required") {
+        hub?.sendToClient(clientId, {
+          type: "decision_required",
+          code: "PROMPT_DECISION_REQUIRED",
+          sessionId: clientId,
+          candidates: prepared.candidates
+        })
+        return
+      }
+      if (prepared.kind === "cancelled") {
+        hub?.sendToClient(clientId, { type: "chat:error", error: "Prompt preparation was cancelled" })
+        return
+      }
+      if (prepared.kind === "failed") {
+        hub?.sendToClient(clientId, { type: "chat:error", error: prepared.error })
+        return
+      }
+      const effectivePrompt = prepared.envelope.effectivePrompt
+      const lineage = promptLineageFromEnvelope(prepared.envelope)
       const task = !targetAgent && isProviderDirectSelection(modelSelection)
-        ? await dispatcher.dispatchProviderDirect(message.payload.text, modelSelection, {
+        ? await dispatcher.dispatchProviderDirect(effectivePrompt, modelSelection, {
           thinking: message.payload.thinking,
-          workspaceId: message.payload.workspaceId ?? null,
-          messages: [{ role: "user", content: message.payload.text }]
+          workspaceId,
+          messages: [{ role: "user", content: effectivePrompt }],
+          lineage: promptLineageFromEnvelope(prepared.envelope)
         })
         : await dispatcher.dispatch(
-          message.payload.text,
-          message.payload.mode || "auto",
+          effectivePrompt,
+          payload.mode || "auto",
           targetAgent,
-          { thinking: message.payload.thinking, modelSelection: targetAgent ? undefined : modelSelection, workspaceId: message.payload.workspaceId ?? null }
+          {
+            thinking: payload.thinking,
+            modelSelection: targetAgent ? undefined : modelSelection,
+            workspaceId,
+            lineage
+          }
         )
       hub?.broadcast("chat:response", {
         taskId: task.id,
@@ -607,434 +1209,6 @@ async function initHub(): Promise<void> {
 }
 
 // Hub, threads, runtime, context, git:query handlers moved to ipc/hub-threads-ipc.ts
-
-typedHandle("turns:create", (_event, payload) => runtimeProducers.run(async () => {
-  if (!dispatcher) {
-    let timeoutId: ReturnType<typeof setTimeout> | null = null
-    await Promise.race([
-      dispatcherReadyPromise,
-      new Promise((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000)
-      })
-    ]).finally(() => {
-      if (timeoutId) clearTimeout(timeoutId)
-    })
-  }
-  const activeDispatcher = dispatcher!
-  const mode = payload.mode || "auto"
-  const requestedDirectTarget = payload.targetAgent?.trim() || undefined
-  const usableLocalAgentIds = await dispatchableLocalAgentIds()
-  const directTarget = requestedDirectTarget && usableLocalAgentIds.includes(requestedDirectTarget)
-    ? requestedDirectTarget
-    : undefined
-  const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)
-  const localDirect = !!directTarget
-  const directRun = providerDirect || localDirect
-  const turnModelSelection = providerDirect ? payload.modelSelection : directTarget ? undefined : payload.modelSelection
-  const existingThread = payload.threadId ? runtimeStore.getThread(payload.threadId) : undefined
-  const workspaceId = existingThread
-    ? existingThread.workspaceId
-    : optionalWorkbenchWorkspace(payload.workspaceId)
-  const attachments = materializeAttachments(Array.isArray(payload.attachments) ? payload.attachments : [], workspaceId)
-  const activeGoal = existingThread ? getWorkbenchGoal(existingThread.id) : null
-  const dispatchUserPrompt = promptWithGoalContext(payload.prompt, activeGoal)
-  const promptOptimization = optimizePromptForDispatch({
-    prompt: dispatchUserPrompt,
-    workspaceRoot: workspaceId ? getWorkspaceManager().getById(workspaceId)?.rootPath : null,
-    attachments
-  })
-  const dispatchPlanBase = planDispatch({
-    requestedMode: mode,
-    directRun,
-    directTarget,
-    customSchedule: payload.customSchedule,
-    availableAgentIds: usableLocalAgentIds,
-    attachments,
-    optimization: promptOptimization
-  })
-  const effectiveMode = dispatchPlanBase.effectiveMode
-  const dispatchMode = dispatchPlanBase.dispatchMode
-  const scheduleForTurn = dispatchPlanBase.schedule
-  const workspaceRoot = workspaceId ? getWorkspaceManager().getById(workspaceId)?.rootPath : null
-  const preserveCurrentMessage = hasInlineTextAttachment(attachments)
-  const preDispatchOutcome = await runPreDispatchHooks(
-    resolvePluginPreDispatchHooks({ workspaceRoot }),
-    {
-      threadId: existingThread?.id || "new",
-      prompt: promptOptimization.optimizedPrompt,
-      workspace: workspaceRoot || undefined
-    }
-  )
-  if (preDispatchOutcome.denied) {
-    throw new Error(preDispatchOutcome.denied)
-  }
-  const pluginContext = preDispatchOutcome.additionalContext.length
-    ? ["[Plugin PreDispatch Context]", ...preDispatchOutcome.additionalContext].join("\n\n")
-    : ""
-  const workspaceContext = workspaceContextPrompt(workspaceId)
-  const optimizedDispatchUserPrompt = [promptOptimization.optimizedPrompt, workspaceContext, pluginContext].filter(Boolean).join("\n\n")
-  const previewMessages = existingThread
-    ? modelMessagesForTurn(existingThread.id, optimizedDispatchUserPrompt, attachments)
-    : [{ role: "user" as const, content: promptWithAttachments(optimizedDispatchUserPrompt, attachments) }]
-  const dispatchPrompt = previewMessages[previewMessages.length - 1]?.content || promptWithAttachments(optimizedDispatchUserPrompt, attachments)
-  const budgetEstimate = estimateDispatchBudget({
-    prompt: dispatchPrompt,
-    attachments: [],
-    customSchedule: scheduleForTurn,
-    modelSelection: turnModelSelection,
-    targetAgent: directTarget || null
-  })
-  if (!budgetEstimate.check.allowed) {
-    throw new Error(budgetEstimate.check.reason || "Budget guardrail blocked this dispatch.")
-  }
-  const { thread, turn } = await runtimeStore.createTurn({
-    threadId: payload.threadId ?? null,
-    workspaceId,
-    prompt: payload.prompt,
-    mode: effectiveMode,
-    targetAgent: directTarget || null,
-    modelSelection: turnModelSelection,
-    thinking: payload.thinking,
-    attachments,
-    contextProjection: buildContextProjection({
-      thread: existingThread,
-      workspaceId,
-      prompt: optimizedDispatchUserPrompt,
-      attachments,
-      snapshot: runtimeStore.snapshot(undefined),
-      events: existingThread ? runtimeStore.eventsSince(existingThread.id, 0) : [],
-      memories: memory().selectContextEntries(optimizedDispatchUserPrompt, { limit: 8, tokenBudget: 3_000 }),
-      pinnedBlocks: [promptOptimization.contextBlock]
-    }),
-    customSchedule: scheduleForTurn
-  })
-  await runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "prompt-optimizer", {
-    intent: promptOptimization.intent,
-    matchedSkills: promptOptimization.matchedSkills,
-    matchedPlugins: promptOptimization.matchedPlugins,
-    pluginPreDispatch: {
-      additionalContextCount: preDispatchOutcome.additionalContext.length,
-      warnings: preDispatchOutcome.warnings
-    }
-  })
-  await runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "budget-guard", {
-    totalTokens: budgetEstimate.totalTokens,
-    estimatedRequests: budgetEstimate.estimatedRequests,
-    estimatedCostUsd: budgetEstimate.estimatedCostUsd,
-    hasUnpriced: budgetEstimate.hasUnpriced,
-    warning: budgetEstimate.check.warning
-  })
-  const routeDecision = !directRun && dispatchPlanBase.routeAgentIds?.length
-    ? await makeRouteDecision(thread.id, turn.id, optimizedDispatchUserPrompt, dispatchPlanBase.routeAgentIds)
-    : undefined
-  const dispatchPlan = applyRouteDecisionToPlan(dispatchPlanBase, routeDecision)
-  await runtimeStore.appendSystemEvent(thread.id, turn.id, "turn:summary", "dispatch-planner", {
-    strategy: dispatchPlan.strategy,
-    requestedMode: mode,
-    effectiveMode: dispatchPlan.effectiveMode,
-    dispatchMode: dispatchPlan.dispatchMode,
-    schedule: dispatchPlan.schedule ? {
-      preset: dispatchPlan.schedule.preset,
-      label: dispatchPlan.schedule.label,
-      steps: dispatchPlan.schedule.steps.map(step => ({ id: step.id, role: step.role, agentId: step.agentId, dependsOn: step.dependsOn }))
-    } : undefined,
-    reasons: dispatchPlan.reasons,
-    selectedAgentId: routeDecision?.selectedAgentId
-  })
-  const messages = modelMessagesForTurn(thread.id, optimizedDispatchUserPrompt, attachments)
-  const runner = providerDirect && turnModelSelection
-    ? activeDispatcher.dispatchProviderDirect(
-      dispatchPrompt,
-      turnModelSelection,
-      {
-        thinking: payload.thinking as ThinkingConfig | undefined,
-        workspaceId: workspaceId ?? thread.workspaceId ?? null,
-        turnId: turn.id,
-        threadId: thread.id,
-        conversationText: dispatchPrompt,
-        messages,
-        preserveCurrentMessage
-      }
-    )
-    : !directTarget && scheduleForTurn
-    ? runCustomScheduleTurn({
-        dispatcher: activeDispatcher,
-        prompt: dispatchPrompt,
-        schedule: scheduleForTurn,
-        workspaceId: workspaceId ?? thread.workspaceId ?? null,
-        turnId: turn.id,
-        threadId: thread.id,
-        messages,
-        isCancelled: () => runtimeStore.getTurn(turn.id)?.status === "cancelled",
-        thinking: payload.thinking as ThinkingConfig | undefined,
-        modelSelection: turnModelSelection,
-        preserveCurrentMessage,
-        routeDecision,
-        recentUserMessages: recentUserPrompts(thread.id, turn.id),
-        emitMemoryCandidates
-      })
-    : activeDispatcher.dispatch(
-      dispatchPrompt,
-      dispatchMode,
-      directTarget,
-      {
-        thinking: payload.thinking as ThinkingConfig | undefined,
-        modelSelection: turnModelSelection,
-        workspaceId: workspaceId ?? thread.workspaceId ?? null,
-        turnId: turn.id,
-        threadId: thread.id,
-        conversationText: dispatchPrompt,
-        messages,
-        preserveCurrentMessage
-      }
-    )
-  // Sanitize error messages to prevent leaking sensitive paths (M-L5)
-  const sanitizeError = (err: unknown): string | undefined => {
-    if (!err) return undefined
-    const msg = err instanceof Error ? err.message : String(err)
-    return msg.replace(/[A-Z]:\\[^\s]+/gi, '<path>').replace(/\/home\/[^\s]+/g, '<path>')
-  }
-  const createSettlement = runner
-    .then(async (task: any) => {
-      if (scheduleForTurn && !("id" in task)) {
-        await runtimeStore.transitionTurnStatus(turn.id, ["running"], task.status, {
-          error: sanitizeError(task.error)
-        })
-        return
-      }
-      const status = task.status === "cancelled" ? "cancelled" : task.status === "failed" ? "failed" : "completed"
-      const settled = await runtimeStore.transitionTurnStatus(turn.id, ["running"], status, {
-        taskId: task.id,
-        error: sanitizeError(task.error)
-      })
-      if (status === "completed" && settled) {
-        const content = Array.from(task.results.values()).join("\n\n")
-        await emitMemoryCandidates(thread.id, turn.id, payload.prompt, content)
-      }
-    })
-    .catch(async (e: any) => {
-      try {
-        await runtimeStore.transitionTurnStatus(turn.id, ["running"], "failed", {
-          error: sanitizeError(e)
-        })
-      } catch (persistError) {
-        console.error("[runtime-store] Failed to persist Turn failure", persistError)
-      }
-    })
-  void runtimeProducers.track(createSettlement)
-  return { thread, turn }
-}))
-typedHandle("turns:cancel", async (_event, turnId) => {
-  const snapshot = runtimeStore.snapshot()
-  const turn = snapshot.turns.find(t => t.id === turnId)
-  if (!turn) return false
-  const cancellation = runtimeStore.cancelTurn(turnId, { reason: "Cancelled by user." })
-  cancelGuardApprovalsForTurn(turnId)
-  const dispatcherCancelled = dispatcher?.cancelTurn(turnId) ?? false
-  return (await cancellation) || dispatcherCancelled
-})
-typedHandle("turns:cancelAgent", async (_event, turnId, agentId) => {
-  const snapshot = runtimeStore.snapshot()
-  const turn = snapshot.turns.find(t => t.id === turnId)
-  if (!turn) return false
-  const runtimeCancellation = runtimeStore.cancelAgentRun(turnId, agentId, {
-    error: "Agent cancelled by user."
-  })
-  const dispatcherCancelled = dispatcher?.cancelAgentForTurn(turnId, agentId) ?? false
-  const runtimeCancelled = await runtimeCancellation
-  return runtimeCancelled || dispatcherCancelled
-})
-typedHandle("turns:resolveGuard", (_event, requestId, approved) => resolveGuardApproval(requestId, approved))
-typedHandle("turns:retry", (_event, turnId) => runtimeProducers.run(async () => {
-  const snapshot = runtimeStore.snapshot()
-  const turn = snapshot.turns.find(t => t.id === turnId)
-  if (!turn) throw new Error(`Turn not found: ${turnId}`)
-  const thread = runtimeStore.getThread(turn.threadId)
-  if (!thread) throw new Error(`Thread not found: ${turn.threadId}`)
-  if (!dispatcher) {
-    let retryTimeoutId: ReturnType<typeof setTimeout> | null = null
-    await Promise.race([
-      dispatcherReadyPromise,
-      new Promise((_, reject) => {
-        retryTimeoutId = setTimeout(() => reject(new Error("Dispatcher not ready after timeout")), 15000)
-      })
-    ]).finally(() => {
-      if (retryTimeoutId) clearTimeout(retryTimeoutId)
-    })
-  }
-  const activeDispatcher = dispatcher!
-  const retryRequestedTargetAgent = turn.targetAgent || undefined
-  const retryUsableLocalAgentIds = await dispatchableLocalAgentIds()
-  const retryTargetAgent = retryRequestedTargetAgent && retryUsableLocalAgentIds.includes(retryRequestedTargetAgent)
-    ? retryRequestedTargetAgent
-    : undefined
-  const retryProviderDirect = !retryTargetAgent && isProviderDirectSelection(turn.modelSelection)
-  const retryDirectRun = retryProviderDirect || !!retryTargetAgent
-  const retryModelSelection = retryProviderDirect ? turn.modelSelection : retryTargetAgent ? undefined : turn.modelSelection
-  const retryUserPrompt = promptWithGoalContext(turn.prompt, getWorkbenchGoal(thread.id))
-  const retryOptimization = optimizePromptForDispatch({
-    prompt: retryUserPrompt,
-    workspaceRoot: thread.workspaceId ? getWorkspaceManager().getById(thread.workspaceId)?.rootPath : null,
-    attachments: turn.attachments ?? []
-  })
-  const retryPlanBase = planDispatch({
-    requestedMode: turn.mode,
-    directRun: retryDirectRun,
-    directTarget: retryTargetAgent,
-    customSchedule: turn.customSchedule,
-    availableAgentIds: retryUsableLocalAgentIds,
-    attachments: turn.attachments ?? [],
-    optimization: retryOptimization
-  })
-  const retryWorkspaceRoot = thread.workspaceId ? getWorkspaceManager().getById(thread.workspaceId)?.rootPath : null
-  const retryPreserveCurrentMessage = hasInlineTextAttachment(turn.attachments)
-  const retryPreDispatchOutcome = await runPreDispatchHooks(
-    resolvePluginPreDispatchHooks({ workspaceRoot: retryWorkspaceRoot }),
-    {
-      threadId: thread.id,
-      prompt: retryOptimization.optimizedPrompt,
-      workspace: retryWorkspaceRoot || undefined
-    }
-  )
-  if (retryPreDispatchOutcome.denied) {
-    throw new Error(retryPreDispatchOutcome.denied)
-  }
-  const retryPluginContext = retryPreDispatchOutcome.additionalContext.length
-    ? ["[Plugin PreDispatch Context]", ...retryPreDispatchOutcome.additionalContext].join("\n\n")
-    : ""
-  const retryWorkspaceContext = workspaceContextPrompt(thread.workspaceId)
-  const retryOptimizedPrompt = [retryOptimization.optimizedPrompt, retryWorkspaceContext, retryPluginContext].filter(Boolean).join("\n\n")
-  const retryPreviewMessages = modelMessagesForTurn(thread.id, retryOptimizedPrompt, turn.attachments, turn.id)
-  const retryPreviewPrompt = retryPreviewMessages[retryPreviewMessages.length - 1]?.content || promptWithAttachments(retryOptimizedPrompt, turn.attachments)
-  const retryBudgetEstimate = estimateDispatchBudget({
-    prompt: retryPreviewPrompt,
-    attachments: [],
-    customSchedule: retryPlanBase.schedule,
-    modelSelection: retryModelSelection,
-    targetAgent: retryTargetAgent || null
-  })
-  if (!retryBudgetEstimate.check.allowed) {
-    throw new Error(retryBudgetEstimate.check.reason || "Budget guardrail blocked this dispatch.")
-  }
-  const created = await runtimeStore.createTurn({
-    threadId: thread.id,
-    workspaceId: thread.workspaceId,
-    prompt: turn.prompt,
-    mode: retryPlanBase.effectiveMode,
-    targetAgent: retryTargetAgent || null,
-    attachments: turn.attachments ?? [],
-    modelSelection: retryModelSelection,
-    thinking: turn.thinking,
-    contextProjection: turn.contextProjection,
-    customSchedule: retryPlanBase.schedule
-  })
-  await runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "prompt-optimizer", {
-    intent: retryOptimization.intent,
-    matchedSkills: retryOptimization.matchedSkills,
-    matchedPlugins: retryOptimization.matchedPlugins,
-    pluginPreDispatch: {
-      additionalContextCount: retryPreDispatchOutcome.additionalContext.length,
-      warnings: retryPreDispatchOutcome.warnings
-    }
-  })
-  await runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "budget-guard", {
-    totalTokens: retryBudgetEstimate.totalTokens,
-    estimatedRequests: retryBudgetEstimate.estimatedRequests,
-    estimatedCostUsd: retryBudgetEstimate.estimatedCostUsd,
-    hasUnpriced: retryBudgetEstimate.hasUnpriced,
-    warning: retryBudgetEstimate.check.warning
-  })
-  const retryRouteDecision = !retryDirectRun && retryPlanBase.routeAgentIds?.length
-    ? await makeRouteDecision(thread.id, created.turn.id, retryOptimizedPrompt, retryPlanBase.routeAgentIds)
-    : undefined
-  const retryPlan = applyRouteDecisionToPlan(retryPlanBase, retryRouteDecision)
-  await runtimeStore.appendSystemEvent(thread.id, created.turn.id, "turn:summary", "dispatch-planner", {
-    strategy: retryPlan.strategy,
-    requestedMode: turn.mode,
-    effectiveMode: retryPlan.effectiveMode,
-    dispatchMode: retryPlan.dispatchMode,
-    schedule: retryPlan.schedule ? {
-      preset: retryPlan.schedule.preset,
-      label: retryPlan.schedule.label,
-      steps: retryPlan.schedule.steps.map(step => ({ id: step.id, role: step.role, agentId: step.agentId, dependsOn: step.dependsOn }))
-    } : undefined,
-    reasons: retryPlan.reasons,
-    selectedAgentId: retryRouteDecision?.selectedAgentId
-  })
-  const retryMessages = modelMessagesForTurn(thread.id, retryOptimizedPrompt, turn.attachments, turn.id)
-  const retryPrompt = retryMessages[retryMessages.length - 1]?.content || promptWithAttachments(retryOptimizedPrompt, turn.attachments)
-  const retrySchedule = retryPlan.schedule
-  const retryRunner = retryProviderDirect && retryModelSelection
-    ? activeDispatcher.dispatchProviderDirect(retryPrompt, retryModelSelection, {
-      workspaceId: thread.workspaceId,
-      turnId: created.turn.id,
-      threadId: thread.id,
-      conversationText: retryPrompt,
-      messages: retryMessages,
-      modelSelection: retryModelSelection,
-      preserveCurrentMessage: retryPreserveCurrentMessage,
-      thinking: turn.thinking
-    })
-    : !retryTargetAgent && retrySchedule
-    ? runCustomScheduleTurn({
-        dispatcher: activeDispatcher,
-        prompt: retryPrompt,
-        schedule: retrySchedule,
-        workspaceId: thread.workspaceId,
-        modelSelection: retryModelSelection,
-        turnId: created.turn.id,
-        threadId: thread.id,
-        messages: retryMessages,
-        isCancelled: () => runtimeStore.getTurn(created.turn.id)?.status === "cancelled",
-        thinking: turn.thinking,
-        preserveCurrentMessage: retryPreserveCurrentMessage,
-        routeDecision: retryRouteDecision,
-        recentUserMessages: recentUserPrompts(thread.id, created.turn.id),
-        emitMemoryCandidates
-      })
-    : activeDispatcher.dispatch(retryPrompt, retryTargetAgent ? "auto" : retryPlan.dispatchMode, retryTargetAgent, {
-      workspaceId: thread.workspaceId,
-      turnId: created.turn.id,
-      threadId: thread.id,
-      conversationText: retryPrompt,
-      messages: retryMessages,
-      modelSelection: retryModelSelection,
-      preserveCurrentMessage: retryPreserveCurrentMessage,
-      thinking: turn.thinking
-    })
-  const retrySettlement = retryRunner
-    .then(async (task: any) => {
-      if (retrySchedule && !("id" in task)) {
-        await runtimeStore.transitionTurnStatus(created.turn.id, ["running"], task.status, {
-          error: task.error
-        })
-        return
-      }
-      const status = task.status === "cancelled" ? "cancelled" : task.status === "failed" ? "failed" : "completed"
-      const settled = await runtimeStore.transitionTurnStatus(created.turn.id, ["running"], status, {
-        taskId: task.id,
-        error: task.error
-      })
-      if (status === "completed" && settled) {
-        const content = Array.from(task.results.values()).join("\n\n")
-        await emitMemoryCandidates(thread.id, created.turn.id, turn.prompt, content)
-      }
-    })
-    .catch(async (e: any) => {
-      try {
-        await runtimeStore.transitionTurnStatus(created.turn.id, ["running"], "failed", {
-          error: e?.message || String(e)
-        })
-      } catch (persistError) {
-        console.error("[runtime-store] Failed to persist retried Turn failure", persistError)
-      }
-    })
-  void runtimeProducers.track(retrySettlement)
-  return created
-}))
-
-// IPC handlers for localAgents, localModels, settings, goals, schedules, commands,
-// ecc, terminal, tasks, worktrees, todos, updates, browser, usage, hub, store,
 // prompts, conversation, workspaceFiles, plugins, release, terminalAi, ai:quickComplete,
 // browser:summarize/extractText/analyzePrompt, inlineEdit, routes, logs,
 // models, budget, memory:studio, workflow, teams, knowledge, plugins:enhanced,
@@ -1137,13 +1311,23 @@ app.whenReady().then(async () => {
     router,
     proxy,
     runtimeProducers,
+    decisionService,
+    threadExecutionCoordinator,
+    promptPreparationService: promptPreparationComposition.promptPreparationService,
     getMainWindow: getActiveWorkbenchWindow,
     getActiveWindow: getActiveWorkbenchWindow,
-    openWorkbench
+    openWorkbench,
+    isLiveWorkbenchWindow: window => workbenchWindows.has(window) && !window.isDestroyed()
   })
+  await threadExecutionCoordinator.recover()
 
   installAppMenu({ sendToActiveWindow, openWorkbench: () => { openWorkbench() } })
   const firstWindow = createWindow()
+  await installE2eDecisionFixture({
+    runtimeStore,
+    decisionService,
+    webContentsId: firstWindow.webContents.id
+  })
   createTray()
 
   if (pendingDeepLink) {
@@ -1178,6 +1362,7 @@ app.on("will-quit", (event) => {
       reason => runtimeStore.dispose({ interruptReason: reason })
     )
     const cleanup = async (): Promise<void> => {
+      threadExecutionCoordinator.dispose()
       const decisionShutdownPromise = decisionService.shutdown()
       runtimeProducers.close()
       const decisionShutdown = await runShutdownStepWithDeadline(
@@ -1196,7 +1381,6 @@ app.on("will-quit", (event) => {
       // 清理所有 PTY 终端会话
       try { disposeAllTerminalSessions() } catch { /* non-critical */ }
       // 清理所有待处理的 guard approvals，避免 Promise 和 timer 泄漏
-      try { clearAllGuardApprovals() } catch { /* non-critical */ }
       await drainRuntimeProducersForShutdown({
         dispatcher,
         registry,

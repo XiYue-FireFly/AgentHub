@@ -3,19 +3,18 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 
 describe("settings MCP and Skills polish", () => {
-  it("shows explicit approval request details before allowing a tool action", () => {
-    const dialog = readFileSync(join(process.cwd(), "src/renderer/glass/approval-dialog.tsx"), "utf8")
+  it("shows durable decision details inline before allowing a tool action", () => {
+    const decisionBar = readFileSync(join(process.cwd(), "src/renderer/workbench/decisions/DecisionBar.tsx"), "utf8")
     const executor = readFileSync(join(process.cwd(), "src/main/agentic/executor.ts"), "utf8")
     const css = readFileSync(join(process.cwd(), "src/renderer/globals.css"), "utf8")
 
-    expect(dialog).toContain("approval-request-card")
-    expect(dialog).toContain("approvalSummary")
-    expect(dialog).toContain("tr('请求内容', 'Request')")
-    expect(dialog).toContain("tr('目标', 'Target')")
+    expect(decisionBar).toContain("wb-decision-bar")
+    expect(decisionBar).toContain("wb-decision-options")
+    expect(decisionBar).toContain("request.allowRemember")
     expect(executor).toContain("Action: write file")
     expect(executor).toContain("Preview:")
     expect(executor).toContain("Action: run command")
-    expect(css).toContain(".approval-request-preview")
+    expect(css).toContain(".wb-decision-bar")
   })
 
   it("renders Skills as a left catalog with a right SKILL.md detail pane", () => {

@@ -1,10 +1,12 @@
 import { customScheduleHasRunnableSteps, normalizeScheduleForStorage, sanitizeCustomSchedule } from '../customSchedule'
+import type { MultiModelFusionConfig } from '../../../shared/ipc-contract'
 
 export type SendPromptOverrides = {
   targetAgent?: string | null
   mode?: DispatchPreset
   customSchedule?: SchedulePreview | null
   modelSelection?: ModelSelection | null
+  multiModelFusion?: boolean
 }
 
 export type ResolveDispatchRequestInput = {
@@ -12,6 +14,7 @@ export type ResolveDispatchRequestInput = {
   modelSelection: ModelSelection | null
   mode: DispatchPreset
   overrides?: SendPromptOverrides
+  multiModelFusion?: boolean
   usableLocalAgents: string[]
   scheduleForMode: (preset: DispatchPreset) => SchedulePreview | undefined
 }
@@ -26,6 +29,7 @@ export type ResolvedDispatchRequest = {
   scheduleUnavailable: boolean
   scheduleTargetUnavailable: boolean
   targetUnavailable: boolean
+  multiModelFusion: MultiModelFusionConfig
 }
 
 export function resolveDispatchRequest(input: ResolveDispatchRequestInput): ResolvedDispatchRequest {
@@ -62,6 +66,9 @@ export function resolveDispatchRequest(input: ResolveDispatchRequestInput): Reso
     : nextMode === 'custom' || nextMode === 'firefly-custom'
       ? input.usableLocalAgents.length === 0
       : false
+  const fusionEnabled = overrides.multiModelFusion === undefined
+    ? input.multiModelFusion === true
+    : overrides.multiModelFusion === true
 
   return {
     mode: nextMode,
@@ -72,7 +79,13 @@ export function resolveDispatchRequest(input: ResolveDispatchRequestInput): Reso
     selectedLocalDirect,
     scheduleUnavailable,
     scheduleTargetUnavailable,
-    targetUnavailable
+    targetUnavailable,
+    multiModelFusion: {
+      enabled: fusionEnabled,
+      maxCandidates: 3,
+      maxRounds: 3,
+      allowExecutor: true
+    }
   }
 }
 

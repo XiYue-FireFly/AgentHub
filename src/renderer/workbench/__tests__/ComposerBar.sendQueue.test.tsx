@@ -3,9 +3,10 @@ import React from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setLang } from '../../glass/i18n'
-import { ComposerBar, type ComposerSendResult } from '../ComposerBar'
+import { ComposerBar, sha256Text, type ComposerSendResult } from '../ComposerBar'
 import * as mainContentModule from '../WorkbenchMainContent'
 import { resolveDispatchRequest } from '../utils/dispatchRequest'
+import type { DecisionItem } from '../decisions/decisionAdapters'
 
 const PersistentComposer = (mainContentModule as unknown as {
   PersistentComposer?: React.ComponentType<{
@@ -98,6 +99,10 @@ function editor(): HTMLTextAreaElement {
   return screen.getByRole('textbox') as HTMLTextAreaElement
 }
 
+function composerEditor(): HTMLTextAreaElement {
+  return document.querySelector('.wb-composer-input') as HTMLTextAreaElement
+}
+
 function enter(text: string) {
   fireEvent.change(editor(), { target: { value: text } })
   fireEvent.keyDown(editor(), { key: 'Enter', code: 'Enter' })
@@ -186,6 +191,22 @@ describe('ComposerBar submission results', () => {
   })
 })
 
+describe('ComposerBar multi-model fusion control', () => {
+  it('renders one accessible toggle and reports its selected state', () => {
+    const setMultiModelFusion = vi.fn()
+    const view = renderComposer({ multiModelFusion: false, setMultiModelFusion })
+    const toggles = screen.getAllByRole('button', { name: 'Multi-model fusion' })
+
+    expect(toggles).toHaveLength(1)
+    expect(toggles[0].getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(toggles[0])
+    expect(setMultiModelFusion).toHaveBeenCalledWith(true)
+
+    view.rerender({ multiModelFusion: true })
+    expect(screen.getByRole('button', { name: 'Multi-model fusion' }).getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
 describe('ComposerBar queue worker', () => {
   it.each([
     ['auto', 'auto'],
@@ -231,7 +252,7 @@ describe('ComposerBar queue worker', () => {
 
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(3))
     expect(onSend.mock.calls.map(call => call[0])).toEqual(['first', 'second', 'third'])
-    expect(screen.queryByText(/queued/)).toBeNull()
+    await waitFor(() => expect(screen.queryByText(/queued/)).toBeNull())
     expect(editor().value).toBe('')
   })
 
@@ -316,6 +337,17 @@ describe('ComposerBar queue worker', () => {
         ]
       }
     })
+  })
+
+  it('snapshots the enabled multi-model fusion choice for a queued submission', async () => {
+    const onSend = vi.fn().mockResolvedValue({ ok: true })
+    const view = renderComposer({ sending: true, onSend, multiModelFusion: true })
+    enter('Compare independent approaches')
+
+    view.rerender({ sending: false, multiModelFusion: false })
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+    expect(onSend.mock.calls[0][2]).toMatchObject({ multiModelFusion: true })
   })
 
   it('rebuilds an invalid-route head with the current route, then continues its tail', async () => {
@@ -537,7 +569,7 @@ describe('ComposerBar queue worker', () => {
 
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
     expect(onSend.mock.calls.map(call => call[0])).toEqual(['A head', 'B tail'])
-    expect(screen.queryByText(/queued/)).toBeNull()
+    await waitFor(() => expect(screen.queryByText(/queued/)).toBeNull())
   })
 })
 
@@ -566,6 +598,277 @@ describe('PersistentComposer view lifetime', () => {
 
     await waitFor(() => expect(screen.queryByText(/queued/)).toBeNull())
     expect(onSend.mock.calls.map(call => call[0])).toEqual(['A', 'B'])
+  })
+})
+
+describe('ComposerBar inline decisions', () => {
+  it('does not steal textarea focus on mount and returns focus after accepted removal', async () => {
+    const decision: DecisionItem = {
+      origin: 'runtime',
+      id: 'focus-decision',
+      threadId: 'thread-1',
+      createdAt: 1,
+      state: 'active',
+      request: {
+        schemaVersion: 1,
+        id: 'focus-decision',
+        owner: { type: 'turn', threadId: 'thread-1', turnId: 'turn-1', workspaceId: 'workspace-1', webContentsId: 1 },
+        source: 'agent',
+        kind: 'single-select',
+        title: 'Focus decision',
+        options: [{ id: 'continue', label: 'Continue' }],
+        minSelections: 1,
+        maxSelections: 1,
+        allowCustom: false,
+        allowRemember: false,
+        createdAt: 1
+      }
+    }
+    const onDecisionSubmit = vi.fn().mockResolvedValue({ accepted: true })
+    const view = renderComposer({
+      threadId: 'thread-1',
+      decisionItem: decision,
+      decisionPosition: 1,
+      decisionCount: 1,
+      onDecisionSubmit
+    } as any)
+
+    editor().focus()
+    expect(document.activeElement).toBe(editor())
+    fireEvent.click(screen.getByLabelText('Continue'))
+    await waitFor(() => expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', false))
+    fireEvent.click(screen.getByTestId('decision-primary'))
+    view.rerender({ decisionItem: null })
+
+    await waitFor(() => expect(onDecisionSubmit).toHaveBeenCalledWith(decision, expect.objectContaining({ requestId: 'focus-decision' })))
+    await waitFor(() => expect(document.activeElement).toBe(editor()))
+  })
+
+  it('focuses the next decision primary control before returning to the composer', async () => {
+    const decision = (id: string, label: string): DecisionItem => ({
+      origin: 'runtime',
+      id,
+      threadId: 'thread-1',
+      createdAt: 1,
+      state: 'active',
+      request: {
+        schemaVersion: 1,
+        id,
+        owner: { type: 'turn', threadId: 'thread-1', turnId: `turn-${id}`, workspaceId: 'workspace-1', webContentsId: 1 },
+        source: 'agent',
+        kind: 'single-select',
+        title: id,
+        options: [{ id: `${id}-option`, label }],
+        minSelections: 1,
+        maxSelections: 1,
+        allowCustom: false,
+        allowRemember: false,
+        createdAt: 1
+      }
+    })
+    const first = decision('first-decision', 'First choice')
+    const second = decision('second-decision', 'Second choice')
+    function Sequence() {
+      const [item, setItem] = React.useState<DecisionItem | null>(first)
+      return (
+        <ComposerBar
+          {...baseProps({
+            threadId: 'thread-1',
+            decisionItem: item,
+            decisionPosition: item ? 1 : 0,
+            decisionCount: item ? 1 : 0,
+            onDecisionSubmit: async () => {
+              setItem(current => current?.id === first.id ? second : null)
+              return { accepted: true }
+            }
+          } as any)}
+        />
+      )
+    }
+    render(<Sequence />)
+
+    fireEvent.click(screen.getByLabelText('First choice'))
+    await waitFor(() => expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', false))
+    fireEvent.click(screen.getByTestId('decision-primary'))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Second choice')))
+
+    fireEvent.click(screen.getByLabelText('Second choice'))
+    await waitFor(() => expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', false))
+    fireEvent.click(screen.getByTestId('decision-primary'))
+    await waitFor(() => expect(document.activeElement).toBe(editor()))
+  })
+
+  it('never applies a stale prompt-enhancer selection after a newer user draft revision', async () => {
+    const original = 'Original draft'
+    const decision: DecisionItem = {
+      origin: 'draft',
+      id: 'stale-prompt-enhancer',
+      threadId: 'thread-1',
+      createdAt: 1,
+      state: 'active',
+      draftRevision: 1,
+      draftHash: await sha256Text(original),
+      valuesByOptionId: { 'use-enhanced': 'Enhanced draft' },
+      request: {
+        schemaVersion: 1,
+        id: 'stale-prompt-enhancer',
+        source: 'prompt-optimizer',
+        kind: 'single-select',
+        title: 'Use enhanced prompt?',
+        options: [{ id: 'use-enhanced', label: 'Use enhanced' }],
+        minSelections: 1,
+        maxSelections: 1,
+        allowCustom: false,
+        allowRemember: false,
+        createdAt: 1
+      }
+    }
+    const onDecisionSubmit = vi.fn().mockResolvedValue({ accepted: true })
+    renderComposer({
+      threadId: 'thread-1',
+      decisionItem: decision,
+      decisionPosition: 1,
+      decisionCount: 1,
+      onDecisionSubmit
+    } as any)
+
+    fireEvent.change(composerEditor(), { target: { value: original } })
+    fireEvent.change(editor(), { target: { value: 'Newer user draft' } })
+    fireEvent.click(screen.getByLabelText('Use enhanced'))
+    await waitFor(() => expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', false))
+    fireEvent.click(screen.getByTestId('decision-primary'))
+
+    await waitFor(() => expect(onDecisionSubmit).toHaveBeenCalledOnce())
+    await waitFor(() => expect(editor().value).toBe('Newer user draft'))
+  })
+
+  it('applies a bounded local custom draft after selecting Use custom text', async () => {
+    const original = 'Original draft'
+    const decision: DecisionItem = {
+      origin: 'draft',
+      id: 'custom-option-draft',
+      threadId: 'thread-1',
+      createdAt: 1,
+      state: 'active',
+      draftRevision: 1,
+      draftHash: await sha256Text(original),
+      valuesByOptionId: {},
+      request: {
+        schemaVersion: 1,
+        id: 'custom-option-draft',
+        source: 'prompt-optimizer',
+        kind: 'single-select',
+        title: 'Use custom text?',
+        options: [{ id: 'use-custom', label: 'Use custom text' }],
+        minSelections: 1,
+        maxSelections: 1,
+        allowCustom: true,
+        customInput: { maxChars: 40 },
+        allowRemember: false,
+        createdAt: 1
+      }
+    }
+    renderComposer({
+      threadId: 'thread-1',
+      decisionItem: decision,
+      decisionPosition: 1,
+      decisionCount: 1,
+      onDecisionSubmit: vi.fn().mockResolvedValue({ accepted: true })
+    } as any)
+
+    fireEvent.change(composerEditor(), { target: { value: original } })
+    fireEvent.click(screen.getByLabelText('Use custom text'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Custom response' }), { target: { value: 'Local custom draft' } })
+    await waitFor(() => expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', false))
+    fireEvent.click(screen.getByTestId('decision-primary'))
+
+    await waitFor(() => expect(composerEditor().value).toBe('Local custom draft'))
+  })
+
+  it('applies a bounded custom-only local draft without an option selection', async () => {
+    const original = 'Original draft'
+    const decision: DecisionItem = {
+      origin: 'draft',
+      id: 'custom-only-draft',
+      threadId: 'thread-1',
+      createdAt: 1,
+      state: 'active',
+      draftRevision: 1,
+      draftHash: await sha256Text(original),
+      valuesByOptionId: { 'use-enhanced': 'Enhanced draft' },
+      request: {
+        schemaVersion: 1,
+        id: 'custom-only-draft',
+        source: 'prompt-optimizer',
+        kind: 'single-select',
+        title: 'Use enhanced prompt?',
+        options: [{ id: 'use-enhanced', label: 'Use enhanced' }],
+        minSelections: 1,
+        maxSelections: 1,
+        allowCustom: true,
+        customInput: { maxChars: 40 },
+        allowRemember: false,
+        createdAt: 1
+      }
+    }
+    renderComposer({
+      threadId: 'thread-1',
+      decisionItem: decision,
+      decisionPosition: 1,
+      decisionCount: 1,
+      onDecisionSubmit: vi.fn().mockResolvedValue({ accepted: true })
+    } as any)
+
+    fireEvent.change(composerEditor(), { target: { value: original } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Custom response' }), { target: { value: 'Custom only draft' } })
+    await waitFor(() => expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', false))
+    fireEvent.click(screen.getByTestId('decision-primary'))
+
+    await waitFor(() => expect(composerEditor().value).toBe('Custom only draft'))
+  })
+
+  it('does not apply a stale local custom draft after the composer changes', async () => {
+    const original = 'Original draft'
+    const decision: DecisionItem = {
+      origin: 'draft',
+      id: 'stale-custom-draft',
+      threadId: 'thread-1',
+      createdAt: 1,
+      state: 'active',
+      draftRevision: 1,
+      draftHash: await sha256Text(original),
+      valuesByOptionId: {},
+      request: {
+        schemaVersion: 1,
+        id: 'stale-custom-draft',
+        source: 'prompt-optimizer',
+        kind: 'single-select',
+        title: 'Use custom text?',
+        options: [{ id: 'use-custom', label: 'Use custom text' }],
+        minSelections: 1,
+        maxSelections: 1,
+        allowCustom: true,
+        customInput: { maxChars: 40 },
+        allowRemember: false,
+        createdAt: 1
+      }
+    }
+    renderComposer({
+      threadId: 'thread-1',
+      decisionItem: decision,
+      decisionPosition: 1,
+      decisionCount: 1,
+      onDecisionSubmit: vi.fn().mockResolvedValue({ accepted: true })
+    } as any)
+
+    fireEvent.change(composerEditor(), { target: { value: original } })
+    fireEvent.change(composerEditor(), { target: { value: 'Newer user draft' } })
+    fireEvent.click(screen.getByLabelText('Use custom text'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Custom response' }), { target: { value: 'Stale custom draft' } })
+    await waitFor(() => expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', false))
+    fireEvent.click(screen.getByTestId('decision-primary'))
+
+    await waitFor(() => expect(composerEditor().value).toBe('Newer user draft'))
   })
 })
 

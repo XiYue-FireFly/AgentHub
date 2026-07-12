@@ -54,6 +54,17 @@ vi.mock("../plugin-manager", () => ({
 }))
 
 describe("prompt optimizer", () => {
+  it("derives routing artifacts without rewriting an immutable prepared prompt", async () => {
+    const { analyzePromptForDispatch } = await import("../prompt-optimizer")
+    const preparedPrompt = "Repair the login retry flow and run focused tests."
+
+    const analysis = analyzePromptForDispatch({ prompt: preparedPrompt, attachments: [] })
+
+    expect(analysis.originalPrompt).toBe(preparedPrompt)
+    expect(analysis).not.toHaveProperty("optimizedPrompt")
+    expect(analysis.contextBlock.content).toContain(preparedPrompt)
+  })
+
   it("wraps user input with intent and matching skill context", async () => {
     const { optimizePromptForDispatch } = await import("../prompt-optimizer")
     const result = optimizePromptForDispatch({

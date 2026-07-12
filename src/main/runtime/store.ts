@@ -16,12 +16,14 @@ import type {
   QueuedThreadSubmission,
   RuntimeEvent,
   SchedulePreview,
+  ThreadDeletionGate,
   WorkbenchAttachment,
   WorkbenchSnapshot,
   WorkbenchThread,
   WorkbenchTurn,
   WorkbenchTurnStatus
 } from "./types"
+import type { PromptEnvelope } from "../../shared/prompt-contract"
 
 const STORAGE_KEY = "runtime.workbench.v1"
 const MAX_RUNTIME_EVENTS = 5000
@@ -37,7 +39,13 @@ const PROTECTED_EVENT_KINDS = new Set<RuntimeEvent["kind"]>([
   "run:status",
   "route:decision",
   "guard:verdict",
-  "memory:candidate"
+  "memory:candidate",
+  "prompt:preparation-started",
+  "prompt:candidate-attempted",
+  "prompt:prepared",
+  "prompt:preparation-cancelled",
+  "prompt:preparation-failed",
+  "dispatch:prepared"
 ])
 
 type TurnCreateInput = {
@@ -51,7 +59,36 @@ type TurnCreateInput = {
   attachments?: WorkbenchAttachment[]
   contextProjection?: ContextProjection
   customSchedule?: SchedulePreview
+  multiModelFusion?: import('../../shared/ipc-contract').MultiModelFusionConfig
   ownerWebContentsId?: number
+  retryOfTurnId?: string
+}
+
+type QueuedSubmissionCreateInput = {
+  payload: TurnCreateInput
+  ownerWebContentsId: number
+  source: "create" | "retry"
+  retryOfTurnId?: string
+  retryStrategy?: "reuse-selection" | "reoptimize"
+}
+
+type QueuedRetryAdmissionInput = QueuedSubmissionCreateInput & {
+  source: "retry"
+  retryOfTurnId: string
+}
+
+type QueuedSubmissionResult = {
+  thread: WorkbenchThread
+  turn: WorkbenchTurn
+  submission: QueuedThreadSubmission
+}
+
+export type QueuedRetryAdmissionResult = Pick<QueuedSubmissionResult, "thread" | "turn"> & {
+  created: boolean
+}
+
+function normalizeRetryStrategy(value: unknown): "reuse-selection" | "reoptimize" {
+  return value === "reoptimize" ? "reoptimize" : "reuse-selection"
 }
 
 type RunCreateInput = Omit<AgentRunNode, "id" | "startedAt" | "status"> & {
@@ -65,6 +102,12 @@ type RuntimeDisposeOptions = {
 export interface RuntimeMutation {
   getTurn(turnId: string): WorkbenchTurn | undefined
   listTurns(): WorkbenchTurn[]
+  listSubmissions(): QueuedThreadSubmission[]
+  isThreadDeleting(threadId: string): boolean
+  allocateSubmissionAdmissionSequence(): number
+  ensureThread(input: { threadId?: string | null; workspaceId?: string | null; title?: string; prompt?: string }): WorkbenchThread
+  createTurn(input: TurnCreateInput & { status?: WorkbenchTurnStatus }): { thread: WorkbenchThread; turn: WorkbenchTurn }
+  attachPromptEnvelope(turnId: string, envelope: PromptEnvelope): WorkbenchTurn
   listRuns(turnId: string): AgentRunNode[]
   listDecisions(): DurableDecisionRecord[]
   setTurnStatus(turnId: string, status: WorkbenchTurnStatus, payload?: Record<string, unknown>): void
@@ -91,6 +134,21 @@ export interface RuntimeMutation {
   removeSubmission(submissionId: string): void
 }
 
+export interface ThreadDeletionWork {
+  turns: WorkbenchTurn[]
+  decisionTurnIds: string[]
+}
+
+export type ThreadDeletionReservation = {
+  status: "started" | "reclaimed" | "in-progress" | "not-found" | "forbidden"
+  work: ThreadDeletionWork
+}
+
+export type ThreadDeletionFinalization = {
+  status: "deleted" | "in-progress" | "not-found" | "forbidden"
+  work: ThreadDeletionWork
+}
+
 function emptyState(): PersistedRuntime {
   return {
     version: 1,
@@ -101,6 +159,8 @@ function emptyState(): PersistedRuntime {
     hiddenTaskTurnIds: [],
     decisions: [],
     queuedSubmissions: [],
+    deletingThreads: [],
+    nextSubmissionAdmissionSequence: 1,
     activeThreadId: null,
     nextSeqByThread: {}
   }
@@ -126,6 +186,83 @@ function requireTurnInState(state: PersistedRuntime, turnId: string): WorkbenchT
   return turn
 }
 
+function deletionGateInState(state: PersistedRuntime, threadId: string): ThreadDeletionGate | undefined {
+  return state.deletingThreads.find(gate => gate.threadId === threadId)
+}
+
+function deletionWorkInState(state: PersistedRuntime, threadId: string): ThreadDeletionWork {
+  const turns = state.turns.filter(turn => turn.threadId === threadId)
+  const turnIds = new Set(turns.map(turn => turn.id))
+  const decisionTurnIds = state.decisions
+    .filter(record => record.state !== "terminal")
+    .filter(record => (
+      record.request.owner.type === "turn"
+      && (record.request.owner.threadId === threadId || turnIds.has(record.request.owner.turnId))
+    ))
+    .map(record => record.request.owner.type === "turn" ? record.request.owner.turnId : "")
+    .filter((turnId): turnId is string => turnId.length > 0)
+  return { turns: cloneValue(turns), decisionTurnIds: [...new Set(decisionTurnIds)] }
+}
+
+function hasLiveTurns(work: ThreadDeletionWork): boolean {
+  return work.turns.some(turn => !isTerminalTurnStatus(turn.status))
+}
+
+function hasForeignLiveTurnOwner(
+  work: ThreadDeletionWork,
+  ownerWebContentsId: number,
+  reclaimedOwnerWebContentsId?: number
+): boolean {
+  return work.turns.some(turn => (
+    !isTerminalTurnStatus(turn.status)
+    && turn.ownerWebContentsId !== undefined
+    && turn.ownerWebContentsId !== ownerWebContentsId
+    && turn.ownerWebContentsId !== reclaimedOwnerWebContentsId
+  ))
+}
+
+function ownerIsLive(
+  ownerWebContentsId: number,
+  isOwnerLive: (ownerWebContentsId: number) => boolean
+): boolean {
+  try {
+    return isOwnerLive(ownerWebContentsId) === true
+  } catch {
+    // A failed liveness source must never authorize cross-window takeover.
+    return true
+  }
+}
+
+function assertThreadAdmissionOpen(state: PersistedRuntime, threadId: string): void {
+  if (deletionGateInState(state, threadId)) {
+    throw new Error("Thread deletion is in progress")
+  }
+}
+
+function removeThreadInState(state: PersistedRuntime, threadId: string): boolean {
+  const before = state.threads.length
+  const turnIds = new Set(state.turns
+    .filter(turn => turn.threadId === threadId)
+    .map(turn => turn.id))
+  state.threads = state.threads.filter(thread => thread.id !== threadId)
+  state.turns = state.turns.filter(turn => turn.threadId !== threadId)
+  state.runs = state.runs.filter(run => !turnIds.has(run.turnId))
+  state.events = state.events.filter(event => event.threadId !== threadId)
+  state.hiddenTaskTurnIds = state.hiddenTaskTurnIds.filter(turnId => !turnIds.has(turnId))
+  state.decisions = state.decisions.filter(record => (
+    record.request.owner.type !== "turn"
+    || (
+      record.request.owner.threadId !== threadId
+      && !turnIds.has(record.request.owner.turnId)
+    )
+  ))
+  state.queuedSubmissions = state.queuedSubmissions.filter(submission => submission.threadId !== threadId)
+  state.deletingThreads = state.deletingThreads.filter(gate => gate.threadId !== threadId)
+  delete state.nextSeqByThread[threadId]
+  if (state.activeThreadId === threadId) state.activeThreadId = state.threads[0]?.id ?? null
+  return before !== state.threads.length
+}
+
 function createThreadInState(
   state: PersistedRuntime,
   input: { workspaceId?: string | null; title?: string }
@@ -141,6 +278,103 @@ function createThreadInState(
   state.threads.unshift(thread)
   state.activeThreadId = thread.id
   return thread
+}
+
+function createTurnInState(
+  state: PersistedRuntime,
+  stagedEvents: RuntimeEvent[],
+  input: TurnCreateInput & { status?: WorkbenchTurnStatus }
+): { thread: WorkbenchThread; turn: WorkbenchTurn } {
+  let thread = input.threadId
+    ? requireThreadInState(state, input.threadId)
+    : undefined
+  if (thread) assertThreadAdmissionOpen(state, thread.id)
+  if (!thread) {
+    thread = createThreadInState(state, {
+      workspaceId: input.workspaceId ?? null,
+      title: deriveThreadTitleFromPrompt(input.prompt)
+    })
+  }
+  const now = Date.now()
+  const status = input.status ?? "running"
+  const turn: WorkbenchTurn = {
+    id: id("turn"),
+    threadId: thread.id,
+    prompt: input.prompt,
+    attachments: input.attachments?.length ? cloneValue(input.attachments) : undefined,
+    contextProjection: input.contextProjection ? cloneValue(input.contextProjection) : undefined,
+    mode: input.mode,
+    customSchedule: input.customSchedule ? cloneValue(input.customSchedule) : undefined,
+    multiModelFusion: input.multiModelFusion ? cloneValue(input.multiModelFusion) : undefined,
+    targetAgent: input.targetAgent || undefined,
+    modelSelection: input.modelSelection ? cloneValue(input.modelSelection) : undefined,
+    thinking: input.thinking === undefined ? undefined : cloneValue(input.thinking),
+    status,
+    taskIds: [],
+    ownerWebContentsId: input.ownerWebContentsId,
+    retryOfTurnId: input.retryOfTurnId,
+    createdAt: now
+  }
+  state.turns.push(turn)
+  thread.updatedAt = now
+  thread.lastTurnStatus = status
+  const autoTitle = maybeAutoTitle(thread.title, input.prompt)
+  if (autoTitle) thread.title = autoTitle
+  state.activeThreadId = thread.id
+  stagedEvents.push(appendEventInState(
+    state,
+    thread.id,
+    turn.id,
+    "turn:created",
+    undefined,
+    {
+      prompt: input.prompt,
+      mode: input.mode,
+      attachments: turn.attachments ?? [],
+      contextProjection: turn.contextProjection,
+      customSchedule: turn.customSchedule,
+      multiModelFusion: turn.multiModelFusion,
+      modelSelection: turn.modelSelection,
+      thinking: turn.thinking
+    }
+  ))
+  return { thread, turn }
+}
+
+function createQueuedSubmissionInMutation(
+  tx: RuntimeMutation,
+  input: QueuedSubmissionCreateInput
+): QueuedSubmissionResult {
+  const retryStrategy = normalizeRetryStrategy(input.retryStrategy)
+  const created = tx.createTurn({
+    ...input.payload,
+    mode: input.payload.mode || "auto",
+    ownerWebContentsId: input.ownerWebContentsId,
+    retryOfTurnId: input.retryOfTurnId,
+    status: "queued"
+  })
+  const submission: QueuedThreadSubmission = {
+    id: id("submission"),
+    threadId: created.thread.id,
+    turnId: created.turn.id,
+    ownerWebContentsId: input.ownerWebContentsId,
+    input: {
+      ...input.payload,
+      mode: input.payload.mode || "auto",
+      threadId: created.thread.id,
+      workspaceId: created.thread.workspaceId
+    },
+    source: input.source,
+    retryOfTurnId: input.retryOfTurnId,
+    retryStrategy: input.source === "retry"
+      ? retryStrategy
+      : undefined,
+    state: "queued",
+    createdAt: Date.now(),
+    admissionSequence: tx.allocateSubmissionAdmissionSequence()
+  }
+  tx.upsertSubmission(submission)
+  return { ...created, submission }
 }
 
 function appendEventInState(
@@ -436,6 +670,47 @@ function createRuntimeMutation(
       assertOpen()
       return cloneValue(draft.turns)
     },
+    listSubmissions() {
+      assertOpen()
+      return cloneValue(draft.queuedSubmissions)
+    },
+    isThreadDeleting(threadId) {
+      assertOpen()
+      return !!deletionGateInState(draft, threadId)
+    },
+    allocateSubmissionAdmissionSequence() {
+      assertOpen()
+      const next = draft.nextSubmissionAdmissionSequence
+      draft.nextSubmissionAdmissionSequence += 1
+      return next
+    },
+    ensureThread(input) {
+      assertOpen()
+      const thread = input.threadId
+        ? requireThreadInState(draft, input.threadId)
+        : createThreadInState(draft, {
+            workspaceId: input.workspaceId ?? null,
+            title: input.title || deriveThreadTitleFromPrompt(input.prompt || '')
+          })
+      return cloneValue(thread)
+    },
+    createTurn(input) {
+      assertOpen()
+      const created = createTurnInState(draft, stagedEvents, cloneValue(input))
+      return cloneValue(created)
+    },
+    attachPromptEnvelope(turnId, envelope) {
+      assertOpen()
+      const turn = draft.turns.find(candidate => candidate.id === turnId)
+      if (!turn) throw new Error(`Turn not found: ${turnId}`)
+      if (turn.promptEnvelope) throw new Error(`Turn ${turnId} already has a PromptEnvelope`)
+      const isolated = cloneValue(envelope)
+      turn.prompt = isolated.displayOriginalPrompt
+      turn.displayOriginalPrompt = isolated.displayOriginalPrompt
+      turn.effectivePrompt = isolated.effectivePrompt
+      turn.promptEnvelope = isolated
+      return cloneValue(turn)
+    },
     listRuns(turnId) {
       assertOpen()
       return cloneValue(draft.runs.filter(run => run.turnId === turnId))
@@ -508,7 +783,10 @@ function interruptActiveWorkInMutation(
       tx.setRunStatusById(run.id, "interrupted", { reason })
       runIds.push(run.id)
     }
-    if (isTerminalTurnStatus(turn.status)) continue
+    // Durable queue tails have never begun execution. Preserve them across a
+    // shutdown so coordinator recovery can discard only the uncertain
+    // `starting` head and continue the queued tail in FIFO order.
+    if (turn.status === "queued" || isTerminalTurnStatus(turn.status)) continue
     tx.setTurnStatus(turn.id, "interrupted", { reason })
     turnIds.push(turn.id)
   }
@@ -529,6 +807,8 @@ export class WorkbenchRuntimeStore extends EventEmitter {
     const raw = cloneValue(store.get(STORAGE_KEY))
     if (raw && typeof raw === "object" && Array.isArray((raw as any).threads)) {
       const rawState = raw as Partial<PersistedRuntime>
+      const hadPersistedDeletionGates = Array.isArray(rawState.deletingThreads)
+        && rawState.deletingThreads.length > 0
       const state: PersistedRuntime = {
         ...emptyState(),
         ...rawState,
@@ -540,6 +820,13 @@ export class WorkbenchRuntimeStore extends EventEmitter {
         hiddenTaskTurnIds: Array.isArray(rawState.hiddenTaskTurnIds) ? rawState.hiddenTaskTurnIds : [],
         decisions: Array.isArray(rawState.decisions) ? rawState.decisions : [],
         queuedSubmissions: Array.isArray(rawState.queuedSubmissions) ? rawState.queuedSubmissions : [],
+        // Window ids are process-local. A persisted lease can only describe
+        // an interrupted prior process, never a live owner after restart.
+        deletingThreads: [],
+        nextSubmissionAdmissionSequence: Number.isInteger(rawState.nextSubmissionAdmissionSequence)
+          && (rawState.nextSubmissionAdmissionSequence as number) > 0
+          ? rawState.nextSubmissionAdmissionSequence as number
+          : 1,
         activeThreadId: typeof rawState.activeThreadId === "string" ? rawState.activeThreadId : null,
         nextSeqByThread: rawState.nextSeqByThread
           && typeof rawState.nextSeqByThread === "object"
@@ -556,6 +843,22 @@ export class WorkbenchRuntimeStore extends EventEmitter {
           state.nextSeqByThread[event.threadId] ?? 1,
           event.seq + 1
         )
+      }
+      let nextSubmissionAdmissionSequence = state.nextSubmissionAdmissionSequence
+      state.queuedSubmissions = state.queuedSubmissions.map((submission, index) => {
+        const admissionSequence = Number.isInteger(submission.admissionSequence) && submission.admissionSequence > 0
+          ? submission.admissionSequence
+          : index + 1
+        nextSubmissionAdmissionSequence = Math.max(nextSubmissionAdmissionSequence, admissionSequence + 1)
+        return { ...submission, admissionSequence }
+      })
+      state.nextSubmissionAdmissionSequence = nextSubmissionAdmissionSequence
+      if (hadPersistedDeletionGates) {
+        try {
+          this.persistState(state)
+        } catch (error) {
+          log.error("Failed to clear stale thread deletion gates:", error)
+        }
       }
       this.state = state
     } else {
@@ -777,30 +1080,66 @@ export class WorkbenchRuntimeStore extends EventEmitter {
     })
   }
 
-  deleteThread(threadId: string): Promise<boolean> {
-    return this.enqueueClonedWriter(threadId, async (isolatedThreadId, state) => {
-      const before = state.threads.length
-      const turnIds = new Set(state.turns
-        .filter(turn => turn.threadId === isolatedThreadId)
-        .map(turn => turn.id))
-      state.threads = state.threads.filter(thread => thread.id !== isolatedThreadId)
-      state.turns = state.turns.filter(turn => turn.threadId !== isolatedThreadId)
-      state.runs = state.runs.filter(run => !turnIds.has(run.turnId))
-      state.events = state.events.filter(event => event.threadId !== isolatedThreadId)
-      state.hiddenTaskTurnIds = state.hiddenTaskTurnIds.filter(turnId => !turnIds.has(turnId))
-      state.decisions = state.decisions.filter(record => (
-        record.request.owner.type !== "turn"
-        || (
-          record.request.owner.threadId !== isolatedThreadId
-          && !turnIds.has(record.request.owner.turnId)
-        )
-      ))
-      state.queuedSubmissions = state.queuedSubmissions.filter(submission => submission.threadId !== isolatedThreadId)
-      delete state.nextSeqByThread[isolatedThreadId]
-      if (state.activeThreadId === isolatedThreadId) state.activeThreadId = state.threads[0]?.id ?? null
-      const changed = before !== state.threads.length
-      if (changed) await this.finishLegacyWriter(state, [])
-      return changed
+  beginThreadDeletion(
+    threadId: string,
+    ownerWebContentsId: number,
+    isOwnerLive: (ownerWebContentsId: number) => boolean = () => true
+  ): Promise<ThreadDeletionReservation> {
+    return this.enqueueClonedWriter({ threadId, ownerWebContentsId }, async (input, state) => {
+      const thread = state.threads.find(candidate => candidate.id === input.threadId)
+      if (!thread) return { status: "not-found" as const, work: { turns: [], decisionTurnIds: [] } }
+
+      const existingGate = deletionGateInState(state, input.threadId)
+      const work = deletionWorkInState(state, input.threadId)
+      if (existingGate) {
+        if (existingGate.ownerWebContentsId !== input.ownerWebContentsId) {
+          if (ownerIsLive(existingGate.ownerWebContentsId, isOwnerLive)) {
+            return { status: "forbidden" as const, work }
+          }
+          if (hasForeignLiveTurnOwner(work, input.ownerWebContentsId, existingGate.ownerWebContentsId)) {
+            return { status: "forbidden" as const, work }
+          }
+          existingGate.ownerWebContentsId = input.ownerWebContentsId
+          existingGate.startedAt = Date.now()
+          await this.finishLegacyWriter(state, [])
+          return { status: "reclaimed" as const, work }
+        }
+        if (hasForeignLiveTurnOwner(work, input.ownerWebContentsId)) {
+          return { status: "forbidden" as const, work }
+        }
+        return { status: "in-progress" as const, work }
+      }
+      if (hasForeignLiveTurnOwner(work, input.ownerWebContentsId)) {
+        return { status: "forbidden" as const, work }
+      }
+
+      state.deletingThreads.push({
+        threadId: input.threadId,
+        ownerWebContentsId: input.ownerWebContentsId,
+        startedAt: Date.now()
+      })
+      await this.finishLegacyWriter(state, [])
+      return { status: "started" as const, work }
+    })
+  }
+
+  finalizeThreadDeletion(threadId: string, ownerWebContentsId: number): Promise<ThreadDeletionFinalization> {
+    return this.enqueueClonedWriter({ threadId, ownerWebContentsId }, async (input, state) => {
+      const thread = state.threads.find(candidate => candidate.id === input.threadId)
+      if (!thread) return { status: "not-found" as const, work: { turns: [], decisionTurnIds: [] } }
+
+      const gate = deletionGateInState(state, input.threadId)
+      const work = deletionWorkInState(state, input.threadId)
+      if (!gate || gate.ownerWebContentsId !== input.ownerWebContentsId) {
+        return { status: "forbidden" as const, work }
+      }
+      if (hasLiveTurns(work) || work.decisionTurnIds.length > 0) {
+        return { status: "in-progress" as const, work }
+      }
+
+      removeThreadInState(state, input.threadId)
+      await this.finishLegacyWriter(state, [])
+      return { status: "deleted" as const, work: { turns: [], decisionTurnIds: [] } }
     })
   }
 
@@ -815,59 +1154,55 @@ export class WorkbenchRuntimeStore extends EventEmitter {
 
   createTurn(input: TurnCreateInput): Promise<{ thread: WorkbenchThread; turn: WorkbenchTurn }> {
     return this.enqueueClonedWriter(input, async (isolatedInput, state) => {
-      let thread = isolatedInput.threadId
-        ? requireThreadInState(state, isolatedInput.threadId)
-        : undefined
-      if (!thread) {
-        thread = createThreadInState(state, {
-          workspaceId: isolatedInput.workspaceId ?? null,
-          title: deriveThreadTitleFromPrompt(isolatedInput.prompt)
-        })
-      }
-      const now = Date.now()
-      const turn: WorkbenchTurn = {
-        id: id("turn"),
-        threadId: thread.id,
-        prompt: isolatedInput.prompt,
-        attachments: isolatedInput.attachments?.length ? isolatedInput.attachments : undefined,
-        contextProjection: isolatedInput.contextProjection,
-        mode: isolatedInput.mode,
-        customSchedule: isolatedInput.customSchedule,
-        targetAgent: isolatedInput.targetAgent || undefined,
-        modelSelection: isolatedInput.modelSelection,
-        thinking: isolatedInput.thinking,
-        status: "running",
-        taskIds: [],
-        ownerWebContentsId: isolatedInput.ownerWebContentsId,
-        createdAt: now
-      }
-      state.turns.push(turn)
-      thread.updatedAt = now
-      thread.lastTurnStatus = "running"
-      const autoTitle = maybeAutoTitle(thread.title, isolatedInput.prompt)
-      if (autoTitle) thread.title = autoTitle
-      state.activeThreadId = thread.id
-      const stagedEvents = [appendEventInState(
-        state,
-        thread.id,
-        turn.id,
-        "turn:created",
-        undefined,
-        {
-          prompt: isolatedInput.prompt,
-          mode: isolatedInput.mode,
-          attachments: turn.attachments ?? [],
-          contextProjection: turn.contextProjection,
-          customSchedule: turn.customSchedule,
-          modelSelection: turn.modelSelection,
-          thinking: turn.thinking
-        }
-      )]
+      const stagedEvents: RuntimeEvent[] = []
+      const { thread, turn } = createTurnInState(state, stagedEvents, isolatedInput)
       const canonicalState = await this.finishLegacyWriter(state, stagedEvents)
       return {
         thread: requireThreadInState(canonicalState, thread.id),
         turn: requireTurnInState(canonicalState, turn.id)
       }
+    })
+  }
+
+  createQueuedSubmission(input: QueuedSubmissionCreateInput): Promise<QueuedSubmissionResult> {
+    this.assertPublicWriterReentrancy()
+    let isolatedInput: QueuedSubmissionCreateInput
+    try {
+      isolatedInput = cloneValue(input)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    return this.commitRuntimeMutation(tx => createQueuedSubmissionInMutation(tx, isolatedInput))
+  }
+
+  findOrCreateQueuedRetry(input: QueuedRetryAdmissionInput): Promise<QueuedRetryAdmissionResult> {
+    this.assertPublicWriterReentrancy()
+    let isolatedInput: QueuedRetryAdmissionInput
+    try {
+      isolatedInput = cloneValue(input)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    return this.commitRuntimeMutation(tx => {
+      const retryStrategy = normalizeRetryStrategy(isolatedInput.retryStrategy)
+      const submissionsByTurnId = new Map(tx.listSubmissions().map(submission => [submission.turnId, submission]))
+      const existing = tx.listTurns().find(turn => (
+        turn.retryOfTurnId === isolatedInput.retryOfTurnId
+        && !isTerminalTurnStatus(turn.status)
+        && normalizeRetryStrategy(submissionsByTurnId.get(turn.id)?.retryStrategy) === retryStrategy
+      ))
+      if (existing) {
+        if (existing.ownerWebContentsId !== isolatedInput.ownerWebContentsId) {
+          throw new Error("Retry turn ownership does not match the original turn")
+        }
+        return {
+          thread: tx.ensureThread({ threadId: existing.threadId }),
+          turn: existing,
+          created: false
+        }
+      }
+      const created = createQueuedSubmissionInMutation(tx, { ...isolatedInput, retryStrategy })
+      return { thread: created.thread, turn: created.turn, created: true }
     })
   }
 

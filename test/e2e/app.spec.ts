@@ -21,6 +21,7 @@ const stylesheetFallbackWarning = '[AgentHub] Workbench stylesheet did not apply
 interface RendererDiagnostics {
   consoleErrors: string[]
   pageErrors: string[]
+  mainProcessLogs: string[]
   observedPages: Set<Page>
 }
 
@@ -32,9 +33,16 @@ interface LaunchedAgentHub {
   resources: ActiveAgentHubResources
 }
 
+interface LaunchAgentHubOptions {
+  userDataDir?: string
+  cleanupUserDataDir?: boolean
+  environment?: NodeJS.ProcessEnv
+}
+
 interface ActiveAgentHubResources {
   app: ElectronApplication | null
   userDataDir: string
+  cleanupUserDataDir: boolean
   launchSettled: Promise<void>
   cleanupInFlight: Promise<unknown[]> | null
 }
@@ -149,6 +157,7 @@ function createRendererDiagnostics(): RendererDiagnostics {
   return {
     consoleErrors: [],
     pageErrors: [],
+    mainProcessLogs: [],
     observedPages: new Set<Page>()
   }
 }
@@ -177,6 +186,25 @@ function observeRendererPage(page: Page, diagnostics: RendererDiagnostics): void
     if (message.type() === 'error' || (message.type() === 'warning' && text === stylesheetFallbackWarning)) {
       addUniqueDiagnostic(diagnostics.consoleErrors, consoleMessageText(page, message))
     }
+  })
+}
+
+function observeMainProcessOutput(app: ElectronApplication, diagnostics: RendererDiagnostics): void {
+  const childProcess = app.process()
+  if (!childProcess) return
+  const capture = (stream: 'stdout' | 'stderr', chunk: Buffer | string) => {
+    const message = String(chunk).trim()
+    if (message) addUniqueDiagnostic(diagnostics.mainProcessLogs, `${stream}: ${message}`)
+  }
+  childProcess.stdout?.on('data', chunk => capture('stdout', chunk))
+  childProcess.stderr?.on('data', chunk => capture('stderr', chunk))
+}
+
+function launchFailureWithMainProcessLogs(launchError: unknown, diagnostics: RendererDiagnostics): unknown {
+  if (diagnostics.mainProcessLogs.length === 0) return launchError
+  const detail = diagnostics.mainProcessLogs.slice(-20).join('\n')
+  return new Error(`${launchError instanceof Error ? launchError.message : String(launchError)}\nElectron main-process output:\n${detail}`, {
+    cause: launchError
   })
 }
 
@@ -241,18 +269,20 @@ async function performAgentHubFinalization(
     }
   }
 
-  try {
-    await removeUserDataDir(resources.userDataDir)
-  } catch (error) {
-    cleanupSucceeded = false
-    failures.push(error)
-  }
+  if (resources.cleanupUserDataDir) {
+    try {
+      await removeUserDataDir(resources.userDataDir)
+    } catch (error) {
+      cleanupSucceeded = false
+      failures.push(error)
+    }
 
-  try {
-    expect(existsSync(resources.userDataDir), `E2E user data residue: ${resources.userDataDir}`).toBe(false)
-  } catch (error) {
-    cleanupSucceeded = false
-    failures.push(error)
+    try {
+      expect(existsSync(resources.userDataDir), `E2E user data residue: ${resources.userDataDir}`).toBe(false)
+    } catch (error) {
+      cleanupSucceeded = false
+      failures.push(error)
+    }
   }
 
   if (cleanupSucceeded) activeAgentHubResources.delete(resources)
@@ -279,17 +309,19 @@ async function finalizeAgentHubResources(
   }
 }
 
-async function launchAgentHub(): Promise<LaunchedAgentHub> {
+async function launchAgentHub(options: LaunchAgentHubOptions = {}): Promise<LaunchedAgentHub> {
   if (!existsSync(mainEntry)) {
     throw new Error('Missing built Electron main entry. Run `npm run build` before `npm run test:e2e`.')
   }
 
-  const userDataDir = mkdtempSync(join(tmpdir(), userDataPrefix))
+  const userDataDir = options.userDataDir ?? mkdtempSync(join(tmpdir(), userDataPrefix))
+  assertOwnedUserDataDir(userDataDir)
   const diagnostics = createRendererDiagnostics()
   let markLaunchSettled: () => void = () => {}
   const resources: ActiveAgentHubResources = {
     app: null,
     userDataDir,
+    cleanupUserDataDir: options.cleanupUserDataDir ?? true,
     cleanupInFlight: null,
     launchSettled: new Promise(resolveLaunch => {
       markLaunchSettled = resolveLaunch
@@ -306,7 +338,8 @@ async function launchAgentHub(): Promise<LaunchedAgentHub> {
             ...process.env,
             AGENTHUB_E2E: '1',
             AGENTHUB_USER_DATA_DIR: userDataDir,
-            NODE_ENV: 'test'
+            NODE_ENV: 'test',
+            ...options.environment
           }
         })
         resources.app = launchedApp
@@ -317,6 +350,7 @@ async function launchAgentHub(): Promise<LaunchedAgentHub> {
     })()
 
     const observePage = (candidate: Page) => observeRendererPage(candidate, diagnostics)
+    observeMainProcessOutput(app, diagnostics)
     app.context().on('page', observePage)
     app.context().pages().forEach(observePage)
     const page = await app.firstWindow()
@@ -325,13 +359,17 @@ async function launchAgentHub(): Promise<LaunchedAgentHub> {
     return { app, page, userDataDir, diagnostics, resources }
   } catch (launchError) {
     const cleanupErrors = await finalizeAgentHubResources(resources, diagnostics)
-    if (cleanupErrors.length === 0) throw launchError
-    throw new AggregateError([launchError, ...cleanupErrors], 'AgentHub E2E launch and cleanup failures')
+    const reportedLaunchError = launchFailureWithMainProcessLogs(launchError, diagnostics)
+    if (cleanupErrors.length === 0) throw reportedLaunchError
+    throw new AggregateError([reportedLaunchError, ...cleanupErrors], 'AgentHub E2E launch and cleanup failures')
   }
 }
 
-async function withAgentHub(run: (launched: LaunchedAgentHub) => Promise<void>): Promise<void> {
-  const launched = await launchAgentHub()
+async function withAgentHub(
+  run: (launched: LaunchedAgentHub) => Promise<void>,
+  options: LaunchAgentHubOptions = {}
+): Promise<void> {
+  const launched = await launchAgentHub(options)
   let bodyFailed = false
   let bodyFailure: unknown
   let finalizationFailures: unknown[] = []
@@ -374,6 +412,33 @@ function primaryNavigation(page: Page) {
   return page.getByRole('navigation', { name: /^(主要导航|Primary navigation)$/ })
 }
 
+async function e2ePermissionExecutionCount(app: ElectronApplication): Promise<number | null> {
+  return app.evaluate(() => {
+    const value = (globalThis as typeof globalThis & {
+      __agentHubE2eDecisionFixturePermissionExecutionCount?: unknown
+    }).__agentHubE2eDecisionFixturePermissionExecutionCount
+    return typeof value === 'number' ? value : null
+  })
+}
+
+async function finalizeRestartFixture(
+  seeded: LaunchedAgentHub | null,
+  restarted: LaunchedAgentHub | null,
+  userDataDir: string
+): Promise<unknown[]> {
+  const failures: unknown[] = []
+  if (seeded) failures.push(...await finalizeAgentHubResources(seeded.resources, seeded.diagnostics))
+  if (restarted) failures.push(...await finalizeAgentHubResources(restarted.resources, restarted.diagnostics))
+  if (existsSync(userDataDir)) {
+    try {
+      await removeUserDataDir(userDataDir)
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  return failures
+}
+
 test.afterEach(async ({ browserName: _browserName }, testInfo) => {
   // Playwright gives afterEach its own timeout window after a timed-out test body.
   // Keep a bounded, explicit budget for retrying every still-owned resource.
@@ -389,6 +454,134 @@ test.afterEach(async ({ browserName: _browserName }, testInfo) => {
 })
 
 test.describe('AgentHub App', () => {
+  test('continues a DecisionService turn through real decision IPC', async () => {
+    test.setTimeout(90_000)
+    await withAgentHub(async ({ page }) => {
+      await expect(page.locator('.wb-root')).toBeVisible({ timeout: 20_000 })
+      await dismissAnnouncementIfPresent(page)
+
+      const decisionBar = page.locator('.wb-decision-bar[data-turn-id][data-decision-id]')
+      await expect(decisionBar).toBeVisible({ timeout: 20_000 })
+      const turnId = await decisionBar.getAttribute('data-turn-id')
+      expect(turnId).toBeTruthy()
+
+      await decisionBar.getByRole('radio', { name: 'Focused repair', exact: true }).check()
+      await decisionBar.getByTestId('decision-primary').click()
+
+      await expect(decisionBar).toBeHidden({ timeout: 10_000 })
+      const turn = page.locator(`.wb-turn[data-turn-id="${turnId}"]`)
+      await expect(turn.getByText('Fixture resumed with focused', { exact: true })).toHaveCount(1)
+    }, {
+      environment: { AGENTHUB_E2E_DECISION_FIXTURE: 'same-turn' }
+    })
+  })
+
+  test('recovers a stale permission without executing it and reruns in a new turn', async () => {
+    test.setTimeout(120_000)
+    const userDataDir = mkdtempSync(join(tmpdir(), userDataPrefix))
+    let seeded: LaunchedAgentHub | null = null
+    let restarted: LaunchedAgentHub | null = null
+    let bodyFailed = false
+    let bodyFailure: unknown
+    let finalizationFailures: unknown[] = []
+
+    try {
+      seeded = await launchAgentHub({
+        userDataDir,
+        cleanupUserDataDir: false,
+        environment: { AGENTHUB_E2E_DECISION_FIXTURE: 'restart-seed' }
+      })
+      await expect(seeded.page.locator('.wb-root')).toBeVisible({ timeout: 20_000 })
+      await dismissAnnouncementIfPresent(seeded.page)
+      const seedDecision = seeded.page.locator('.wb-decision-bar[data-turn-id][data-decision-id]')
+      await expect(seedDecision).toBeVisible({ timeout: 20_000 })
+      const originalTurnId = await seedDecision.getAttribute('data-turn-id')
+      expect(originalTurnId).toBeTruthy()
+      expect(await e2ePermissionExecutionCount(seeded.app)).toBe(0)
+
+      const seedCleanup = await finalizeAgentHubResources(seeded.resources, seeded.diagnostics)
+      seeded = null
+      if (seedCleanup.length === 1) throw seedCleanup[0]
+      if (seedCleanup.length > 1) throw new AggregateError(seedCleanup, 'E2E fixture seed cleanup failures')
+
+      restarted = await launchAgentHub({
+        userDataDir,
+        environment: { AGENTHUB_E2E_DECISION_FIXTURE: 'restart-recover' }
+      })
+      await expect(restarted.page.locator('.wb-root')).toBeVisible({ timeout: 20_000 })
+      await dismissAnnouncementIfPresent(restarted.page)
+      const originalTurn = restarted.page.locator(`.wb-turn[data-turn-id="${originalTurnId}"]`)
+      await expect(originalTurn.getByText('Turn interrupted by restart', { exact: true })).toBeVisible({ timeout: 20_000 })
+      await expect(restarted.page.locator(`.wb-decision-bar[data-turn-id="${originalTurnId}"]`)).toBeHidden()
+
+      await originalTurn.getByRole('button', { name: 'Rerun Turn', exact: true }).click()
+      await expect(originalTurn.getByRole('button', { name: 'Turn rerun', exact: true })).toBeVisible()
+      await expect.poll(() => e2ePermissionExecutionCount(restarted!.app), { timeout: 20_000 }).toBe(0)
+      const turnIds = await restarted.page.locator('.wb-turn[data-turn-id]').evaluateAll(elements => (
+        elements.map(element => element.getAttribute('data-turn-id')).filter((id): id is string => !!id)
+      ))
+      const rerunTurnIds = turnIds.filter(turnId => turnId !== originalTurnId)
+      expect(rerunTurnIds).toHaveLength(1)
+    } catch (error) {
+      bodyFailed = true
+      bodyFailure = error
+    } finally {
+      finalizationFailures = await finalizeRestartFixture(seeded, restarted, userDataDir)
+    }
+
+    const failures = bodyFailed ? [bodyFailure, ...finalizationFailures] : finalizationFailures
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, 'E2E restart fixture cleanup failures')
+  })
+
+  test('persists an execution count when the original fixture permission is deliberately resolved', async () => {
+    test.setTimeout(120_000)
+    const userDataDir = mkdtempSync(join(tmpdir(), userDataPrefix))
+    let seeded: LaunchedAgentHub | null = null
+    let restarted: LaunchedAgentHub | null = null
+    let bodyFailed = false
+    let bodyFailure: unknown
+    let finalizationFailures: unknown[] = []
+
+    try {
+      seeded = await launchAgentHub({
+        userDataDir,
+        cleanupUserDataDir: false,
+        environment: { AGENTHUB_E2E_DECISION_FIXTURE: 'restart-seed' }
+      })
+      await expect(seeded.page.locator('.wb-root')).toBeVisible({ timeout: 20_000 })
+      await dismissAnnouncementIfPresent(seeded.page)
+      const permission = seeded.page.locator('.wb-decision-bar[data-turn-id][data-decision-id]')
+      await expect(permission).toBeVisible({ timeout: 20_000 })
+      await permission.getByRole('radio', { name: 'Allow once', exact: true }).check()
+      await permission.getByTestId('decision-primary').click()
+      await expect(permission).toBeHidden({ timeout: 10_000 })
+      await expect.poll(() => e2ePermissionExecutionCount(seeded!.app), { timeout: 20_000 }).toBe(1)
+
+      const seedCleanup = await finalizeAgentHubResources(seeded.resources, seeded.diagnostics)
+      seeded = null
+      if (seedCleanup.length === 1) throw seedCleanup[0]
+      if (seedCleanup.length > 1) throw new AggregateError(seedCleanup, 'E2E resolved-fixture seed cleanup failures')
+
+      restarted = await launchAgentHub({
+        userDataDir,
+        environment: { AGENTHUB_E2E_DECISION_FIXTURE: 'restart-recover' }
+      })
+      await expect(restarted.page.locator('.wb-root')).toBeVisible({ timeout: 20_000 })
+      await dismissAnnouncementIfPresent(restarted.page)
+      await expect.poll(() => e2ePermissionExecutionCount(restarted!.app), { timeout: 20_000 }).toBe(1)
+    } catch (error) {
+      bodyFailed = true
+      bodyFailure = error
+    } finally {
+      finalizationFailures = await finalizeRestartFixture(seeded, restarted, userDataDir)
+    }
+
+    const failures = bodyFailed ? [bodyFailure, ...finalizationFailures] : finalizationFailures
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, 'E2E resolved-fixture cleanup failures')
+  })
+
   test('navigates settings with real controls and focuses the composer', async () => {
     test.setTimeout(180_000)
     await withAgentHub(async ({ page }) => {

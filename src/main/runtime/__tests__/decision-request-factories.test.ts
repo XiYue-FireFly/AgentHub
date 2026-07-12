@@ -237,6 +237,7 @@ describe('decision request factories', () => {
   it('preserves exact ACP option IDs and rejects duplicate or blank IDs', () => {
     const created = createAcpDecisionRequest({
       owner,
+      agentId: 'codex',
       title: 'Allow ACP operation?',
       toolName: 'filesystem',
       options: [
@@ -248,20 +249,29 @@ describe('decision request factories', () => {
     expect(created.options.map(option => option.id)).toEqual(['deny.exact', 'allow.once/exact'])
     expect(created.allowCustom).toBe(false)
     expect(created.allowRemember).toBe(false)
-    expect(created.metadata).toEqual({ toolName: 'filesystem', action: 'acp_permission' })
+    expect(created.metadata).toEqual({ agentId: 'codex', toolName: 'filesystem', action: 'acp_permission' })
 
     expect(() => createAcpDecisionRequest({
       owner,
+      agentId: 'codex',
       title: 'Duplicate',
       toolName: 'filesystem',
       options: [{ optionId: 'same' }, { optionId: 'same' }]
     })).toThrow('non-empty and unique')
     expect(() => createAcpDecisionRequest({
       owner,
+      agentId: 'codex',
       title: 'Blank',
       toolName: 'filesystem',
       options: [{ optionId: '   ' }]
     })).toThrow('non-empty and unique')
+    expect(() => createAcpDecisionRequest({
+      owner,
+      agentId: 'codex',
+      title: 'Oversized',
+      toolName: 'filesystem',
+      options: [{ optionId: 'x'.repeat(1024 * 1024) }]
+    })).toThrow('bounded')
   })
 
   it('defaults ordinary Agent text to 16 KiB and enforces the 512 KiB ceiling', () => {
@@ -743,6 +753,7 @@ describe('decision request factories', () => {
     }
     const acpBase = {
       owner,
+      agentId: 'codex',
       title: 'ACP',
       toolName: 'filesystem',
       options: [{ optionId: 'allow-once' }]

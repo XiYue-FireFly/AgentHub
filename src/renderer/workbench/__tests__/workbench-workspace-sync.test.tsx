@@ -20,7 +20,6 @@ const observed = vi.hoisted(() => ({
   renameThread: null as ((threadId: string, title: string) => Promise<void>) | null
 }))
 
-vi.mock('../../glass/approval-dialog', () => ({ ApprovalDialog: () => null }))
 vi.mock('../CommandPalette', () => ({ CommandPalette: () => null }))
 vi.mock('../CreateWorkspaceDialog', () => ({ CreateWorkspaceDialog: () => null }))
 vi.mock('../NativeTitlebar', () => ({ NativeTitlebar: () => null }))
@@ -143,11 +142,6 @@ function installElectronApi() {
   let workspaces: WorkbenchWorkspace[] = [workspaceA, workspaceB, workspaceC]
   let activeWorkspaceId: string | null = workspaceA.id
   const api = {
-    agentic: {
-      getPendingApprovalIds: vi.fn(async () => stableEmptyArray),
-      resolveApproval: vi.fn(async () => true),
-      setApprovalOverride: vi.fn(async () => undefined)
-    },
     app: { onMenuCommand: vi.fn(() => vi.fn()) },
     goals: { get: vi.fn(async (threadId?: string | null): Promise<WorkbenchGoal | null> => goalFor(threadId)) },
     localAgents: { status: vi.fn(async () => stableEmptyArray) },

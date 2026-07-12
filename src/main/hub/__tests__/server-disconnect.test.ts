@@ -33,4 +33,24 @@ describe("HubServer client lifecycle", () => {
       sessionId: connectedMessage.clientId
     })
   })
+
+  it("sends a decision frame only to the authenticated client session", () => {
+    const server = new HubServer({ getAll: () => [] } as any)
+    const first = new FakeSocket()
+    const second = new FakeSocket()
+    ;(server as any).handleConnection(first)
+    ;(server as any).handleConnection(second)
+    const firstId = JSON.parse(first.send.mock.calls[0][0]).clientId
+
+    expect(server.sendToClient(firstId, {
+      type: "prompt:decision_request",
+      payload: { requestId: "request-1", sessionId: firstId }
+    })).toBe(true)
+    expect(first.send).toHaveBeenLastCalledWith(JSON.stringify({
+      type: "prompt:decision_request",
+      payload: { requestId: "request-1", sessionId: firstId }
+    }))
+    expect(second.send).toHaveBeenCalledOnce()
+    expect(server.sendToClient("unknown", { type: "prompt:decision_request" })).toBe(false)
+  })
 })

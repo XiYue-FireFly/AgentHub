@@ -20,6 +20,8 @@ const h = vi.hoisted(() => {
     agenticCalls: [] as any[],
     agenticRunner: null as null | ((params: any) => Promise<any>),
     clientWithThinking: false,
+    clientVerifier: null as null | ((resolved: any, opts: any) => void),
+    modelUpstream: undefined as string | undefined,
     modelTimeoutMs: undefined as number | undefined,
     runTimeoutMs: 10 * 60 * 1000,
     clientCalls: [] as any[],
@@ -53,6 +55,7 @@ vi.mock("../../providers/manager", () => ({
             supportsTools: true,
             supportsVision: false,
             supportsThinking: false,
+            upstreamModel: h.state.modelUpstream,
             timeoutMs: h.state.modelTimeoutMs
           }],
           capabilities: {
@@ -90,6 +93,7 @@ vi.mock("../../providers/manager", () => ({
           supportsTools: true,
           supportsVision: false,
           supportsThinking: false,
+          upstreamModel: h.state.modelUpstream,
           timeoutMs: h.state.modelTimeoutMs
         }],
         capabilities: {
@@ -119,6 +123,12 @@ vi.mock("../../providers/client", () => ({
     stream: (opts: any, cb: any) => {
       h.state.clientCalls.push({ resolved, opts, cb })
       h.state.clientCallbacks.push(cb)
+      try {
+        h.state.clientVerifier?.(resolved, opts)
+      } catch (error) {
+        cb.onError?.(error as Error)
+        return
+      }
       if (h.state.clientErrorCode) {
         cb.onError?.(Object.assign(new Error("provider cancelled"), { code: h.state.clientErrorCode }))
         return
@@ -171,6 +181,9 @@ import { Dispatcher, providerDirectAgentId } from "../dispatcher"
 import { installTaskTurnTracking } from "../task-turn-tracking"
 import { RuntimeProducerTracker } from "../../runtime/producer-tracker"
 import { drainRuntimeProducersForShutdown } from "../../runtime/shutdown-quiescence"
+import { canonicalProviderPayload, verifyDispatchEnvelope } from "../../runtime/dispatch-envelope"
+import { MultiModelLoopRunner } from "../../runtime/multi-model-loop"
+import { resolveDistinctFusionRoutes } from "../../runtime/multi-model-routes"
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -225,6 +238,8 @@ describe("provider direct dispatch", () => {
     h.state.agenticCalls = []
     h.state.agenticRunner = null
     h.state.clientWithThinking = false
+    h.state.clientVerifier = null
+    h.state.modelUpstream = undefined
     h.state.modelTimeoutMs = undefined
     h.state.runTimeoutMs = 10 * 60 * 1000
     h.state.clientCalls = []
@@ -262,6 +277,49 @@ describe("provider direct dispatch", () => {
       "provider:deepseek"
     ])
     expect(events.some(event => event.kind.startsWith("orchestrate:"))).toBe(false)
+  })
+
+  it.each([
+    {
+      label: "provider-direct",
+      run: (dispatcher: Dispatcher) => dispatcher.dispatchProviderDirect(
+        "use the attachment",
+        { providerId: "deepseek", modelId: "deepseek-v4-flash", source: "provider" },
+        { attachments: [{ id: "attachment-1" }], contextLayers: ["workspace"] }
+      )
+    },
+    {
+      label: "routed HTTP agent",
+      run: (dispatcher: Dispatcher) => dispatcher.dispatch(
+        "use the attachment",
+        "auto",
+        "codex",
+        { attachments: [{ id: "attachment-1" }], contextLayers: ["workspace"] }
+      )
+    }
+  ])("keeps attachment and context layers canonical for $label", async ({ run }) => {
+    h.state.bindingProtocol = "http"
+    h.state.clientVerifier = (resolved, opts) => {
+      const tools = opts.tools?.length ? opts.tools : []
+      verifyDispatchEnvelope(opts.dispatchEnvelope, canonicalProviderPayload({
+        providerId: resolved.provider.id,
+        modelId: resolved.model.id,
+        protocol: resolved.provider.capabilities.protocol,
+        systemPrompt: opts.systemPrompt || "",
+        messages: opts.messages,
+        tools,
+        toolChoice: tools.length && opts.toolChoice !== undefined ? opts.toolChoice : null,
+        thinking: opts.thinkingOverride,
+        attachments: opts.attachments || [],
+        contextLayers: opts.contextLayers || []
+      }))
+    }
+    const { dispatcher } = makeDispatcher()
+
+    const task = await run(dispatcher)
+
+    expect(task.status).toBe("completed")
+    expect(h.state.clientCalls).toHaveLength(1)
   })
 
   it.each([
@@ -768,6 +826,70 @@ describe("provider direct dispatch", () => {
     expect((dispatcher as any).busyCount.get("codex")).toBeUndefined()
   })
 
+  it("returns a verified loop-role envelope from an actual HTTP agentic fusion branch", async () => {
+    h.state.bindingProtocol = "http"
+    h.state.httpAgenticEnabled = true
+    h.state.modelUpstream = 'deepseek-v4-real'
+    const { dispatcher } = makeDispatcher()
+    const lineage = {
+      origin: 'internal:loop-candidate' as const,
+      policy: 'internal' as const,
+      rootInputId: 'root-input',
+      rootEnvelopeId: 'root-envelope',
+      rootPreparedTextHash: 'root-prepared-hash',
+      parentDispatchId: 'prior-judge-dispatch'
+    }
+    const handle = dispatcher.startDispatch('inspect the project', 'auto', 'codex', {
+      lineage,
+      parentDispatchId: lineage.parentDispatchId,
+      capabilityMode: 'read-only',
+      turnId: 'turn-loop-candidate',
+      threadId: 'thread-loop-candidate'
+    })
+    const [fusionRoute] = resolveDistinctFusionRoutes({
+      getBindings: () => [{ agentId: 'codex', providerId: 'deepseek', modelId: 'deepseek-v4-flash', protocol: 'http' }],
+      resolveBinding: agentId => agentId === 'codex'
+        ? {
+            provider: { id: 'deepseek' },
+            model: { id: 'deepseek-v4-flash', upstreamModel: h.state.modelUpstream }
+          }
+        : null
+    })
+
+    const task = await handle.result
+    const dispatchEnvelope = task.latestDispatchEnvelope
+    const runner = new MultiModelLoopRunner({} as any)
+
+    expect(task.status).toBe('completed')
+    expect(h.state.agenticCalls).toHaveLength(1)
+    expect(h.state.clientCalls).toHaveLength(1)
+    expect(fusionRoute).toMatchObject({
+      key: 'deepseek\u0000deepseek-v4-real',
+      providerId: 'deepseek',
+      modelId: 'deepseek-v4-flash'
+    })
+    expect(dispatchEnvelope).toMatchObject({
+      origin: 'internal:loop-candidate',
+      policy: 'internal',
+      rootInputId: lineage.rootInputId,
+      rootEnvelopeId: lineage.rootEnvelopeId,
+      rootPreparedTextHash: lineage.rootPreparedTextHash,
+      parentDispatchId: lineage.parentDispatchId
+    })
+    expect(() => (runner as any).assertBranchResult({
+      status: 'completed',
+      content: task.results.get('codex') || '',
+      dispatchEnvelope
+    }, {
+      role: 'candidate',
+      origin: lineage.origin,
+      route: fusionRoute,
+      prompt: 'inspect the project',
+      branchId: 'round-1-candidate-1',
+      options: { lineage }
+    }, new Set())).not.toThrow()
+  })
+
   it("releases agentic HTTP busy state after cancellation while the source ignores AbortSignal", async () => {
     h.state.bindingProtocol = "http"
     h.state.httpAgenticEnabled = true
@@ -1045,31 +1167,16 @@ describe("provider direct dispatch", () => {
     ]))
   })
 
-  it("permanently closes admission and cancels running tasks plus approvals when shutdown begins", async () => {
+  it("permanently closes admission and cancels running tasks when shutdown begins", async () => {
     h.state.clientDeferred = true
     const { dispatcher } = makeDispatcher()
-    let taskId = ""
-    dispatcher.on("task:created", task => { taskId = task.id })
     const running = dispatcher.dispatchProviderDirect(
       "running during shutdown",
       { providerId: "deepseek", modelId: "deepseek-v4-flash", source: "provider" }
     )
-    let resolveApproval!: (approved: boolean) => void
-    const approval = new Promise<boolean>(resolve => { resolveApproval = resolve })
-    const timer = setTimeout(() => resolveApproval(true), 60_000)
-    ;(dispatcher as any).pendingApprovals.set("shutdown-approval", {
-      resolve: resolveApproval,
-      timer,
-      taskId,
-      agentId: "provider:deepseek",
-      request: { id: "shutdown-approval", stepId: "step-1", tool: "exec", toolName: "exec" }
-    })
-
     dispatcher.beginShutdown()
 
-    await expect(approval).resolves.toBe(false)
     await expect(running).resolves.toMatchObject({ status: "cancelled" })
-    expect(dispatcher.getPendingApprovalIds()).toEqual([])
     await expect(dispatcher.dispatch("after shutdown", "auto", "codex")).rejects.toThrow(/shutting down/i)
     await expect(dispatcher.dispatchProviderDirect(
       "after shutdown",

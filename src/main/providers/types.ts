@@ -140,8 +140,8 @@ export interface AgentRouteBinding {
   maxOutputTokens?: number
   /** 温度（0-2） */
   temperature?: number
-  /** 传输协议：http（LLM provider）/ stdio-plain（本地 CLI 子进程，oneshot）/ acp（Agent Client Protocol 常驻 server，默认 http） */
-  protocol?: 'http' | 'stdio-plain' | 'acp'
+  /** 传输协议：http（LLM provider）/ stdio-plain（本地 CLI 子进程，oneshot）/ stdio-ndjson（受控结构化本地 IPC）/ acp（Agent Client Protocol 常驻 server，默认 http） */
+  protocol?: 'http' | 'stdio-plain' | 'stdio-ndjson' | 'acp'
   /** stdio 模式下 CLI 二进制路径（默认自动探测：环境变量 → 桌面版安装目录 → PATH） */
   binary?: string
   /** stdio 模式下命令行参数（空格分隔；含 {prompt} 占位符则 prompt 作为参数传入，否则走 stdin） */

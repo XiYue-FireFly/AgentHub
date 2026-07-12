@@ -59,7 +59,7 @@ describe('Hub threads IPC', () => {
 
   async function setup(
     overrides: Partial<Record<string, any>> = {},
-    depOverrides: Partial<Record<'hub' | 'dispatcher' | 'registry' | 'proxy' | 'memory' | 'runtimeProducers', any>> = {}
+    depOverrides: Partial<Record<'hub' | 'dispatcher' | 'registry' | 'proxy' | 'memory' | 'runtimeProducers' | 'decisionService' | 'isDeletionOwnerLive', any>> = {}
   ) {
     const knownTurnIds = new Set(['turn-1'])
     const runtimeStore = {
@@ -67,6 +67,8 @@ describe('Hub threads IPC', () => {
       createThread: vi.fn(async (input) => thread('created', input?.title ?? 'created')),
       renameThread: vi.fn(async (id, title) => thread(id, title)),
       deleteThread: vi.fn(async () => true),
+      beginThreadDeletion: vi.fn(async () => ({ status: 'started', work: { turns: [], decisionTurnIds: [] } })),
+      finalizeThreadDeletion: vi.fn(async () => ({ status: 'deleted', work: { turns: [], decisionTurnIds: [] } })),
       selectThread: vi.fn(async (id) => id),
       eventsSince: vi.fn(() => []),
       appendStreamEvent: vi.fn(async (turnId) => {
@@ -87,6 +89,7 @@ describe('Hub threads IPC', () => {
     }
     const mod = await import('../hub-threads-ipc')
     const defaultDispatcher = { getRecentTasks: vi.fn(() => []) }
+    const defaultDecisionService = { cancelTurn: vi.fn(async () => undefined) }
     const defaultRegistry = { getAll: vi.fn(() => []) }
     const defaultProxy = { getUrl: vi.fn(() => '') }
     const runtimeProducers = 'runtimeProducers' in depOverrides
@@ -100,7 +103,11 @@ describe('Hub threads IPC', () => {
       memory: 'memory' in depOverrides ? depOverrides.memory : () => ({ selectContextEntries: vi.fn(() => []) }),
       proxy: 'proxy' in depOverrides ? depOverrides.proxy : defaultProxy,
       getWorkspaceManager: vi.fn(),
-      runtimeProducers
+      runtimeProducers,
+      decisionService: 'decisionService' in depOverrides ? depOverrides.decisionService : defaultDecisionService,
+      isDeletionOwnerLive: 'isDeletionOwnerLive' in depOverrides
+        ? depOverrides.isDeletionOwnerLive
+        : () => true
     })
     return Object.assign(runtimeStore, { runtimeProducers })
   }
@@ -274,11 +281,157 @@ describe('Hub threads IPC', () => {
     expect(await handlers.get('threads:rename')?.({}, 'thread-1', 'Renamed')).toMatchObject({ id: 'thread-1', title: 'Renamed' })
     expect(runtimeStore.renameThread).toHaveBeenCalledWith('thread-1', 'Renamed')
 
-    expect(await handlers.get('threads:delete')?.({}, 'thread-1')).toBe(true)
-    expect(runtimeStore.deleteThread).toHaveBeenCalledWith('thread-1')
+    expect(await handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1')).toBe(true)
+    expect(runtimeStore.beginThreadDeletion).toHaveBeenCalledWith('thread-1', 7, expect.any(Function))
+    expect(runtimeStore.finalizeThreadDeletion).toHaveBeenCalledWith('thread-1', 7)
+    expect(runtimeStore.deleteThread).not.toHaveBeenCalled()
 
     expect(await handlers.get('threads:select')?.({}, 'thread-1')).toBe('thread-1')
     expect(runtimeStore.selectThread).toHaveBeenCalledWith('thread-1')
+  })
+
+  it('cancels a pending decision waiter before deleting its live Turn', async () => {
+    const calls: string[] = []
+    const decisionWaiter = deferred<'cancelled'>()
+    let continuationObservedCancellation = false
+    const decisionService = {
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`decision:${turnId}`)
+        decisionWaiter.resolve('cancelled')
+      })
+    }
+    const dispatcher = {
+      getRecentTasks: vi.fn(() => []),
+      preCancelTurn: vi.fn((turnId: string) => {
+        calls.push(`tombstone:${turnId}`)
+        return true
+      }),
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`dispatcher:${turnId}`)
+        await decisionWaiter.promise
+        continuationObservedCancellation = true
+        return true
+      })
+    }
+    const runtimeStore = await setup({
+      beginThreadDeletion: vi.fn(async () => ({
+        status: 'started',
+        work: {
+          turns: [{
+            id: 'turn-1',
+            threadId: 'thread-1',
+            ownerWebContentsId: 7,
+            status: 'awaiting-decision'
+          }],
+          decisionTurnIds: ['turn-1']
+        }
+      })),
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`runtime:${turnId}`)
+        return true
+      }),
+      finalizeThreadDeletion: vi.fn(async (threadId: string) => {
+        calls.push(`delete:${threadId}`)
+        return { status: 'deleted', work: { turns: [], decisionTurnIds: [] } }
+      })
+    }, { dispatcher, decisionService })
+
+    await expect(handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1')).resolves.toBe(true)
+
+    expect(continuationObservedCancellation).toBe(true)
+    expect(calls).toEqual([
+      'tombstone:turn-1',
+      'decision:turn-1',
+      'dispatcher:turn-1',
+      'runtime:turn-1',
+      'delete:thread-1'
+    ])
+  })
+
+  it('does not delete a thread containing a live Turn owned by another renderer', async () => {
+    const dispatcher = {
+      getRecentTasks: vi.fn(() => []),
+      preCancelTurn: vi.fn(),
+      cancelTurn: vi.fn(async () => true)
+    }
+    const decisionService = { cancelTurn: vi.fn(async () => undefined) }
+    const runtimeStore = await setup({
+      beginThreadDeletion: vi.fn(async () => ({ status: 'forbidden', work: { turns: [], decisionTurnIds: [] } }))
+    }, { dispatcher, decisionService })
+
+    await expect(handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1')).resolves.toBe(false)
+
+    expect(dispatcher.preCancelTurn).not.toHaveBeenCalled()
+    expect(decisionService.cancelTurn).not.toHaveBeenCalled()
+    expect(runtimeStore.finalizeThreadDeletion).not.toHaveBeenCalled()
+  })
+
+  it('passes the main-process owner liveness predicate into the deletion reservation', async () => {
+    const isDeletionOwnerLive = vi.fn((ownerWebContentsId: number) => ownerWebContentsId === 8)
+    const beginThreadDeletion = vi.fn(async (_threadId: string, _senderId: number, isOwnerLive: (id: number) => boolean) => {
+      expect(isOwnerLive(8)).toBe(true)
+      expect(isOwnerLive(9)).toBe(false)
+      return { status: 'not-found', work: { turns: [], decisionTurnIds: [] } }
+    })
+    const runtimeStore = await setup({ beginThreadDeletion }, { isDeletionOwnerLive })
+
+    await expect(handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1')).resolves.toBe(false)
+
+    expect(beginThreadDeletion).toHaveBeenCalledWith('thread-1', 7, isDeletionOwnerLive)
+    expect(isDeletionOwnerLive).toHaveBeenCalledWith(8)
+    expect(isDeletionOwnerLive).toHaveBeenCalledWith(9)
+  })
+
+  it('keeps the durable deletion gate when cancellation cleanup fails', async () => {
+    const calls: string[] = []
+    const decisionService = {
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`decision:${turnId}`)
+        if (turnId === 'turn-1') throw new Error('decision database unavailable')
+      })
+    }
+    const dispatcher = {
+      getRecentTasks: vi.fn(() => []),
+      preCancelTurn: vi.fn((turnId: string) => {
+        calls.push(`tombstone:${turnId}`)
+        return true
+      }),
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`dispatcher:${turnId}`)
+        return true
+      })
+    }
+    const runtimeStore = await setup({
+      beginThreadDeletion: vi.fn(async () => ({
+        status: 'started',
+        work: {
+          turns: [
+            { id: 'turn-1', threadId: 'thread-1', ownerWebContentsId: 7, status: 'awaiting-decision' },
+            { id: 'turn-2', threadId: 'thread-1', ownerWebContentsId: 7, status: 'running' }
+          ],
+          decisionTurnIds: ['turn-1', 'turn-2']
+        }
+      })),
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`runtime:${turnId}`)
+        return true
+      })
+    }, { dispatcher, decisionService })
+
+    await expect(handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1'))
+      .rejects.toThrow(/deletion.*progress/i)
+
+    expect(calls).toEqual([
+      'tombstone:turn-1',
+      'tombstone:turn-2',
+      'decision:turn-1',
+      'decision:turn-2',
+      'dispatcher:turn-1',
+      'dispatcher:turn-2',
+      'runtime:turn-1',
+      'runtime:turn-2'
+    ])
+    expect(runtimeStore.finalizeThreadDeletion).not.toHaveBeenCalled()
   })
 
   it('delegates runtime snapshot and eventsSince queries', async () => {

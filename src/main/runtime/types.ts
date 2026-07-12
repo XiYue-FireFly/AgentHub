@@ -1,6 +1,7 @@
 import type { WorkbenchTurnStatus } from "../../shared/turn-status"
 import type { DecisionRequest, DecisionResolution, DecisionState } from "../../shared/decision-contract"
-import type { TurnCreateInputLike } from "../../shared/ipc-contract"
+import type { MultiModelFusionConfig, TurnCreateInputLike } from "../../shared/ipc-contract"
+import type { PromptEnvelope } from "../../shared/prompt-contract"
 
 export type { WorkbenchTurnStatus } from "../../shared/turn-status"
 
@@ -112,10 +113,15 @@ export interface WorkbenchTurn {
   customSchedule?: SchedulePreview
   targetAgent?: string | null
   modelSelection?: ModelSelection
+  multiModelFusion?: MultiModelFusionConfig
   thinking?: any
   status: WorkbenchTurnStatus
   taskIds: string[]
   ownerWebContentsId?: number
+  retryOfTurnId?: string
+  displayOriginalPrompt?: string
+  effectivePrompt?: string
+  promptEnvelope?: PromptEnvelope
   createdAt: number
   completedAt?: number
 }
@@ -157,6 +163,12 @@ export interface RuntimeEvent {
     | "turn:summary"
     | "decision:requested"
     | "decision:resolved"
+    | "prompt:preparation-started"
+    | "prompt:candidate-attempted"
+    | "prompt:prepared"
+    | "prompt:preparation-cancelled"
+    | "prompt:preparation-failed"
+    | "dispatch:prepared"
   agentId?: string
   payload: any
   createdAt: number
@@ -178,8 +190,16 @@ export interface QueuedThreadSubmission {
   input: TurnCreateInputLike
   source: "create" | "retry"
   retryOfTurnId?: string
+  retryStrategy?: "reuse-selection" | "reoptimize"
   state: "queued" | "starting"
   createdAt: number
+  admissionSequence: number
+}
+
+export interface ThreadDeletionGate {
+  threadId: string
+  ownerWebContentsId: number
+  startedAt: number
 }
 
 export interface PersistedRuntime {
@@ -191,6 +211,8 @@ export interface PersistedRuntime {
   hiddenTaskTurnIds: string[]
   decisions: DurableDecisionRecord[]
   queuedSubmissions: QueuedThreadSubmission[]
+  deletingThreads: ThreadDeletionGate[]
+  nextSubmissionAdmissionSequence: number
   activeThreadId: string | null
   nextSeqByThread: Record<string, number>
 }

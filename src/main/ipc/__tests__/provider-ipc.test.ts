@@ -218,7 +218,7 @@ describe('provider IPC', () => {
       protocol: 'shell',
       thinking: { mode: 'auto', level: 'medium' },
       binary: 'codex'
-    })).toThrow(new IpcPayloadValidationError('routing:setBinding', 'binding.protocol must be one of: http, stdio-plain, acp'))
+    })).toThrow(new IpcPayloadValidationError('routing:setBinding', 'binding.protocol must be one of: http, stdio-plain, stdio-ndjson, acp'))
 
     expect(() => electronMock.handlers.get('routing:setBinding')?.({}, {
       agentId: 'codex',
@@ -253,5 +253,26 @@ describe('provider IPC', () => {
     expect(providerMgr.setStrategy).not.toHaveBeenCalled()
     expect(providerMgr.setBindingThinking).not.toHaveBeenCalled()
     expect(registerAgentsFromBindings).not.toHaveBeenCalled()
+  })
+
+  it('accepts controlled NDJSON local routing bindings and syncs their adapter registration', async () => {
+    const providerMgr = new FakeProviderManager()
+    const registerAgentsFromBindings = vi.fn()
+    const { registerProviderIpc } = await import('../provider-ipc')
+    registerProviderIpc({ providerMgr, registerAgentsFromBindings })
+
+    const binding = {
+      agentId: 'structured-cli',
+      providerId: 'local-cli',
+      modelId: 'local',
+      protocol: 'stdio-ndjson',
+      binary: 'C:\\Tools\\structured-cli.cmd',
+      args: 'serve',
+      thinking: { mode: 'auto', level: 'medium', collapseInUI: true }
+    }
+
+    await expect(electronMock.handlers.get('routing:setBinding')?.({}, binding)).resolves.toEqual([])
+    expect(providerMgr.upsertBinding).toHaveBeenCalledWith(binding)
+    expect(registerAgentsFromBindings).toHaveBeenCalledTimes(1)
   })
 })

@@ -27,6 +27,8 @@ import { buildProviderClient, ProviderClient } from "../providers/client"
 import { ChatCompletionMessage, ChatCompletionRequest, ProviderDefinition, ModelDefinition, ThinkingConfig } from "../providers/types"
 import { createLogger } from '../logger'
 import { getLocalToken } from '../store'
+import { canonicalProviderPayload, createDispatchEnvelope, createDispatchId } from '../runtime/dispatch-envelope'
+import { appendAppEventLog } from '../runtime/app-event-log'
 
 /** F-N5: constant-time token compare aligned with HubServer */
 function tokensEqual(provided: string, expected: string): boolean {
@@ -56,6 +58,11 @@ interface InboundOverrides {
   tools?: any[]
   toolChoice?: any
 }
+
+type ProxyIngressOrigin =
+  | 'external-proxy:openai'
+  | 'external-proxy:anthropic'
+  | 'external-proxy:agent'
 
 const BREAK_AFTER_FAILS = 3
 const BREAK_FOR_MS = 60_000
@@ -311,7 +318,8 @@ export class LocalProxy extends EventEmitter {
     const tools = Array.isArray((parsed as any).tools) && (parsed as any).tools.length ? (parsed as any).tools : undefined
     await this.streamWithFailover(res, "openai", noStream, parsed.model || candidates[0].model.id, candidates, rest,
       sysParts.length ? sysParts.join("\n\n") : undefined,
-      { temperature: parsed.temperature, maxTokens: parsed.max_tokens, tools, toolChoice: (parsed as any).tool_choice })
+      { temperature: parsed.temperature, maxTokens: parsed.max_tokens, tools, toolChoice: (parsed as any).tool_choice },
+      'external-proxy:openai')
   }
 
   /* ---------------- Anthropic 原生入站（Claude Code 接管） ---------------- */
@@ -343,7 +351,8 @@ export class LocalProxy extends EventEmitter {
     const tools = anthropicToolsToOpenai(parsed.tools)
     const toolChoice = anthropicToolChoiceToOpenai(parsed.tool_choice)
     await this.streamWithFailover(res, "anthropic", noStream, parsed.model || candidates[0].model.id, candidates, messages, systemPrompt,
-      { temperature: parsed.temperature, maxTokens: parsed.max_tokens, tools, toolChoice })
+      { temperature: parsed.temperature, maxTokens: parsed.max_tokens, tools, toolChoice },
+      'external-proxy:anthropic')
   }
 
   private async countTokens(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -376,7 +385,7 @@ export class LocalProxy extends EventEmitter {
       return
     }
     await this.streamWithFailover(res, "openai", !!parsed.noStream, candidates[0].model.id, candidates,
-      parsed.messages, parsed.systemPrompt, {})
+      parsed.messages, parsed.systemPrompt, {}, 'external-proxy:agent')
   }
 
   /* ---------------- 流式引擎：lazy 首字节 + 故障转移 ---------------- */
@@ -389,7 +398,8 @@ export class LocalProxy extends EventEmitter {
     candidates: Candidate[],
     messages: ChatCompletionMessage[],
     systemPrompt: string | undefined,
-    overrides: InboundOverrides
+    overrides: InboundOverrides,
+    ingressOrigin: ProxyIngressOrigin
   ): Promise<void> {
     let lastErr: Error | null = null
     for (const cand of candidates) {
@@ -397,7 +407,7 @@ export class LocalProxy extends EventEmitter {
       const start = Date.now()
       this.emit("request", { model: cand.model.id, provider: cand.provider.id })
       try {
-        await this.tryOne(res, wire, noStream, inboundModel, cand, messages, systemPrompt, overrides)
+        await this.tryOne(res, wire, noStream, inboundModel, cand, messages, systemPrompt, overrides, ingressOrigin)
         this.breakerSuccess(cand.provider.id)
         this.emit("response", { model: cand.model.id, provider: cand.provider.id, durationMs: Date.now() - start })
         return
@@ -432,7 +442,8 @@ export class LocalProxy extends EventEmitter {
     cand: Candidate,
     messages: ChatCompletionMessage[],
     systemPrompt: string | undefined,
-    overrides: InboundOverrides
+    overrides: InboundOverrides,
+    ingressOrigin: ProxyIngressOrigin
   ): Promise<void> {
     const binding: any = {
       agentId: cand.agentId,
@@ -452,6 +463,36 @@ export class LocalProxy extends EventEmitter {
     const emitter = wire === "anthropic"
       ? new AnthropicWire(res, inboundModel)
       : new OpenAIWire(res, inboundModel)
+    const tools = overrides.tools?.length ? overrides.tools : []
+    const dispatchEnvelope = createDispatchEnvelope({
+      dispatchId: createDispatchId(),
+      lineage: {
+        origin: ingressOrigin,
+        policy: 'passthrough'
+      },
+      payload: canonicalProviderPayload({
+        providerId: cand.provider.id,
+        modelId: cand.model.id,
+        protocol: cand.provider.capabilities.protocol,
+        systemPrompt: systemPrompt || '',
+        messages,
+        tools,
+        toolChoice: tools.length && overrides.toolChoice !== undefined ? overrides.toolChoice : null,
+        thinking: cand.thinking
+      })
+    })
+    appendAppEventLog('dispatch:prepared', {
+      dispatchId: dispatchEnvelope.dispatchId,
+      providerId: dispatchEnvelope.providerId,
+      modelId: dispatchEnvelope.modelId,
+      canonicalPayloadHash: dispatchEnvelope.canonicalPayloadHash,
+      origin: dispatchEnvelope.origin,
+      policy: dispatchEnvelope.policy,
+      rootInputId: dispatchEnvelope.rootInputId,
+      rootEnvelopeId: dispatchEnvelope.rootEnvelopeId,
+      rootPreparedTextHash: dispatchEnvelope.rootPreparedTextHash,
+      parentDispatchId: dispatchEnvelope.parentDispatchId
+    })
 
     let content = ""
     let thinkingTxt = ""
@@ -470,7 +511,7 @@ export class LocalProxy extends EventEmitter {
       arm(FIRST_BYTE_MS)
 
       client.stream(
-        { messages, systemPrompt, thinkingOverride: cand.thinking, signal: controller.signal, tools: overrides.tools, toolChoice: overrides.toolChoice },
+        { messages, systemPrompt, thinkingOverride: cand.thinking, signal: controller.signal, tools: overrides.tools, toolChoice: overrides.toolChoice, dispatchEnvelope },
         {
           onContent: (delta) => {
             content += delta

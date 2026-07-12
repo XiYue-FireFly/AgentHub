@@ -21,6 +21,7 @@ function deferred<T>() {
 function renderSidebar(options: {
   restoredWidth?: Promise<unknown>
   search?: string
+  decisionCount?: Record<string, number>
 } = {}) {
   const storeGet = vi.fn(() => options.restoredWidth ?? Promise.resolve(null))
   const storeSet = vi.fn(async () => undefined)
@@ -67,6 +68,7 @@ function renderSidebar(options: {
         setSearch={vi.fn()}
         proxyHost="127.0.0.1"
         pendingThreadId={null}
+        decisionCount={options.decisionCount ?? {}}
       />
       <main className="wb-main">Main content</main>
       <section className="wb-bottom-dock">Git dock</section>
@@ -161,6 +163,13 @@ describe('SessionSidebar layout and narrow-viewport accessibility', () => {
     fireEvent.click(threadButton)
     expect(view.selectWorkspace).toHaveBeenCalledWith('workspace-1')
     expect(view.selectThread).toHaveBeenCalledWith('thread-1')
+  })
+
+  it('renders an accessible pending-decision count badge for a thread', () => {
+    const view = renderSidebar({ decisionCount: { 'thread-1': 2 } })
+
+    const badge = view.getByRole('status', { name: '2 pending decisions' })
+    expect(badge.textContent).toBe('2')
   })
 
   it('gives narrow-viewport icon controls robust names, 24px targets, and a visible focus style', () => {

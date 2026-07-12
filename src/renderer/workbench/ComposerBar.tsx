@@ -9,6 +9,9 @@ import { normalizeScheduleForStorage } from './customSchedule'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { formatContextWindow } from './contextCapacity'
 import { PromptEnhancer } from './PromptEnhancer'
+import { DecisionBar, type DecisionBarSubmitResult } from './decisions/DecisionBar'
+import type { DecisionItem, DraftDecisionItem } from './decisions/decisionAdapters'
+import type { DecisionSubmission } from '../../shared/decision-contract'
 import { defaultDialogPath, rememberDialogPath } from '../appearance'
 import {
   addPaletteQuery,
@@ -45,7 +48,7 @@ type PickerAgentRow =
   | { source: 'local-agent'; id: string; label: string; subtitle: string; agentId: string }
   | { source: 'provider-agent'; id: string; label: string; subtitle: string; providerId: string; modelCount: number }
 type PickerModelRow = { source: 'provider-model'; id: string; label: string; subtitle: string; providerId: string; modelId: string; contextWindow?: number }
-export type ComposerSendOverrides = { mode?: DispatchPreset; targetAgent?: string | null; customSchedule?: SchedulePreview | null; modelSelection?: ModelSelection | null }
+export type ComposerSendOverrides = { mode?: DispatchPreset; targetAgent?: string | null; customSchedule?: SchedulePreview | null; modelSelection?: ModelSelection | null; multiModelFusion?: boolean }
 export type ComposerSendFailureReason = 'busy' | 'routing-unavailable' | 'schedule-target-unavailable' | 'schedule-unavailable' | 'create-failed' | 'cancelled' | 'owner-changed' | 'send-failed'
 export type ComposerSendResult = { ok: true } | { ok: false; reason: ComposerSendFailureReason; error?: string }
 type ComposerSubmission = {
@@ -73,6 +76,8 @@ export function ComposerBar({
   setThinking,
   schedules,
   scheduleForMode,
+  multiModelFusion = false,
+  setMultiModelFusion,
   sending,
   onSend,
   onCancel,
@@ -89,7 +94,12 @@ export function ComposerBar({
   onRefreshProviders,
   externalAttachments,
   onExternalAttachmentsConsumed,
-  gitBranchNode
+  gitBranchNode,
+  decisionItem = null,
+  decisionPosition = 0,
+  decisionCount = 0,
+  onDecisionSubmit,
+  onDraftDecision
 }: {
   mode: DispatchPreset
   setMode: (mode: DispatchPreset) => void
@@ -101,6 +111,8 @@ export function ComposerBar({
   setThinking: (thinking: ComposerThinkingConfig) => void
   schedules: SchedulePreview[]
   scheduleForMode?: (preset: DispatchPreset) => SchedulePreview | undefined
+  multiModelFusion?: boolean
+  setMultiModelFusion?: (enabled: boolean) => void
   sending: boolean
   onSend: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: ComposerSendOverrides) => Promise<ComposerSendResult>
   onCancel: () => void
@@ -121,8 +133,17 @@ export function ComposerBar({
   threadId?: string | null
   turns?: WorkbenchTurn[]
   events?: RuntimeEvent[]
+  decisionItem?: DecisionItem | null
+  decisionPosition?: number
+  decisionCount?: number
+  onDecisionSubmit?: (item: DecisionItem, submission: DecisionSubmission) => Promise<DecisionBarSubmitResult> | DecisionBarSubmitResult
+  onDraftDecision?: (decision: DraftDecisionItem) => void
 }) {
   const [text, setText] = useState('')
+  const [draftRevision, setDraftRevision] = useState(0)
+  const [draftHash, setDraftHash] = useState<string | null>(null)
+  const [draftHashText, setDraftHashText] = useState<string | null>(null)
+  const [focusAfterDecisionId, setFocusAfterDecisionId] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<WorkbenchAttachment[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
   const [commands, setCommands] = useState<WorkbenchCommand[]>([])
@@ -165,9 +186,11 @@ export function ComposerBar({
   const ownerKey = `${workspaceId || ''}\u0000${threadId || ''}`
   const ownerKeyRef = useRef(ownerKey)
   const textRef = useRef(text)
+  const draftRevisionRef = useRef(draftRevision)
   const attachmentsRef = useRef(attachments)
   const quickRoleRef = useRef(quickRole)
   textRef.current = text
+  draftRevisionRef.current = draftRevision
   attachmentsRef.current = attachments
   quickRoleRef.current = quickRole
   ownerKeyRef.current = ownerKey
@@ -232,6 +255,32 @@ export function ComposerBar({
   }, [text])
 
   useEffect(() => {
+    let current = true
+    setDraftHash(null)
+    setDraftHashText(null)
+    void sha256Text(text).then(hash => {
+      if (!current) return
+      setDraftHash(hash)
+      setDraftHashText(text)
+    }).catch(() => {
+      // Local decisions fail closed when Web Crypto is unavailable.
+      if (current) setDraftHash(null)
+    })
+    return () => { current = false }
+  }, [text])
+
+  useEffect(() => {
+    if (!focusAfterDecisionId || decisionItem?.id === focusAfterDecisionId) return
+    const timer = window.setTimeout(() => {
+      const nextPrimary = textareaRef.current?.closest('.wb-composer')?.querySelector<HTMLElement>('[data-decision-primary]:not(:disabled)')
+      if (nextPrimary) nextPrimary.focus()
+      else textareaRef.current?.focus()
+      setFocusAfterDecisionId(null)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [decisionItem?.id, focusAfterDecisionId])
+
+  useEffect(() => {
     window.electronAPI.commands.list().then(setCommands).catch(() => {})
     refreshApprovalMode().catch(() => {})
   }, [refreshApprovalMode])
@@ -267,6 +316,12 @@ export function ComposerBar({
         mode,
         targetAgent,
         modelSelection: modelSelection || undefined,
+        multiModelFusion: {
+          enabled: multiModelFusion === true,
+          maxCandidates: 3,
+          maxRounds: 3,
+          allowExecutor: true
+        },
         attachments,
         customSchedule: selectedSchedule
       }).then(result => {
@@ -463,6 +518,7 @@ export function ComposerBar({
     mode,
     targetAgent,
     modelSelection,
+    multiModelFusion: multiModelFusion === true,
     schedule: scheduleSnapshotForSubmission(
       mode,
       !targetAgent && modelSelection?.source !== 'provider' ? scheduleForMode?.(mode) : undefined
@@ -547,6 +603,7 @@ export function ComposerBar({
       mode,
       targetAgent,
       modelSelection,
+      multiModelFusion: multiModelFusion === true,
       schedule: scheduleSnapshotForSubmission(
         mode,
         quickSchedule || (!targetAgent && modelSelection?.source !== 'provider' ? scheduleForMode?.(mode) : undefined)
@@ -807,6 +864,40 @@ export function ComposerBar({
     }
   }
 
+  const updateTextFromUser = (nextText: string) => {
+    setText(nextText)
+    setDraftRevision(current => {
+      const nextRevision = current + 1
+      draftRevisionRef.current = nextRevision
+      return nextRevision
+    })
+  }
+
+  const submitInlineDecision = async (submission: DecisionSubmission): Promise<DecisionBarSubmitResult> => {
+    const item = decisionItem
+    if (!item || !onDecisionSubmit) return { accepted: false }
+
+    const result = await onDecisionSubmit(item, submission)
+    if (!decisionAccepted(result)) return result
+
+    if (item.origin === 'draft') {
+      const currentRevision = draftRevisionRef.current
+      const currentText = textRef.current
+      const currentHash = await sha256Text(currentText).catch(() => null)
+      const draftStillMatches = currentRevision === item.draftRevision && currentHash === item.draftHash
+      const selectedOptionId = submission.selectedOptionIds?.[0]
+      const mappedValue = selectedOptionId ? item.valuesByOptionId[selectedOptionId] : undefined
+      const customText = typeof submission.customText === 'string'
+        ? submission.customText.slice(0, item.request.customInput?.maxChars ?? 8_000)
+        : undefined
+      const nextText = customText ?? mappedValue
+      if (draftStillMatches && typeof nextText === 'string') setText(nextText)
+    }
+
+    setFocusAfterDecisionId(item.id)
+    return result
+  }
+
   return (
     <div
       className={'wb-composer-wrap' + (attachments.length ? ' has-attachments' : '')}
@@ -817,13 +908,21 @@ export function ComposerBar({
       onDrop={handleDrop}
     >
       <div className="wb-composer">
+        {decisionItem && (
+          <DecisionBar
+            item={decisionItem}
+            position={decisionPosition || 1}
+            count={decisionCount || 1}
+            onSubmit={submitInlineDecision}
+          />
+        )}
         <div className="wb-composer-input-layer">
           <textarea
             ref={textareaRef}
             className="wb-composer-input"
             value={text}
             onChange={e => {
-              setText(e.target.value)
+              updateTextFromUser(e.target.value)
               setCursorIndex(e.target.selectionStart ?? e.target.value.length)
             }}
             onClick={syncCursor}
@@ -1061,10 +1160,24 @@ export function ComposerBar({
                 , document.body
               )}
             </div>
-            {!sending && text.trim() && (
+            <button
+              type="button"
+              className={'wb-icon-button' + (multiModelFusion ? ' active' : '')}
+              onClick={() => setMultiModelFusion?.(!multiModelFusion)}
+              disabled={sending || !setMultiModelFusion}
+              aria-pressed={multiModelFusion}
+              title={tr('多模型融合', 'Multi-model fusion')}
+              aria-label={tr('多模型融合', 'Multi-model fusion')}
+            >
+              <Icon d={IC.broadcast} size={16} />
+            </button>
+            {!sending && threadId && text.trim() && draftHash && draftHashText === text && onDraftDecision && (
               <PromptEnhancer
                 text={text}
-                onEnhanced={enhanced => setText(enhanced)}
+                threadId={threadId}
+                draftRevision={draftRevision}
+                draftHash={draftHash}
+                onDraftDecision={onDraftDecision}
                 disabled={sending}
               />
             )}
@@ -1485,6 +1598,7 @@ function createComposerSubmission(input: {
   mode: DispatchPreset
   targetAgent: string | null
   modelSelection: ModelSelection | null
+  multiModelFusion: boolean
   schedule?: SchedulePreview
   quickRole: ComposerSubmission['quickRole']
   clearDraftOnSuccess: boolean
@@ -1497,12 +1611,13 @@ function createComposerSubmission(input: {
     draftText: input.draftText,
     attachments: input.attachments.map(item => ({ ...item })),
     overrides: quickOverrides
-      ? { ...quickOverrides, customSchedule: cloneSchedule(input.schedule) }
+      ? { ...quickOverrides, customSchedule: cloneSchedule(input.schedule), multiModelFusion: input.multiModelFusion }
       : {
           mode: input.mode,
           targetAgent: input.targetAgent,
           modelSelection: input.modelSelection ? { ...input.modelSelection } : null,
-          customSchedule: cloneSchedule(input.schedule)
+          customSchedule: cloneSchedule(input.schedule),
+          multiModelFusion: input.multiModelFusion
         },
     clearDraftOnSuccess: input.clearDraftOnSuccess,
     quickRole: input.quickRole,
@@ -1588,6 +1703,17 @@ function scheduleDisplayLabel(schedule: SchedulePreview): string {
   if (getLang() === 'zh' && schedule.labelZh) return schedule.labelZh
   if (getLang() === 'en' && schedule.labelEn) return schedule.labelEn
   return schedule.label
+}
+
+function decisionAccepted(result: DecisionBarSubmitResult): boolean {
+  return result === true || (typeof result === 'object' && result !== null && result.accepted === true)
+}
+
+export async function sha256Text(value: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle
+  if (!subtle) throw new Error('Web Crypto is unavailable')
+  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function agentDisplayName(agentId: string): string {

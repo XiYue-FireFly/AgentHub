@@ -4,6 +4,7 @@ import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { createLogger } from '../../logger'
 import type { LocalAgentAdapterLifecycle } from '../../runtime/types'
+import type { AgentDecisionResultEvent } from '../../agentic/user-decision-transport'
 
 const log = createLogger('StdioAdapter')
 const STDOUT_BUFFER_MAX = 256 * 1024
@@ -86,13 +87,15 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
   id: string
   name: string
   binary = ''
-  protocol = 'stdio-plain' as const
+  protocol: 'stdio-plain' | 'stdio-ndjson' = 'stdio-plain'
   mode = 'oneshot' as const
+  decisionContinuation: 'none' | 'live' | 'checkpoint' = 'none'
+  onProtocolEvent: ((event: unknown) => void) | null = null
   /** oneshot 参数；可被路由绑定的 args 覆盖 */
   execArgs: string[]
 
   /** 活动解析器（如 claude stream-json）。set 则按行缓冲 stdout、逐行解析为活动步骤/最终内容；
-      null（默认）= 原样把 stdout 透传给 onOutput，行为与历史完全一致（零回归）。 */
+      null（默认）= stdio-plain 原样透传。受控 stdio-ndjson 即使没有 parser 也按行检查协议帧。 */
   activityParser: ((line: string) => { steps?: any[]; content?: string; usage?: any } | null) | null = null
   /** 解析出的活动步骤回调（dispatcher 透传成 {kind:'activity'} 流事件） */
   onActivity: ((step: any) => void) | null = null
@@ -218,7 +221,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     this.proc.stdout?.on('data', (d: Buffer) => {
       const text = this.outDecoder ? this.outDecoder.decode(d, { stream: true }) : d.toString()
       if (!text) return
-      if (this.activityParser) {
+      if (this.activityParser || this.protocol === 'stdio-ndjson') {
         this.handleActivityChunk(text)
       } else {
         this.buffer = appendBoundedStdoutBuffer(this.buffer, text)
@@ -239,7 +242,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     })
     this.proc.on('exit', (code) => {
       // 活动模式：进程退出前刷掉最后一行（结果行常无尾随换行）
-      if (this.activityParser && this.lineBuf.trim()) {
+      if ((this.activityParser || this.protocol === 'stdio-ndjson') && this.lineBuf.trim()) {
         this.consumeActivityLine(this.lineBuf)
         this.lineBuf = ''
       }
@@ -261,7 +264,9 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
 
     try {
       if (!viaArg) this.proc.stdin?.write(prompt)
-      this.proc.stdin?.end()
+      if (!(this.protocol === 'stdio-ndjson' && this.decisionContinuation === 'live')) {
+        this.proc.stdin?.end()
+      }
     } catch (e: any) {
       // Kill process on stdin write failure to prevent hanging
       try { this.proc?.kill() } catch { /* ignore */ }
@@ -282,8 +287,23 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
 
   /** 单行 → 活动步骤（onActivity）/ 最终内容（handleOutput）。解析器抛错则回退把原行当内容透传。 */
   private consumeActivityLine(line: string): void {
+    if (this.protocol === 'stdio-ndjson') {
+      let frame: unknown
+      try { frame = JSON.parse(line) } catch { frame = undefined }
+      if (
+        frame !== null && typeof frame === 'object' && !Array.isArray(frame) &&
+        (frame as Record<string, unknown>).type === 'decision_request'
+      ) {
+        this.onProtocolEvent?.(frame)
+        return
+      }
+    }
     const parser = this.activityParser
-    if (!parser) return
+    if (!parser) {
+      this.buffer = appendBoundedStdoutBuffer(this.buffer, line + '\n')
+      this.handleOutput(line + '\n')
+      return
+    }
     let parsed: { steps?: any[]; content?: string; usage?: any } | null
     try {
       parsed = parser(line)
@@ -296,6 +316,17 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     }
     if (parsed.usage && this.onUsage) this.onUsage(parsed.usage)
     if (parsed.content) this.handleOutput(parsed.content)
+  }
+
+  async resumeDecision(result: AgentDecisionResultEvent): Promise<void> {
+    if (
+      this.protocol !== 'stdio-ndjson' ||
+      this.decisionContinuation !== 'live' ||
+      !this.proc?.stdin?.writable
+    ) {
+      throw new Error('Structured live decision continuation is unavailable.')
+    }
+    this.proc.stdin.write(JSON.stringify(result) + '\n')
   }
 
   /** stderr 解码：先 UTF-8，出现替换符则按 GBK 重解（Windows 中文 cmd 错误信息） */

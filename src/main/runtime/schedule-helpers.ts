@@ -1,16 +1,90 @@
 import type { ScheduleStep, SchedulePreview, ModelSelection } from './types'
+import type { DecisionOwner } from '../../shared/decision-contract'
+import type { PromptDispatchLineage } from '../../shared/prompt-contract'
 import type { RouteDecision } from '../hub/router'
 import type { ChatCompletionMessage } from '../providers/types'
 import type { Dispatcher } from '../hub/dispatcher'
+import type { UserDecisionAdapter } from '../agentic/user-decision-adapter'
 import { getWorkbenchRuntimeStore } from './store'
 import { getApprovalConfig } from '../agentic/approval'
-import { evaluateGuardVerdict, emitGuardVerdict, executorVerdictNeedsApproval, requestGuardApproval } from './guard-approval-service'
-import { guardShouldBlockExecutor } from './guards'
+import { GuardDecisionAdapter } from './decision-adapters/guard-decision-adapter'
+import {
+  explicitGuardVerdictFromText,
+  guardShouldBlockExecutor,
+  riskVerdictForText,
+  type GuardVerdict
+} from './guards'
 import { compactChatMessages, compactTextByTokenBudget } from './token-economy'
+import { childDispatchLineage } from './dispatch-envelope'
 
 const runtimeStore = getWorkbenchRuntimeStore()
 
-const guardStore = { appendSystemEvent: (tId: string, trId: string, kind: any, agentId: string, payload: any) => runtimeStore.appendSystemEvent(tId, trId, kind, agentId, payload) }
+type TrustedTurnOwner = Extract<DecisionOwner, { type: 'turn' }>
+
+type ScheduleGuardContext = {
+  workspaceId: string | null
+  turnId: string
+  threadId: string
+  guardDecisionAdapter?: Pick<GuardDecisionAdapter, 'request'>
+  guardDecisionOwner?: TrustedTurnOwner | null
+}
+
+export function evaluateGuardVerdict(reviewText: string, role: string): GuardVerdict {
+  return explicitGuardVerdictFromText(reviewText) || riskVerdictForText(reviewText, role)
+}
+
+export function executorVerdictNeedsApproval(verdict: GuardVerdict, role: string): boolean {
+  return role === 'executor' && (verdict.level === 'high' || verdict.status === 'block')
+}
+
+async function emitGuardVerdict(
+  threadId: string,
+  turnId: string,
+  agentId: string,
+  role: string,
+  reviewText: string,
+  extra: Record<string, unknown> = {}
+): Promise<GuardVerdict> {
+  const verdict = evaluateGuardVerdict(reviewText, role)
+  await runtimeStore.appendSystemEvent(threadId, turnId, 'guard:verdict', agentId, {
+    role,
+    ...verdict,
+    ...extra,
+    checkedAt: Date.now()
+  })
+  return verdict
+}
+
+async function requestScheduleGuardDecision(
+  input: ScheduleGuardContext,
+  step: ScheduleStep,
+  verdict: GuardVerdict
+) {
+  const owner = input.guardDecisionOwner
+  if (
+    !input.guardDecisionAdapter ||
+    !owner ||
+    owner.threadId !== input.threadId ||
+    owner.turnId !== input.turnId ||
+    owner.workspaceId !== input.workspaceId
+  ) {
+    return { requestId: '', decision: 'cancelled' as const }
+  }
+  return input.guardDecisionAdapter.request({
+    owner,
+    agentId: step.agentId,
+    role: step.role,
+    risk: verdict.level,
+    reasons: verdict.reasons,
+    idempotencyKey: `guard:${input.turnId}:${step.id}`
+  })
+}
+
+function guardStopReason(decision: 'denied' | 'timeout' | 'cancelled', fallback: string): string {
+  if (decision === 'timeout') return 'Guard decision timed out; execution was stopped.'
+  if (decision === 'cancelled') return 'Guard decision was cancelled; execution was stopped.'
+  return fallback
+}
 
 export function orderedCustomLayers(steps: ScheduleStep[]): ScheduleStep[][] {
   const remaining = new Map(steps.map(step => [step.id, step]))
@@ -168,6 +242,11 @@ export async function runCustomScheduleTurn(input: {
   routeDecision?: RouteDecision
   recentUserMessages?: string[]
   emitMemoryCandidates: (threadId: string, turnId: string, prompt: string, content: string) => Promise<void>
+  guardDecisionAdapter?: Pick<GuardDecisionAdapter, 'request'>
+  guardDecisionOwner?: TrustedTurnOwner | null
+  userDecisionAdapter?: UserDecisionAdapter
+  lineage?: PromptDispatchLineage
+  parentDispatchId?: string
 }): Promise<{ status: "completed" | "failed" | "cancelled"; error?: string }> {
   const fireflyHandoff = input.schedule.preset === "firefly-custom"
   const scheduleSteps = fireflyHandoff
@@ -183,6 +262,11 @@ export async function runCustomScheduleTurn(input: {
     return { status: "failed", error: "No usable local agents are available for this custom schedule." }
   }
   const outputs: Array<{ step: ScheduleStep; content: string; error?: string }> = []
+  const parentDispatchId = input.parentDispatchId
+  const rootLineage: PromptDispatchLineage = input.lineage || {
+    origin: 'internal:model-diagnostic',
+    policy: 'internal'
+  }
   let blockedByGuard: string | null = null
   let deniedByGuard: string | null = null
   for (const layer of layers) {
@@ -240,7 +324,10 @@ export async function runCustomScheduleTurn(input: {
         conversationText: stepPrompt,
         messages: stepMessages,
         preserveCurrentMessage: input.preserveCurrentMessage,
-        streamMeta: streamMetaForScheduleStep(step, gatedCandidateIds, fireflyHandoff)
+        streamMeta: streamMetaForScheduleStep(step, gatedCandidateIds, fireflyHandoff),
+        lineage: childDispatchLineage(rootLineage, parentDispatchId, "internal:schedule"),
+        parentDispatchId,
+        userDecisionAdapter: input.userDecisionAdapter
       })
       const content = task.results.get(step.agentId) || ""
       const error = task.errors.get(step.agentId) || task.error
@@ -249,65 +336,48 @@ export async function runCustomScheduleTurn(input: {
         const guardBypassedByPreset = getApprovalConfig().getConfig().preset === "full-access"
         if (!guardBypassedByPreset && (guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role))) {
           const reason = verdict.reasons.join("; ")
-          if (verdict.level === "high" || verdict.status === "block") {
-            const guardDecision = await requestGuardApproval(guardStore, {
-              threadId: input.threadId,
-              turnId: input.turnId,
-              agentId: step.agentId,
+          const highRisk = verdict.level === "high" || verdict.status === "block"
+          if (!highRisk) {
+            await emitGuardVerdict(input.threadId, input.turnId, step.agentId, step.role, content)
+          }
+          const guardDecision = await requestScheduleGuardDecision(input, step, verdict)
+          if (input.isCancelled()) {
+            return { step, content: "", error: "cancelled", status: "cancelled" as const }
+          }
+          const { requestId, decision } = guardDecision
+          if (decision === "approved") {
+            await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
               role: step.role,
-              verdict
+              level: verdict.level,
+              status: "warn",
+              reasons: [
+                highRisk
+                  ? "User approved continuing after high-risk guard warning."
+                  : "User approved continuing after medium-risk guard warning.",
+                ...verdict.reasons
+              ],
+              requestId,
+              decision,
+              checkedAt: Date.now()
             })
-            const { requestId, decision } = guardDecision
-            if (decision === "approved") {
-              await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
-                role: step.role,
-                level: verdict.level,
-                status: "warn",
-                reasons: ["User approved continuing after high-risk guard warning.", ...verdict.reasons],
-                requestId,
-                decision,
-                checkedAt: Date.now()
-              })
-            } else {
-              deniedByGuard = decision === "timeout"
-                ? "Guard decision timed out; execution was stopped."
-                : reason
-              await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
-                role: step.role,
-                level: verdict.level,
-                status: "block",
-                reasons: [deniedByGuard],
-                requestId,
-                decision,
-                checkedAt: Date.now()
-              })
-              blockedByGuard = deniedByGuard
-            }
           } else {
-            await emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
-            const guardDecision = await requestGuardApproval(guardStore, {
-              threadId: input.threadId,
-              turnId: input.turnId,
-              agentId: step.agentId,
+            const stopped = guardStopReason(decision, reason)
+            await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
               role: step.role,
-              verdict
+              level: verdict.level,
+              status: "block",
+              reasons: [stopped],
+              requestId,
+              decision,
+              checkedAt: Date.now()
             })
-            const { decision } = guardDecision
-            if (decision === "approved") {
-              await runtimeStore.appendSystemEvent(input.threadId, input.turnId, "guard:verdict", step.agentId, {
-                role: step.role,
-                level: verdict.level,
-                status: "warn",
-                reasons: ["User approved continuing after medium-risk guard warning.", ...verdict.reasons],
-                decision,
-                checkedAt: Date.now()
-              })
-            } else {
-              blockedByGuard = reason
+            if (highRisk) {
+              deniedByGuard = stopped
             }
+            blockedByGuard = stopped
           }
         } else {
-          await emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)
+          await emitGuardVerdict(input.threadId, input.turnId, step.agentId, step.role, content)
         }
       }
       return { step, content, error, status: task.status }

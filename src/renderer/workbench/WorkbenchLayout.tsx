@@ -1,6 +1,5 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BindingDef, ProviderDef } from '../glass/meta'
-import { ApprovalDialog, ApprovalItem } from '../glass/approval-dialog'
 type MotionLevel = 'off' | 'subtle' | 'rich'
 import { summarizeAgentConnections } from '../glass/connection-status'
 import { tr } from '../glass/i18n'
@@ -40,17 +39,12 @@ import { mergeRuntimeEventLists, isBufferedRuntimeEvent, isTaskHistoryEvent, run
 import { parseSlashInput, parseLoopLimit, stripLoopFlags } from './utils/slashCommandUtils'
 import { selectableModelOptions, isSelectableModel, resolveModelCommand, reasoningFromCommand, reasoningLabel, type WorkbenchThinking } from './utils/modelUtils'
 import { deriveTaskItems, type RuntimeTaskEventsByThread } from './utils/taskItems'
-import {
-  approvalDecisionPresentation,
-  createApprovalDecisionHandler,
-  reconcileApprovalItemsWithHistory,
-  reduceApprovalItemsFromRuntimeEvent
-} from './utils/approvalEvents'
 import { watchTerminalRun } from './utils/terminalRunWatcher'
 import { buildPaletteCommands, resolvePaletteExtraAction } from './utils/paletteCommands'
 import { resolveShortcutCommandAction } from './utils/shortcutCommands'
 import { resolveWorkbenchMenuCommand } from './utils/menuCommands'
 import { createTurnAndRefresh, resolveDispatchRequest, classifyCreateFailure, type SendPromptOverrides } from './utils/dispatchRequest'
+import { readMultiModelFusionPreference, writeMultiModelFusionPreference } from './utils/multiModelFusionPreference'
 import { resolveWorkbenchRoutingSelectionPatch, type WorkbenchRoutingSelectionPatch } from './state/routingSelectionState'
 import {
   INSPECTOR_WIDTH_STORE_KEY,
@@ -66,11 +60,15 @@ import {
   normalizeKeyboardShortcuts,
   resolveKeyboardShortcutBindings
 } from '../keyboard-shortcuts'
+import type { DecisionItem, DraftDecisionItem } from './decisions/decisionAdapters'
+import { pendingCountsByThread, reconcileDecisionQueue, selectActiveDecision } from './decisions/decisionQueue'
+import type { DecisionSubmission } from '../../shared/decision-contract'
 
 const LAST_THREAD_STORE_KEY = 'agenthub.workbench.lastThread.v1'
 const CUSTOM_SCHEDULE_STORE_KEY = 'agenthub.workbench.customSchedule.v1'
 const SMART_SCHEDULE_STORE_KEY = 'agenthub.workbench.smartFiveRoleSchedule.v1'
 const SCHEDULE_OVERRIDES_STORE_KEY = 'agenthub.workbench.scheduleOverrides.v1'
+const MULTI_MODEL_FUSION_STORE_KEY = 'agenthub.multiModelFusion.v1'
 const EMPTY_WORKSPACE_RETRY_LIMIT = 3
 const EMPTY_WORKSPACE_RETRY_DELAY_MS = 500
 
@@ -156,10 +154,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [allThreads, setAllThreads] = useState<WorkbenchThread[]>([])
   const [events, setEvents] = useState<RuntimeEvent[]>([])
   const [taskEventsByThread, setTaskEventsByThread] = useState<RuntimeTaskEventsByThread>({})
-  const [approvals, setApprovals] = useState<ApprovalItem[]>([])
-  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null)
-  const [approvalError, setApprovalError] = useState<{ approvalId: string; message: string } | null>(null)
-  const [approvalNotice, setApprovalNotice] = useState<string | null>(null)
+  const [decisionItems, setDecisionItems] = useState<DecisionItem[]>([])
+  const [decisionNotice, setDecisionNotice] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([])
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const workspaceIdRef = useRef<string | null>(null)
@@ -174,6 +170,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [mode, setMode] = useState<DispatchPreset>('lead-workers')
   const [targetAgent, setTargetAgent] = useState<string | null>(null)
   const [modelSelection, setModelSelection] = useState<ModelSelection | null>(null)
+  const [multiModelFusion, setMultiModelFusionState] = useState<boolean>(() => readMultiModelFusionPreference(localStorage, MULTI_MODEL_FUSION_STORE_KEY))
   const [thinking, setThinking] = useState<WorkbenchThinking>({ mode: 'auto', level: 'medium', collapseInUI: true })
   const [schedules, setSchedules] = useState<SchedulePreview[]>([])
   const [activeGoal, setActiveGoal] = useState<WorkbenchGoal | null>(null)
@@ -188,6 +185,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
   const [selectedAgentDetail, setSelectedAgentDetail] = useState<{ agentId: string; turnId: string } | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
+
+  const setMultiModelFusion = useCallback((enabled: boolean) => {
+    setMultiModelFusionState(enabled)
+    writeMultiModelFusionPreference(localStorage, MULTI_MODEL_FUSION_STORE_KEY, enabled)
+  }, [])
 
   useEffect(() => { setSendError(null) }, [view])
   const [viewportWidth, setViewportWidth] = useState(typeof window === 'undefined' ? 1280 : window.innerWidth)
@@ -211,6 +213,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const selectedThreadIdRef = useRef<string | null>(null)
   const threadTodosRef = useRef<ThreadTodo[]>([])
   const terminalWatchAbortRef = useRef<AbortController | null>(null)
+  const decisionRefreshGenerationRef = useRef(0)
+  const decisionRefreshMountedRef = useRef(true)
   const invalidatePendingThreadSelection = useCallback(() => {
     selectThreadGenRef.current += 1
     runtimeSnapshotRefreshGenerationRef.current += 1
@@ -218,14 +222,25 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     setPendingActiveThreadId(null)
     loadingThreadIdRef.current = null
   }, [])
-  const approvalDecisionHandler = useMemo(() => createApprovalDecisionHandler({
-    resolveApproval: (requestId, approved) => window.electronAPI.agentic.resolveApproval(requestId, approved),
-    setApprovalOverride: (agentId, tool, policy) => window.electronAPI.agentic.setApprovalOverride(agentId, tool, policy)
-  }), [])
+  const refreshPendingDecisions = useCallback(async () => {
+    const refreshGeneration = ++decisionRefreshGenerationRef.current
+    const listPendingDecisions = window.electronAPI?.turns?.listPendingDecisions
+    if (typeof listPendingDecisions !== 'function') return
+    const authoritative = await listPendingDecisions().catch(() => null)
+    if (
+      !authoritative ||
+      !decisionRefreshMountedRef.current ||
+      decisionRefreshGenerationRef.current !== refreshGeneration
+    ) return
+    setDecisionItems(current => reconcileDecisionQueue(current, authoritative))
+  }, [])
 
   // Cleanup terminal watch on unmount
   useEffect(() => {
+    decisionRefreshMountedRef.current = true
     return () => {
+      decisionRefreshMountedRef.current = false
+      decisionRefreshGenerationRef.current += 1
       terminalWatchAbortRef.current?.abort()
       loadWorkbenchGenRef.current += 1
       if (emptyWorkspaceRetryTimerRef.current) {
@@ -234,6 +249,30 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       }
     }
   }, [])
+
+  useEffect(() => {
+    void refreshPendingDecisions()
+  }, [refreshPendingDecisions])
+
+  const addDraftDecision = useCallback((draft: DraftDecisionItem) => {
+    setDecisionItems(current => [
+      ...current.filter(item => !(item.origin === 'draft' && item.threadId === draft.threadId)),
+      draft
+    ])
+  }, [])
+
+  const submitDecision = useCallback(async (item: DecisionItem, submission: DecisionSubmission) => {
+    if (item.origin === 'draft') {
+      setDecisionItems(current => current.filter(candidate => candidate.id !== item.id))
+      return { accepted: true as const }
+    }
+    const result = await window.electronAPI.turns.resolveDecision(submission)
+    if (result.accepted) {
+      if (result.warning === 'remember_failed') setDecisionNotice('Choice accepted, but it could not be remembered.')
+      await refreshPendingDecisions()
+    }
+    return result
+  }, [refreshPendingDecisions])
 
   const setSelectedThreadId = useCallback((threadId: string | null) => {
     selectedThreadIdRef.current = threadId
@@ -345,17 +384,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }))
   }, [])
 
-  const appendApprovalFromRuntimeEvent = useCallback((event: RuntimeEvent) => {
-    setApprovals(prev => reduceApprovalItemsFromRuntimeEvent(prev, event))
-  }, [])
-
-  const reconcileApprovalHistory = useCallback(async (history: RuntimeEvent[]) => {
-    const activeIds = await window.electronAPI.agentic.getPendingApprovalIds()
-      .then(ids => new Set(ids))
-      .catch(() => null)
-    setApprovals(prev => reconcileApprovalItemsWithHistory(prev, history, activeIds))
-  }, [])
-
   const flushRuntimeEvents = useCallback(() => {
     if (runtimeEventFlushTimer.current) {
       clearTimeout(runtimeEventFlushTimer.current)
@@ -460,8 +488,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (loadWorkbenchGenRef.current !== gen) return
       const pendingForVisible = pendingRuntimeEvents.current.filter(event => event.threadId === nextVisibleThreadId)
       const mergedLoadedEvents = mergeRuntimeEventLists(loadedEvents, pendingForVisible)
-      await reconcileApprovalHistory(mergedLoadedEvents)
-      if (loadWorkbenchGenRef.current !== gen) return
       fullyLoadedTaskThreadIds.current.add(nextVisibleThreadId)
       setTaskEventsByThread(prev => ({
         ...prev,
@@ -490,7 +516,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
         }, EMPTY_WORKSPACE_RETRY_DELAY_MS)
       }
     }
-  }, [workspaceId, clearRuntimeEventBuffer, reconcileApprovalHistory, rememberWorkspaceId])
+  }, [workspaceId, clearRuntimeEventBuffer, rememberWorkspaceId])
 
   useEffect(() => {
     loadWorkbench().catch(() => {})
@@ -545,9 +571,11 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.runtime.onEvent(event => {
+      if (event.kind === 'decision:requested' || event.kind === 'decision:resolved') {
+        void refreshPendingDecisions()
+      }
       const isPendingThreadEvent = pendingActiveThreadIdRef.current !== null && event.threadId === loadingThreadIdRef.current
       const isVisibleThreadEvent = event.threadId === selectedThreadIdRef.current
-      appendApprovalFromRuntimeEvent(event)
       const runtimeAgentStatus = runtimeAgentStatusFromEvent(event)
       if (runtimeAgentStatus) {
         props.onRuntimeAgentStatus?.(runtimeAgentStatus.agentId, runtimeAgentStatus.status, runtimeAgentStatus.runKey)
@@ -612,29 +640,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (snapshotRefreshTimer.current) clearTimeout(snapshotRefreshTimer.current)
       clearRuntimeEventBuffer()
     }
-  }, [props.onRuntimeAgentStatus, syncSddPlanTodoForRuntimeEvent, appendRuntimeEvents, appendTaskRuntimeEvents, appendApprovalFromRuntimeEvent, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer])
-
-  const onApprovalDecide = useCallback(async (item: ApprovalItem, approved: boolean, remember: boolean) => {
-    setApprovalNotice(null)
-    const decision = approvalDecisionHandler.decide(item, approved, remember)
-    setApprovalBusyId(item.id)
-    setApprovalError(null)
-    const result = await decision
-    if (result.outcome === 'busy') return
-
-    setApprovalBusyId(current => current === item.id ? null : current)
-    const presentation = approvalDecisionPresentation(result)
-    if (presentation.remove) {
-      setApprovals(prev => prev.filter(existing => existing.id !== item.id))
-    }
-    if (presentation.notice) setApprovalNotice(presentation.notice)
-    if (presentation.error) {
-      setApprovalError({
-        approvalId: item.id,
-        message: presentation.error
-      })
-    }
-  }, [approvalDecisionHandler])
+  }, [props.onRuntimeAgentStatus, syncSddPlanTodoForRuntimeEvent, appendRuntimeEvents, appendTaskRuntimeEvents, enqueueRuntimeEvent, flushRuntimeEvents, clearRuntimeEventBuffer, refreshPendingDecisions])
 
   useEffect(() => {
     refreshThreadTodos().catch(() => {})
@@ -660,6 +666,24 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const activeEvents = useMemo(
     () => visibleThreadId === activeThreadId ? events : events.filter(event => event.threadId === visibleThreadId),
     [events, visibleThreadId, activeThreadId]
+  )
+  const visibleDecisions = useMemo(() => (
+    decisionItems
+      .filter(item => item.threadId === visibleThreadId && item.state !== 'terminal')
+      .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+  ), [decisionItems, visibleThreadId])
+  const activeDecision = selectActiveDecision(decisionItems, visibleThreadId)
+  const activeDecisionPosition = activeDecision ? visibleDecisions.findIndex(item => item.id === activeDecision.id) + 1 : 0
+  const activeDecisionCount = visibleDecisions.length
+  const pendingDecisions = useMemo(() => (
+    decisionItems
+      .filter(item => item.state !== 'terminal')
+      .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+  ), [decisionItems])
+  const oldestPendingDecision = pendingDecisions[0] ?? null
+  const decisionCountsByThread = useMemo(
+    () => pendingCountsByThread(decisionItems),
+    [decisionItems]
   )
   const runtimeTasks = useMemo(
     () => deriveTaskItems(allSnapshot, taskEventsByThread),
@@ -799,6 +823,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     loadWorkbenchGenRef.current += 1
     flushRuntimeEvents()
     clearRuntimeEventBuffer()
+    void refreshPendingDecisions()
     setPendingActiveThreadId(threadId)
     loadingThreadIdRef.current = threadId
     const thread = allThreads.find(t => t.id === threadId)
@@ -828,8 +853,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       if (selected) fullyLoadedTaskThreadIds.current.add(selected)
       if (selected) {
         const mergedLoadedEvents = mergeRuntimeEventLists(loadedEvents, pendingForSelected)
-        await reconcileApprovalHistory(mergedLoadedEvents)
-        if (selectThreadGenRef.current !== gen) return
         setTaskEventsByThread(prev => ({
           ...prev,
           [selected]: mergedLoadedEvents
@@ -1040,6 +1063,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       modelSelection,
       mode,
       overrides,
+      multiModelFusion,
       usableLocalAgents,
       scheduleForMode: dispatchScheduleForMode
     })
@@ -1070,6 +1094,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           targetAgent: dispatchRequest.targetAgent,
           thinking,
           modelSelection: dispatchRequest.modelSelection,
+          multiModelFusion: dispatchRequest.multiModelFusion,
           attachments,
           customSchedule: dispatchRequest.customSchedule
         }),
@@ -1168,14 +1193,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     setAllThreads(allNext.threads)
   }
 
-  const resolveGuard = async (requestId: string, approved: boolean) => {
-    await window.electronAPI.turns.resolveGuard(requestId, approved).catch(() => false)
-  }
-
   const retryTurn = async (turnId: string) => {
     setSending(true)
     try {
-      await window.electronAPI.turns.retry(turnId)
+      await window.electronAPI.turns.retry({ turnId })
       await loadWorkbench(workspaceId)
     } finally {
       setSending(false)
@@ -1462,6 +1483,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           search={search}
           setSearch={setSearch}
           proxyHost={props.proxyHost}
+          decisionCount={decisionCountsByThread}
         />
 
         <WorkbenchMainContent
@@ -1503,7 +1525,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           runSlashCommand={runSlashCommand}
           retryTurn={retryTurn}
           cancelAgent={cancelAgent}
-          resolveGuard={resolveGuard}
           createThread={createThread}
           selectThread={selectThread}
           handleThreadScroll={handleThreadScroll}
@@ -1525,6 +1546,8 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           setMode={setMode}
           modelSelection={modelSelection}
           setModelSelection={setModelSelection}
+          multiModelFusion={multiModelFusion}
+          setMultiModelFusion={setMultiModelFusion}
           thinking={thinking}
           setThinking={setThinking}
           schedules={schedules}
@@ -1532,6 +1555,20 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           workspaces={workspaces}
           pendingComposerAttachments={pendingComposerAttachments}
           onExternalAttachmentsConsumed={() => setPendingComposerAttachments([])}
+          decisionItem={activeDecision}
+          decisionPosition={activeDecisionPosition}
+          decisionCount={activeDecisionCount}
+          onDecisionSubmit={submitDecision}
+          onDraftDecision={addDraftDecision}
+          pendingDecisionItem={oldestPendingDecision}
+          pendingDecisionCount={pendingDecisions.length}
+          decisionNotice={decisionNotice}
+          onOpenDecisionThread={threadId => {
+            void (async () => {
+              await selectThread(threadId)
+              setView('chat')
+            })()
+          }}
         />
 
         <WorkbenchPanelContainers
@@ -1575,13 +1612,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
 
       {announcementOpen && <WorkbenchAnnouncementModal onClose={closeAnnouncement} onOpenSetup={openAnnouncementSetup} />}
 
-      <ApprovalDialog
-        items={approvals}
-        onDecide={onApprovalDecide}
-        busy={approvalBusyId === approvals[0]?.id}
-        error={approvalError && approvalError.approvalId === approvals[0]?.id ? approvalError.message : null}
-      />
-      <ApprovalNotice notice={approvalNotice} onClose={() => setApprovalNotice(null)} />
       {commandPaletteOpen && (
         <CommandPalette
           commands={paletteCommands}
@@ -1589,16 +1619,6 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
           onClose={() => setCommandPaletteOpen(false)}
         />
       )}
-    </div>
-  )
-}
-
-export function ApprovalNotice({ notice, onClose }: { notice: string | null; onClose: () => void }) {
-  if (!notice) return null
-  return (
-    <div className="wb-approval-notice" role="status">
-      <span>{notice}</span>
-      <button type="button" aria-label={tr('关闭审批提示', 'Dismiss approval notice')} onClick={onClose}>×</button>
     </div>
   )
 }

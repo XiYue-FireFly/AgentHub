@@ -129,8 +129,13 @@ const api = {
       typedInvoke('turns:create', input),
     cancel: (turnId: string) => typedInvoke('turns:cancel', turnId),
     cancelAgent: (turnId: string, agentId: string) => typedInvoke('turns:cancelAgent', turnId, agentId),
-    resolveGuard: (requestId: string, approved: boolean) => typedInvoke('turns:resolveGuard', requestId, approved),
-    retry: (turnId: string) => typedInvoke('turns:retry', turnId)
+    retry: (input: IpcArgs<'turns:retry'>[0]) => typedInvoke('turns:retry', input),
+    rerunInterrupted: (originalTurnId: string) => typedInvoke('turns:rerunInterrupted', originalTurnId),
+    listQueuedSubmissions: (threadId?: string) => typedInvoke('turns:listQueuedSubmissions', threadId),
+    clearQueue: (threadId: string) => typedInvoke('turns:clearQueue', threadId),
+    listPendingDecisions: (threadId?: string) => typedInvoke('turns:listPendingDecisions', threadId),
+    resolveDecision: (submission: IpcArgs<'turns:resolveDecision'>[0]) =>
+      typedInvoke('turns:resolveDecision', submission)
   },
   runtime: {
     snapshot: (workspaceId?: string | null) => typedInvoke('runtime:snapshot', workspaceId),
@@ -322,15 +327,12 @@ const api = {
     setMode: (mode: IpcArgs<'agentic:setMode'>[0]) => typedInvoke('agentic:setMode', mode),
     // 写/执行审批门禁
     getApprovalConfig: () => typedInvoke('agentic:getApprovalConfig'),
-    getPendingApprovalIds: () => typedInvoke('agentic:getPendingApprovalIds'),
     setApprovalPreset: (preset: IpcArgs<'agentic:setApprovalPreset'>[0]) =>
       typedInvoke('agentic:setApprovalPreset', preset),
     setApprovalDefault: (tool: IpcArgs<'agentic:setApprovalDefault'>[0], policy: IpcArgs<'agentic:setApprovalDefault'>[1]) =>
       typedInvoke('agentic:setApprovalDefault', tool, policy),
     setApprovalOverride: (agentId: string, tool: IpcArgs<'agentic:setApprovalOverride'>[1], policy: IpcArgs<'agentic:setApprovalOverride'>[2]) =>
-      typedInvoke('agentic:setApprovalOverride', agentId, tool, policy),
-    resolveApproval: (requestId: string, approved: boolean) =>
-      typedInvoke('agentic:resolveApproval', requestId, approved)
+      typedInvoke('agentic:setApprovalOverride', agentId, tool, policy)
   },
   // --- Prompt Library ---
   prompts: {
@@ -486,7 +488,9 @@ const api = {
   // --- AI Quick Complete (lightweight standalone LLM call) ---
   ai: {
     quickComplete: (input: IpcArgs<'ai:quickComplete'>[0]) =>
-      typedInvoke('ai:quickComplete', input)
+      typedInvoke('ai:quickComplete', input),
+    promptCandidates: (input: IpcArgs<'ai:promptCandidates'>[0]) =>
+      typedInvoke('ai:promptCandidates', input)
   },
   // --- P4-F1: Models Center ---
   models: {

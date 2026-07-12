@@ -118,6 +118,25 @@ describe("local agent statuses", () => {
     await expect(configureLocalAgent("unknown-agent", {})).rejects.toThrow(/Unsupported/)
   })
 
+  it("treats configured structured NDJSON agents as usable local agents", async () => {
+    const { configureLocalAgent, detectLocalAgentStatuses, isUsableLocalAgentStatus } = await import("../local-agents")
+
+    await configureLocalAgent("gemini", {
+      binary: "C:/bin/gemini.cmd",
+      protocol: "stdio-ndjson",
+      args: "serve"
+    })
+
+    const gemini = (await detectLocalAgentStatuses()).find(status => status.agentId === "gemini")
+    expect(bindings.find(binding => binding.agentId === "gemini")).toMatchObject({
+      providerId: "local-cli",
+      modelId: "local",
+      protocol: "stdio-ndjson"
+    })
+    expect(gemini?.configured).toBe(true)
+    expect(gemini && isUsableLocalAgentStatus(gemini)).toBe(true)
+  })
+
   it("forces local CLI attribution when a configured agent replaces a stale API binding", async () => {
     bindings.push({
       agentId: "gemini",

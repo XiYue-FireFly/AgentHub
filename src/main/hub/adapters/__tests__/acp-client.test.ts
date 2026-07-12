@@ -7,6 +7,7 @@ import {
   acpBlockText,
   acpToolContent,
   acpPermissionRequest,
+  normalizeAcpPermissionOptions,
   acpReadTextFile,
   acpWriteTextFile,
   acpResolveWorkspacePath
@@ -77,6 +78,62 @@ describe('mapAcpUpdate', () => {
 })
 
 describe('acpPermissionRequest', () => {
+  it('normalizes permission options in protocol order and bounds untrusted display text', () => {
+    const options = normalizeAcpPermissionOptions([
+      { optionId: 'deny.exact', name: 'D'.repeat(300), kind: 'deny_once', description: 'x'.repeat(5_000) },
+      { optionId: 'allow.once/exact', name: 'Allow once', kind: 'allow_once', description: 'Allowed once' },
+      { optionId: 'deny.exact', name: 'Duplicate' },
+      { optionId: '   ', name: 'Blank' },
+      ...Array.from({ length: 10 }, (_, index) => ({ optionId: `extra-${index}` }))
+    ])
+
+    expect(options.map(option => option.optionId)).toEqual([
+      'deny.exact', 'allow.once/exact', 'extra-0', 'extra-1', 'extra-2', 'extra-3', 'extra-4', 'extra-5'
+    ])
+    expect(options[0]).toMatchObject({ kind: 'deny_once' })
+    expect(options[0]?.name).toHaveLength(256)
+    expect(options[0]?.description).toHaveLength(4096)
+  })
+
+  it('rejects accessor and non-plain protocol options without reading them', () => {
+    let reads = 0
+    const accessor: Record<string, unknown> = {}
+    Object.defineProperty(accessor, 'optionId', {
+      enumerable: true,
+      get: () => {
+        reads++
+        return 'allow.once/exact'
+      }
+    })
+    const inherited = Object.create({ optionId: 'allow.once/inherited' })
+
+    expect(normalizeAcpPermissionOptions([accessor, inherited])).toEqual([])
+    expect(reads).toBe(0)
+  })
+
+  it('rejects oversized protocol option IDs without truncating them', () => {
+    const oversizedId = 'x'.repeat(1024 * 1024)
+
+    expect(normalizeAcpPermissionOptions([
+      { optionId: oversizedId, kind: 'allow_once' }
+    ])).toEqual([])
+  })
+
+  it('carries normalized ACP protocol options to the permission handler', () => {
+    const req = acpPermissionRequest({
+      options: [
+        { optionId: 'deny.exact', name: 'Deny', kind: 'deny_once' },
+        { optionId: 'allow.once/exact', name: 'Allow', kind: 'allow_once' }
+      ],
+      toolCall: { name: 'run_command', rawInput: { command: 'npm test' } }
+    })
+
+    expect(req.options).toEqual([
+      { optionId: 'deny.exact', name: 'Deny', kind: 'deny_once' },
+      { optionId: 'allow.once/exact', name: 'Allow', kind: 'allow_once' }
+    ])
+  })
+
   it('maps shell/command permission requests to exec', () => {
     const req = acpPermissionRequest({
       sessionId: 's1',
@@ -150,6 +207,11 @@ describe('acpPermissionRequest', () => {
 })
 
 describe('AcpClient permission request handling', () => {
+  const writeTextFileOptions = [
+    { optionId: 'agenthub.acp.fs.write_text_file.deny', name: 'Deny', kind: 'deny_once' },
+    { optionId: 'agenthub.acp.fs.write_text_file.allow_once', name: 'Allow once', kind: 'allow_once' }
+  ]
+
   async function invokePermission(client: any, params: any) {
     const responses: any[] = []
     vi.spyOn(client, 'respond').mockImplementation((...args: unknown[]) => {
@@ -159,7 +221,7 @@ describe('AcpClient permission request handling', () => {
     return responses.at(-1)
   }
 
-  it('cancels guarded permission requests without an active session handler', async () => {
+  it('cancels permission requests without an active session handler instead of selecting a deny option', async () => {
     const { AcpClient } = await import('../acp-client')
     const client = new AcpClient('fake-acp', [])
     ;(client as any).sessionRoots.set('s1', process.cwd())
@@ -170,30 +232,156 @@ describe('AcpClient permission request handling', () => {
       toolCall: { name: 'run_command', rawInput: { command: 'npm test' } }
     })
 
-    expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+    expect(response).toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
-  it('honors active handler allow and deny decisions', async () => {
+  it('returns only the exact option ID selected by an active structured handler', async () => {
     const { AcpClient } = await import('../acp-client')
     const client = new AcpClient('fake-acp', [])
     ;(client as any).sessionRoots.set('s1', process.cwd())
     const handler = vi.fn()
     ;(client as any).promptHandlers.set('s1', { onRequestPermission: handler })
 
-    handler.mockResolvedValueOnce(true)
+    handler.mockResolvedValueOnce({ outcome: 'selected', optionId: 'allow.once/exact' })
     await expect(invokePermission(client as any, {
       sessionId: 's1',
-      options: [{ optionId: 'allow', kind: 'allow_once' }, { optionId: 'deny', kind: 'deny' }],
+      options: [{ optionId: 'deny.exact', kind: 'deny_once' }, { optionId: 'allow.once/exact', kind: 'allow_once' }],
       toolCall: { name: 'delete_file', input: { path: 'old.txt' } }
-    })).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    })).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow.once/exact' } })
 
-    handler.mockResolvedValueOnce(false)
+    handler.mockResolvedValueOnce({ outcome: 'selected', optionId: 'not-offered' })
     await expect(invokePermission(client as any, {
       sessionId: 's1',
-      options: [{ optionId: 'allow', kind: 'allow_once' }, { optionId: 'deny', kind: 'deny' }],
+      options: [{ optionId: 'deny.exact', kind: 'deny_once' }, { optionId: 'allow.once/exact', kind: 'allow_once' }],
       toolCall: { name: 'delete_file', input: { path: 'old.txt' } }
-    })).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+    })).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     expect(handler).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels rather than producing a default allow outcome when no protocol options were offered', async () => {
+    const { AcpClient } = await import('../acp-client')
+    const client = new AcpClient('fake-acp', [])
+    ;(client as any).sessionRoots.set('s1', process.cwd())
+    ;(client as any).promptHandlers.set('s1', {
+      onRequestPermission: vi.fn(async () => ({ outcome: 'selected', optionId: 'allow.once/exact' }))
+    })
+
+    await expect(invokePermission(client as any, {
+      sessionId: 's1',
+      options: [],
+      toolCall: { name: 'delete_file', input: { path: 'old.txt' } }
+    })).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+
+  it('does not admit an oversized protocol option to the permission handler', async () => {
+    const { AcpClient } = await import('../acp-client')
+    const client = new AcpClient('fake-acp', [])
+    const handler = vi.fn(async () => ({ outcome: 'selected', optionId: 'x'.repeat(1024 * 1024) }))
+    ;(client as any).sessionRoots.set('s1', process.cwd())
+    ;(client as any).promptHandlers.set('s1', { onRequestPermission: handler })
+
+    await expect(invokePermission(client as any, {
+      sessionId: 's1',
+      options: [{ optionId: 'x'.repeat(1024 * 1024), kind: 'allow_once' }],
+      toolCall: { name: 'delete_file', input: { path: 'old.txt' } }
+    })).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('fails closed for fs writes when a structured handler cancellation is returned', async () => {
+    const { AcpClient } = await import('../acp-client')
+    const root = mkdtempSync(join(tmpdir(), 'agenthub-acp-'))
+    try {
+      const client = new AcpClient('fake-acp', [])
+      ;(client as any).sessionRoots.set('s1', root)
+      const handler = vi.fn(async () => ({ outcome: 'cancelled' }))
+      ;(client as any).promptHandlers.set('s1', {
+        onRequestPermission: handler
+      })
+      const respondError = vi.spyOn(client as any, 'respondError')
+
+      await (client as any).handleWriteTextFileRequest({
+        id: 8,
+        params: { sessionId: 's1', path: 'blocked.txt', content: 'must not be written' }
+      })
+
+      expect(respondError).toHaveBeenCalledWith(8, -32000, 'write_text_file denied by approval policy')
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ options: writeTextFileOptions }))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('writes only after the handler selects the exact scoped allow option', async () => {
+    const { AcpClient } = await import('../acp-client')
+    const root = mkdtempSync(join(tmpdir(), 'agenthub-acp-'))
+    try {
+      const client = new AcpClient('fake-acp', [])
+      ;(client as any).sessionRoots.set('s1', root)
+      const handler = vi.fn(async () => ({
+        outcome: 'selected',
+        optionId: 'agenthub.acp.fs.write_text_file.allow_once'
+      }))
+      ;(client as any).promptHandlers.set('s1', { onRequestPermission: handler })
+
+      await (client as any).handleWriteTextFileRequest({
+        id: 9,
+        params: { sessionId: 's1', path: 'approved.txt', content: 'written after exact approval' }
+      })
+
+      expect(readFileSync(join(root, 'approved.txt'), 'utf-8')).toBe('written after exact approval')
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ options: writeTextFileOptions }))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('denies fs writes when the handler selects the offered scoped deny option', async () => {
+    const { AcpClient } = await import('../acp-client')
+    const root = mkdtempSync(join(tmpdir(), 'agenthub-acp-'))
+    try {
+      const client = new AcpClient('fake-acp', [])
+      ;(client as any).sessionRoots.set('s1', root)
+      ;(client as any).promptHandlers.set('s1', {
+        onRequestPermission: vi.fn(async () => ({
+          outcome: 'selected',
+          optionId: 'agenthub.acp.fs.write_text_file.deny'
+        }))
+      })
+      const respondError = vi.spyOn(client as any, 'respondError')
+
+      await (client as any).handleWriteTextFileRequest({
+        id: 11,
+        params: { sessionId: 's1', path: 'blocked-deny.txt', content: 'must not be written' }
+      })
+
+      expect(respondError).toHaveBeenCalledWith(11, -32000, 'write_text_file denied by approval policy')
+      expect(() => readFileSync(join(root, 'blocked-deny.txt'), 'utf-8')).toThrow()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('denies fs writes when the handler selects an unknown scoped option', async () => {
+    const { AcpClient } = await import('../acp-client')
+    const root = mkdtempSync(join(tmpdir(), 'agenthub-acp-'))
+    try {
+      const client = new AcpClient('fake-acp', [])
+      ;(client as any).sessionRoots.set('s1', root)
+      const handler = vi.fn(async () => ({ outcome: 'selected', optionId: 'unknown-write-choice' }))
+      ;(client as any).promptHandlers.set('s1', { onRequestPermission: handler })
+      const respondError = vi.spyOn(client as any, 'respondError')
+
+      await (client as any).handleWriteTextFileRequest({
+        id: 10,
+        params: { sessionId: 's1', path: 'blocked-unknown.txt', content: 'must not be written' }
+      })
+
+      expect(respondError).toHaveBeenCalledWith(10, -32000, 'write_text_file denied by approval policy')
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ options: writeTextFileOptions }))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('stops the ACP client and clears session state when a JSON-RPC request times out', async () => {

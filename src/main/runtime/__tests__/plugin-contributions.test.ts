@@ -13,7 +13,8 @@ vi.mock("../plugin-manager-enhanced", () => ({
     }],
     preDispatchHooks: [
       { id: "ctx", pattern: "bug", appendContext: "Run regression tests for {{prompt}}" },
-      { id: "deny", pattern: "forbidden", denyMessage: "Blocked by plugin policy." }
+      { id: "deny", pattern: "forbidden", denyMessage: "Blocked by plugin policy." },
+      { id: "review", pattern: "review", requireApproval: true, message: "Plugin review required." }
     ]
   })
 }))
@@ -60,5 +61,41 @@ describe("plugin runtime contributions", () => {
     })
 
     expect(outcome.denied).toBe("Blocked by plugin policy.")
+  })
+
+  it("returns a structured approval request instead of denying plugin-gated dispatch", async () => {
+    const outcome = await runPreDispatchHooks(resolvePluginPreDispatchHooks(), {
+      threadId: "thread-1",
+      prompt: "review this change"
+    })
+
+    expect(outcome.denied).toBeUndefined()
+    expect(outcome.approvalRequests).toEqual([{
+      pluginId: "installed",
+      hookId: "review",
+      message: "Plugin review required."
+    }])
+    const results = await Promise.all(resolvePluginPreDispatchHooks().map(hook => hook.run({
+      phase: 'PreDispatch', threadId: 'thread-1', prompt: 'review this change'
+    })))
+    expect(results.find(result => result?.requestApproval)).toMatchObject({ decision: 'request-approval' })
+  })
+
+  it("matches approval gates against the canonical optimized prompt when raw input does not match", async () => {
+    const rawOutcome = await runPreDispatchHooks(resolvePluginPreDispatchHooks(), {
+      threadId: "thread-1",
+      prompt: "Please improve the implementation"
+    })
+    const canonicalOutcome = await runPreDispatchHooks(resolvePluginPreDispatchHooks(), {
+      threadId: "thread-1",
+      prompt: "[AgentHub Prompt Optimizer]\nIntent: review\n[User Request]\nPlease improve the implementation"
+    })
+
+    expect(rawOutcome.approvalRequests).toEqual([])
+    expect(canonicalOutcome.approvalRequests).toEqual([{
+      pluginId: "installed",
+      hookId: "review",
+      message: "Plugin review required."
+    }])
   })
 })

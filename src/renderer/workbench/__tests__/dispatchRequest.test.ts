@@ -41,6 +41,17 @@ describe('dispatch request resolver', () => {
     })
   })
 
+  it('snapshots the enabled multi-model fusion configuration with bounded defaults', () => {
+    expect(resolve({ multiModelFusion: true })).toMatchObject({
+      multiModelFusion: {
+        enabled: true,
+        maxCandidates: 3,
+        maxRounds: 3,
+        allowExecutor: true
+      }
+    })
+  })
+
   it('routes explicit local agents directly and drops provider model selections', () => {
     expect(resolve({
       targetAgent: 'codex',

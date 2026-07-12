@@ -14,6 +14,8 @@
 
 import { AgentRouteBinding, ChatCompletionChunk, ChatCompletionMessage, ChatCompletionRequest, ModelDefinition, ProviderDefinition, ThinkingConfig, ThinkingSummary } from './types'
 import { THINKING_BUDGET_TOKENS } from './presets'
+import type { DispatchEnvelope } from '../../shared/prompt-contract'
+import { canonicalProviderPayload, verifyDispatchEnvelope } from '../runtime/dispatch-envelope'
 
 function sanitizeHeaderValue(value: string): string {
   return Array.from(value).filter((char) => char.charCodeAt(0) <= 0xff).join('')
@@ -30,6 +32,7 @@ export interface StreamCallbacks {
 
 export interface CallOptions {
   messages: ChatCompletionMessage[]
+  dispatchEnvelope: DispatchEnvelope
   systemPrompt?: string
   /** 临时覆盖 thinking（来自 UI 切换） */
   thinkingOverride?: ThinkingConfig
@@ -41,6 +44,8 @@ export interface CallOptions {
   /** 工具定义（OpenAI 格式）；仅 OpenAI 兼容上游会转发，anthropic/gemini 忽略 */
   tools?: any[]
   toolChoice?: any
+  attachments?: readonly unknown[]
+  contextLayers?: readonly string[]
 }
 
 export interface ResolvedCall {
@@ -76,6 +81,23 @@ export class ProviderClient {
       const thinking = opts.thinkingOverride || this.thinking
       const model = this.model
       const messages = opts.messages
+      const tools = opts.tools?.length ? opts.tools : []
+      const canonicalPayload = canonicalProviderPayload({
+        providerId: provider.id,
+        modelId: model.id,
+        protocol: provider.capabilities.protocol,
+        systemPrompt: opts.systemPrompt || '',
+        messages,
+        tools,
+        toolChoice: tools.length && opts.toolChoice !== undefined ? opts.toolChoice : null,
+        attachments: opts.attachments || [],
+        contextLayers: opts.contextLayers || [],
+        thinking
+      })
+      if (!opts.dispatchEnvelope) {
+        throw new Error('DispatchEnvelope is required before provider fetch')
+      }
+      verifyDispatchEnvelope(opts.dispatchEnvelope, canonicalPayload)
 
       if (provider.kind === 'anthropic') {
         await this.streamAnthropic(provider, model, messages, opts, thinking, cb, opts.signal)

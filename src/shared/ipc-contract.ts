@@ -1,3 +1,6 @@
+import type { DecisionResolveResult, DecisionSubmission, PendingDecision } from './decision-contract'
+import type { PromptEnvelope } from './prompt-contract'
+
 export interface WorkspaceFileEntry {
   path: string
   relativePath: string
@@ -108,7 +111,7 @@ export interface ProviderRouteBindingLike extends Record<string, unknown> {
   modelId: string
   thinkingAllow?: ThinkingMode[]
   thinking?: ProviderThinkingConfig
-  protocol?: 'http' | 'stdio-plain' | 'acp'
+  protocol?: 'http' | 'stdio-plain' | 'stdio-ndjson' | 'acp'
   binary?: string
   args?: string
 }
@@ -141,7 +144,7 @@ export interface ProviderHealthFailureLike extends Record<string, unknown> {
 export type ProviderHealthResultLike = ProviderHealthLike | ProviderHealthFailureLike
 
 export type AgentCapabilityLike = 'fs-read' | 'fs-write' | 'exec' | 'agentic-loop' | 'skills' | 'system-control'
-export type AgenticProtocolLike = 'http' | 'stdio-plain' | 'acp'
+export type AgenticProtocolLike = 'http' | 'stdio-plain' | 'stdio-ndjson' | 'acp'
 
 export interface AgentCapabilityStateLike {
   agentId: string
@@ -318,7 +321,15 @@ export interface TerminalContextLike {
   lastExitCode?: number
 }
 
+export type QuickCompleteOriginLike =
+  | 'quick-complete:prompt-enhancer'
+  | 'quick-complete:sdd-requirements'
+  | 'quick-complete:inline-edit'
+  | 'quick-complete:browser-summary'
+  | 'quick-complete:browser-analysis'
+
 export interface QuickCompleteInputLike {
+  origin: QuickCompleteOriginLike
   prompt: string
   systemPrompt?: string
   providerId?: string
@@ -330,6 +341,18 @@ export interface QuickCompleteInputLike {
 export interface QuickCompleteResultLike {
   ok: boolean
   content?: string
+  error?: string
+}
+
+export interface PromptCandidateInputLike {
+  origin: 'quick-complete:prompt-enhancer'
+  prompt: string
+  draftHash: string
+}
+
+export interface PromptCandidateResultLike {
+  candidates: string[]
+  draftHash: string
   error?: string
 }
 
@@ -530,6 +553,14 @@ export interface RuntimeModelSelectionLike {
   source?: 'provider' | 'local-cli'
 }
 
+/** Immutable per-turn snapshot for multi-model fusion dispatch. */
+export interface MultiModelFusionConfig {
+  enabled: boolean
+  maxCandidates: 2 | 3
+  maxRounds: 1 | 2 | 3
+  allowExecutor: boolean
+}
+
 export type WorkbenchTurnStatusLike = import('./turn-status').WorkbenchTurnStatus
 
 export interface WorkbenchTurnLike {
@@ -542,9 +573,13 @@ export interface WorkbenchTurnLike {
   customSchedule?: SchedulePreview
   targetAgent?: string | null
   modelSelection?: RuntimeModelSelectionLike
+  multiModelFusion?: MultiModelFusionConfig
   thinking?: unknown
   status: WorkbenchTurnStatusLike
   taskIds: string[]
+  displayOriginalPrompt?: string
+  effectivePrompt?: string
+  promptEnvelope?: PromptEnvelope
   createdAt: number
   completedAt?: number
 }
@@ -557,6 +592,7 @@ export interface TurnCreateInputLike {
   targetAgent?: string | null
   thinking?: unknown
   modelSelection?: RuntimeModelSelectionLike
+  multiModelFusion?: MultiModelFusionConfig
   attachments?: WorkbenchAttachmentLike[]
   customSchedule?: SchedulePreview
 }
@@ -564,6 +600,25 @@ export interface TurnCreateInputLike {
 export type TurnCreateResultLike = {
   thread: WorkbenchThreadLike
   turn: WorkbenchTurnLike
+}
+
+export type TurnRetryStrategyLike = 'reuse-selection' | 'reoptimize'
+
+export interface TurnRetryInputLike {
+  turnId: string
+  retryStrategy?: TurnRetryStrategyLike
+}
+
+export interface QueuedThreadSubmissionLike {
+  id: string
+  threadId: string
+  turnId: string
+  ownerWebContentsId: number
+  source: 'create' | 'retry'
+  retryOfTurnId?: string
+  state: 'queued' | 'starting'
+  createdAt: number
+  admissionSequence: number
 }
 
 export interface AgentRunNodeLike {
@@ -1495,7 +1550,7 @@ export interface LocalAgentStatusLike {
 export interface LocalAgentConfigurePatch {
   binary?: string
   args?: string
-  protocol?: 'stdio-plain' | 'acp'
+  protocol?: 'stdio-plain' | 'stdio-ndjson' | 'acp'
 }
 
 export interface LocalAgentOptionLike {
@@ -3058,10 +3113,6 @@ export interface IpcContract {
     args: []
     result: AgenticApprovalConfigLike
   }
-  'agentic:getPendingApprovalIds': {
-    args: []
-    result: string[]
-  }
   'agentic:setApprovalPreset': {
     args: [preset: AgenticApprovalPresetLike]
     result: AgenticApprovalConfigLike
@@ -3073,10 +3124,6 @@ export interface IpcContract {
   'agentic:setApprovalOverride': {
     args: [agentId: string, tool: AgenticGuardedToolLike, policy: AgenticApprovalPolicyLike | null]
     result: AgenticApprovalConfigLike
-  }
-  'agentic:resolveApproval': {
-    args: [requestId: string, approved: boolean]
-    result: boolean
   }
   'threads:list': {
     args: [workspaceId?: string | null]
@@ -3107,7 +3154,11 @@ export interface IpcContract {
     result: TurnCreateResultLike
   }
   'turns:retry': {
-    args: [turnId: string]
+    args: [input: TurnRetryInputLike]
+    result: TurnCreateResultLike
+  }
+  'turns:rerunInterrupted': {
+    args: [originalTurnId: string]
     result: TurnCreateResultLike
   }
   'turns:cancel': {
@@ -3118,9 +3169,21 @@ export interface IpcContract {
     args: [turnId: string, agentId: string]
     result: boolean
   }
-  'turns:resolveGuard': {
-    args: [requestId: string, approved: boolean]
-    result: boolean
+  'turns:listQueuedSubmissions': {
+    args: [threadId?: string]
+    result: QueuedThreadSubmissionLike[]
+  }
+  'turns:clearQueue': {
+    args: [threadId: string]
+    result: string[]
+  }
+  'turns:listPendingDecisions': {
+    args: [threadId?: string]
+    result: PendingDecision[]
+  }
+  'turns:resolveDecision': {
+    args: [submission: DecisionSubmission]
+    result: DecisionResolveResult
   }
   'runtime:snapshot': {
     args: [workspaceId?: string | null]
@@ -3550,6 +3613,10 @@ export interface IpcContract {
     args: [input: QuickCompleteInputLike]
     result: QuickCompleteResultLike
   }
+  'ai:promptCandidates': {
+    args: [input: PromptCandidateInputLike]
+    result: PromptCandidateResultLike
+  }
   'browser:open': {
     args: [input: BrowserOpenInputLike]
     result: BrowserSessionLike
@@ -3763,7 +3830,17 @@ const MAX_WORKFLOW_OUTPUT_CHARS = 64 * 1024
 const MAX_TERMINAL_CONTEXT_LINES = 200
 const MAX_TERMINAL_CONTEXT_LINE_CHARS = 4096
 const MAX_QUICK_COMPLETE_PROMPT_CHARS = 256 * 1024
+const MAX_PROMPT_DRAFT_HASH_CHARS = 512
+const QUICK_COMPLETE_ORIGINS = [
+  'quick-complete:prompt-enhancer',
+  'quick-complete:sdd-requirements',
+  'quick-complete:inline-edit',
+  'quick-complete:browser-summary',
+  'quick-complete:browser-analysis'
+] as const
 const MAX_BROWSER_TEXT_CHARS = 512 * 1024
+const MAX_DECISION_CUSTOM_TEXT_CHARS = 512 * 1024
+const MAX_DECISION_SELECTED_OPTION_IDS = 8
 const MAX_BROWSER_LINKS = 512
 const MAX_BROWSER_KEYWORDS = 128
 const MAX_BROWSER_HEADINGS = 256
@@ -3913,6 +3990,59 @@ function validateRecord(value: unknown, label: string, options: { optional?: boo
 
 function validateNoArgs(args: readonly unknown[]): string | null {
   return args.length === 0 ? null : 'expected no arguments'
+}
+
+function validateDecisionListArgs(args: readonly unknown[]): string | null {
+  if (args.length > 1) return 'expected at most 1 arguments'
+  return validateBoundedString(args[0], 'threadId', { optional: true, max: 256 })
+}
+
+function validateDecisionSubmission(args: readonly unknown[]): string | null {
+  if (args.length !== 1) return 'expected exactly 1 argument'
+  const input = args[0]
+  if (!isRecord(input) || Object.getPrototypeOf(input) !== Object.prototype) {
+    return 'submission must be a plain object'
+  }
+  const submission = input as Record<string, unknown>
+  const allowedKeys = new Set(['requestId', 'outcome', 'selectedOptionIds', 'customText', 'remember'])
+  const values: Record<string, unknown> = {}
+  for (const key of Reflect.ownKeys(submission)) {
+    if (typeof key !== 'string') return 'submission must not contain symbol keys'
+    const descriptor = Object.getOwnPropertyDescriptor(submission, key)
+    if (!descriptor?.enumerable) return `submission.${key} must be enumerable`
+    if (!allowedKeys.has(key)) return `submission contains unknown key ${key}`
+    if (!('value' in descriptor)) return `submission.${key} must be a data property`
+    values[key] = descriptor.value
+  }
+  if (values.selectedOptionIds === null) return 'submission.selectedOptionIds must be an array'
+  if (values.customText === null) return 'submission.customText must be a string'
+  if (values.remember === null) return 'submission.remember must be a boolean'
+  const selectedOptionIdsIssue = validateBoundedStringArray(
+    values.selectedOptionIds,
+    'submission.selectedOptionIds',
+    {
+      optional: true,
+      maxItems: MAX_DECISION_SELECTED_OPTION_IDS,
+      maxStringLength: 256
+    }
+  )
+  if (selectedOptionIdsIssue) return selectedOptionIdsIssue
+  if (
+    Array.isArray(values.selectedOptionIds) &&
+    new Set(values.selectedOptionIds).size !== values.selectedOptionIds.length
+  ) {
+    return 'submission.selectedOptionIds must not contain duplicate IDs'
+  }
+  return (
+    validateBoundedString(values.requestId, 'submission.requestId', { max: 256 }) ||
+    validateEnum(values.outcome, 'submission.outcome', ['selected', 'submitted', 'denied', 'cancelled']) ||
+    validateBoundedString(values.customText, 'submission.customText', {
+      optional: true,
+      allowEmpty: true,
+      max: MAX_DECISION_CUSTOM_TEXT_CHARS
+    }) ||
+    validateBoolean(values.remember, 'submission.remember', { optional: true })
+  )
 }
 
 function validateWorkspaceId(value: unknown, label = 'workspaceId', options: { optional?: boolean } = {}): string | null {
@@ -4593,6 +4723,7 @@ function validateQuickCompleteInput(args: readonly unknown[]): string | null {
   if (recordIssue) return recordIssue
   const record = input as Record<string, unknown>
   return (
+    validateQuickCompleteOrigin(record.origin) ||
     validateBoundedString(record.prompt, 'input.prompt', { max: MAX_QUICK_COMPLETE_PROMPT_CHARS }) ||
     validateBoundedString(record.systemPrompt, 'input.systemPrompt', { optional: true, allowEmpty: true, max: MAX_QUICK_COMPLETE_PROMPT_CHARS }) ||
     validateBoundedString(record.providerId, 'input.providerId', { optional: true, max: 256 }) ||
@@ -4600,6 +4731,24 @@ function validateQuickCompleteInput(args: readonly unknown[]): string | null {
     validateBoundedString(record.workspaceRoot, 'input.workspaceRoot', { optional: true, max: MAX_PROJECT_PATH_CHARS }) ||
     validateNumber(record.timeoutMs, 'input.timeoutMs', { optional: true, integer: true, min: 1000, max: 300000 })
   )
+}
+
+function validatePromptCandidateInput(args: readonly unknown[]): string | null {
+  const input = args[0]
+  const recordIssue = validateRecord(input, 'input')
+  if (recordIssue) return recordIssue
+  const record = input as Record<string, unknown>
+  return (
+    validateEnum(record.origin, 'input.origin', ['quick-complete:prompt-enhancer']) ||
+    validateBoundedString(record.prompt, 'input.prompt', { max: MAX_QUICK_COMPLETE_PROMPT_CHARS }) ||
+    validateBoundedString(record.draftHash, 'input.draftHash', { max: MAX_PROMPT_DRAFT_HASH_CHARS })
+  )
+}
+
+function validateQuickCompleteOrigin(value: unknown): string | null {
+  return typeof value === 'string' && QUICK_COMPLETE_ORIGINS.includes(value as QuickCompleteOriginLike)
+    ? null
+    : 'input.origin is invalid'
 }
 
 function validateBrowserUrl(value: unknown, label: string, options: { optional?: boolean } = {}): string | null {
@@ -4987,8 +5136,43 @@ function validateTurnCreateInput(args: readonly unknown[]): string | null {
     validateBoundedString(record.targetAgent, 'payload.targetAgent', { optional: true, allowEmpty: true, max: 256 }) ||
     (hasOwn(record, 'thinking') ? validateThinkingConfig(record.thinking, 'payload.thinking') : null) ||
     validateRuntimeModelSelection(record.modelSelection, 'payload.modelSelection', { optional: true }) ||
+    (hasOwn(record, 'multiModelFusion') ? validateMultiModelFusionConfig(record.multiModelFusion, 'payload.multiModelFusion') : null) ||
     validateWorkbenchAttachments(record.attachments) ||
     validateSchedulePreview(record.customSchedule)
+  )
+}
+
+function validateMultiModelFusionConfig(value: unknown, label: string): string | null {
+  const recordIssue = validateRecord(value, label)
+  if (recordIssue) return recordIssue
+  const record = value as Record<string, unknown>
+  const allowedKeys = new Set(['enabled', 'maxCandidates', 'maxRounds', 'allowExecutor'])
+  for (const key of Reflect.ownKeys(record)) {
+    if (typeof key !== 'string') return `${label} must not contain symbol keys`
+    if (!allowedKeys.has(key)) return `${label}.${key} is not allowed`
+  }
+  return (
+    validateBoolean(record.enabled, `${label}.enabled`) ||
+    validateNumericChoice(record.maxCandidates, `${label}.maxCandidates`, [2, 3]) ||
+    validateNumericChoice(record.maxRounds, `${label}.maxRounds`, [1, 2, 3]) ||
+    validateBoolean(record.allowExecutor, `${label}.allowExecutor`)
+  )
+}
+
+function validateNumericChoice(value: unknown, label: string, allowed: readonly number[]): string | null {
+  return typeof value === 'number' && allowed.includes(value)
+    ? null
+    : `${label} must be one of: ${allowed.join(', ')}`
+}
+
+function validateTurnRetryInput(args: readonly unknown[]): string | null {
+  const input = args[0]
+  const recordIssue = validateRecord(input, 'input')
+  if (recordIssue) return recordIssue
+  const record = input as Record<string, unknown>
+  return (
+    validateBoundedString(record.turnId, 'input.turnId', { max: 256 }) ||
+    validateEnum(record.retryStrategy, 'input.retryStrategy', ['reuse-selection', 'reoptimize'], { optional: true })
   )
 }
 
@@ -5896,7 +6080,7 @@ function validateProviderRouteBinding(args: readonly unknown[]): string | null {
     validateString(record.providerId, 'binding.providerId') ||
     validateString(record.modelId, 'binding.modelId') ||
     validateThinkingConfig(record.thinking, 'binding.thinking') ||
-    validatePresentEnum(record, 'protocol', 'binding.protocol', ['http', 'stdio-plain', 'acp']) ||
+    validatePresentEnum(record, 'protocol', 'binding.protocol', ['http', 'stdio-plain', 'stdio-ndjson', 'acp']) ||
     validatePresentBoundedString(record, 'binary', 'binding.binary', { allowEmpty: true }) ||
     validatePresentBoundedString(record, 'args', 'binding.args', { allowEmpty: true })
   )
@@ -5960,7 +6144,7 @@ function validateLocalAgentConfigure(args: readonly unknown[]): string | null {
     validateString(args[0], 'agentId') ||
     validatePresentBoundedString(record, 'binary', 'patch.binary', { allowEmpty: true }) ||
     validatePresentBoundedString(record, 'args', 'patch.args', { allowEmpty: true }) ||
-    validatePresentEnum(record, 'protocol', 'patch.protocol', ['stdio-plain', 'acp'])
+    validatePresentEnum(record, 'protocol', 'patch.protocol', ['stdio-plain', 'stdio-ndjson', 'acp'])
   )
 }
 
@@ -6716,6 +6900,16 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
     validate: validateQuickCompleteInput,
     response: (_args, error): QuickCompleteResultLike => ({ ok: false, error })
   },
+  'ai:promptCandidates': {
+    validate: validatePromptCandidateInput,
+    response: (args, error): PromptCandidateResultLike => ({
+      candidates: [],
+      draftHash: typeof args[0] === 'object' && args[0] !== null && typeof (args[0] as Record<string, unknown>).draftHash === 'string'
+        ? (args[0] as Record<string, string>).draftHash
+        : '',
+      error
+    })
+  },
   'browser:open': {
     validate: validateBrowserOpenInput
   },
@@ -6735,7 +6929,10 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
     validate: validateTurnCreateInput
   },
   'turns:retry': {
-    validate: args => validateBoundedString(args[0], 'turnId', { max: 256 })
+    validate: validateTurnRetryInput
+  },
+  'turns:rerunInterrupted': {
+    validate: args => validateBoundedString(args[0], 'originalTurnId', { max: 256 })
   },
   'turns:cancel': {
     validate: args => validateBoundedString(args[0], 'turnId', { max: 256 })
@@ -6743,8 +6940,17 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
   'turns:cancelAgent': {
     validate: args => validateBoundedString(args[0], 'turnId', { max: 256 }) || validateBoundedString(args[1], 'agentId', { max: 256 })
   },
-  'turns:resolveGuard': {
-    validate: args => validateBoundedString(args[0], 'requestId', { max: 256 }) || validateBoolean(args[1], 'approved')
+  'turns:listQueuedSubmissions': {
+    validate: args => validateBoundedString(args[0], 'threadId', { optional: true, max: 256 })
+  },
+  'turns:clearQueue': {
+    validate: args => validateBoundedString(args[0], 'threadId', { max: 256 })
+  },
+  'turns:listPendingDecisions': {
+    validate: validateDecisionListArgs
+  },
+  'turns:resolveDecision': {
+    validate: validateDecisionSubmission
   },
   'hub:status': {
     validate: validateNoArgs
@@ -6794,9 +7000,6 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
   'agentic:getApprovalConfig': {
     validate: validateNoArgs
   },
-  'agentic:getPendingApprovalIds': {
-    validate: validateNoArgs
-  },
   'agentic:setApprovalPreset': {
     validate: args => validateEnum(args[0], 'preset', AGENTIC_APPROVAL_PRESETS)
   },
@@ -6809,9 +7012,6 @@ const ipcRuntimeValidationSpecs: Partial<Record<IpcChannel, IpcRuntimeValidation
       validateEnum(args[1], 'tool', AGENTIC_GUARDED_TOOLS) ||
       (args[2] === null ? null : validateEnum(args[2], 'policy', AGENTIC_APPROVAL_POLICIES))
     )
-  },
-  'agentic:resolveApproval': {
-    validate: args => validateBoundedString(args[0], 'requestId', { max: 256 }) || validateBoolean(args[1], 'approved')
   },
   'skills:list': {
     validate: validateNoArgs

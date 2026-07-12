@@ -1,14 +1,35 @@
 # AgentHub Version Register
 
-Current code version: 2.0.1
+Current code version: 2.1.0
 Current branch baseline: main
-Updated: 2026-07-11
+Updated: 2026-07-12
 
 This file is the release discipline record for AgentHub. Before any release,
 keep `package.json.version`, `package.json.build.buildVersion`, this current
 version, and release notes aligned.
 
 ## Release History
+
+### 2.1.0
+
+Purpose: prompt preparation and durable decision workflow release.
+
+Main changes:
+- Added a prompt-preparation pipeline for every top-level input, including
+  model-generated candidates for broad or explicitly requested optimization.
+- Replaced blocking approval flows with an inline decision bar above the
+  composer so prompt, permission, and Agent decisions resume the same Turn.
+- Added opt-in multi-model fusion with bounded candidate, synthesis, and Judge
+  rounds that produce one gated final response.
+- Hardened decision, dispatch, agent-tool, and ACP boundaries with typed
+  contracts, replay-safe continuations, and read-only fail-closed behavior.
+
+Verification recorded:
+- `npm run typecheck`
+- `npm run lint`
+- `npm test -- --reporter=dot`
+- `npm run test:e2e -- --workers=1`
+- `npm run build:win`
 
 ### 2.0.1
 

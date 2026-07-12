@@ -198,7 +198,7 @@ export interface BindingDef {
   thinking: { mode: 'off' | 'auto' | 'enabled'; level: string; budgetTokens?: number; collapseInUI?: boolean }
   temperature?: number
   maxOutputTokens?: number
-  protocol?: 'http' | 'stdio-plain' | 'acp'
+  protocol?: 'http' | 'stdio-plain' | 'stdio-ndjson' | 'acp'
   binary?: string
   args?: string
 }

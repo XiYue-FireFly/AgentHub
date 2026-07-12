@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { buildProviderClient } from "../client"
 import type { AgentRouteBinding, ModelDefinition, ProviderDefinition } from "../types"
+import { canonicalProviderPayload, createDispatchEnvelope } from "../../runtime/dispatch-envelope"
 
 describe("ProviderClient usage normalization", () => {
   afterEach(() => {
@@ -58,9 +59,24 @@ describe("ProviderClient usage normalization", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(streamFromText(sse), { status: 200 })))
 
     const client = buildProviderClient({ provider, model, binding, thinking: binding.thinking })
+    const messages = [{ role: "user" as const, content: "hello" }]
+    const dispatchEnvelope = createDispatchEnvelope({
+      dispatchId: "usage-dispatch",
+      lineage: { origin: "internal:model-diagnostic", policy: "internal" },
+      payload: canonicalProviderPayload({
+        providerId: provider.id,
+        modelId: model.id,
+        protocol: provider.capabilities.protocol,
+        messages,
+        systemPrompt: "",
+        tools: [],
+        toolChoice: null,
+        thinking: binding.thinking
+      })
+    })
     let finalUsage: any = null
     await client.stream(
-      { messages: [{ role: "user", content: "hello" }] },
+      { messages, dispatchEnvelope },
       { onDone: final => { finalUsage = final.usage } }
     )
 

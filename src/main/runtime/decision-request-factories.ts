@@ -6,6 +6,7 @@ import type {
   DecisionRequest,
   DecisionSource
 } from '../../shared/decision-contract'
+import { ACP_PROTOCOL_OPTION_ID_MAX_CHARS } from '../../shared/acp-permission'
 
 declare const CREATED_DECISION_BRAND: unique symbol
 
@@ -95,6 +96,7 @@ const GUARD_INPUT_KEYS = new Set([
 ])
 const ACP_INPUT_KEYS = new Set([
   'owner',
+  'agentId',
   'title',
   'toolName',
   'options',
@@ -195,6 +197,7 @@ export type AcpPermissionOptionInput = {
 
 export type AcpDecisionInput = {
   owner: DecisionOwner
+  agentId: string
   title: string
   toolName: string
   options: AcpPermissionOptionInput[]
@@ -265,7 +268,7 @@ function brand(request: DecisionRequest): CreatedDecisionRequest {
     allowRemember: request.allowRemember,
     idempotencyKey: request.idempotencyKey,
     createdAt: request.createdAt,
-    deadlineMs: request.deadlineMs,
+    ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
     metadata
   }) as CreatedDecisionRequest
   createdDecisionRequests.add(created)
@@ -767,8 +770,8 @@ export function createGuardDecisionRequest(input: GuardDecisionInput): CreatedDe
 
 export function createAcpDecisionRequest(input: AcpDecisionInput): CreatedDecisionRequest {
   assertDataObject(input, ACP_INPUT_KEYS, 'ACP decision input')
-  if (!isNonBlankString(input.title) || !isNonBlankString(input.toolName)) {
-    throw new Error('ACP title and tool name are required')
+  if (!isNonBlankString(input.agentId) || !isNonBlankString(input.title) || !isNonBlankString(input.toolName)) {
+    throw new Error('ACP agent, title, and tool name are required')
   }
   assertDataArray(input.options, 'ACP options')
   for (const option of input.options) {
@@ -782,8 +785,11 @@ export function createAcpDecisionRequest(input: AcpDecisionInput): CreatedDecisi
   validateOptionalInteger(input.deadlineMs, 'ACP decision deadline')
   validateOptionalNonBlankString(input.idempotencyKey, 'ACP decision idempotency key')
   const optionIds = input.options.map(option => option.optionId)
-  if (optionIds.some(id => typeof id !== 'string' || !id.trim()) || new Set(optionIds).size !== optionIds.length) {
-    throw new Error('ACP option IDs must be non-empty and unique')
+  if (
+    optionIds.some(id => typeof id !== 'string' || !id.trim() || id.length > ACP_PROTOCOL_OPTION_ID_MAX_CHARS) ||
+    new Set(optionIds).size !== optionIds.length
+  ) {
+    throw new Error('ACP option IDs must be non-empty and unique; IDs must be bounded')
   }
 
   return createTrustedDecisionRequest('acp', {
@@ -803,6 +809,7 @@ export function createAcpDecisionRequest(input: AcpDecisionInput): CreatedDecisi
     idempotencyKey: input.idempotencyKey,
     deadlineMs: input.deadlineMs,
     metadata: {
+      agentId: input.agentId,
       toolName: input.toolName,
       action: 'acp_permission'
     }

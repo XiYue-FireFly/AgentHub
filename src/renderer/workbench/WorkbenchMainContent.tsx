@@ -10,6 +10,10 @@ import { WriteWorkspace } from './WriteWorkspace'
 import { ThreadView } from './ThreadView'
 import { ComposerBar, type ComposerSendOverrides, type ComposerSendResult } from './ComposerBar'
 import { GitBranchControl } from './GitBranchControl'
+import { PendingDecisionNotice } from './decisions/PendingDecisionNotice'
+import type { DecisionItem, DraftDecisionItem } from './decisions/decisionAdapters'
+import type { DecisionSubmission } from '../../shared/decision-contract'
+import type { DecisionBarSubmitResult } from './decisions/DecisionBar'
 import type { ViewMode } from './viewModes'
 import type { WorkbenchRightPanel, WorkbenchSettingsTabKey } from './NativeTitlebar'
 import type { AgentMap, WorkspaceItem } from './types'
@@ -56,7 +60,6 @@ interface WorkbenchMainContentProps {
   runSlashCommand: (input: { text: string; command?: WorkbenchCommand | null }) => Promise<boolean>
   retryTurn: (turnId: string) => Promise<void>
   cancelAgent: (turnId: string, agentId: string) => Promise<void>
-  resolveGuard: (requestId: string, approved: boolean) => Promise<void>
   createThread: (workspaceId?: string | null) => Promise<void>
   selectThread: (threadId: string | null) => Promise<void>
   handleThreadScroll: () => void
@@ -87,6 +90,8 @@ interface WorkbenchMainContentProps {
   setMode: (mode: DispatchPreset) => void
   modelSelection: ModelSelection | null
   setModelSelection: (selection: ModelSelection | null) => void
+  multiModelFusion?: boolean
+  setMultiModelFusion?: (enabled: boolean) => void
   thinking: WorkbenchThinking
   setThinking: (thinking: WorkbenchThinking) => void
   schedules: SchedulePreview[]
@@ -94,6 +99,15 @@ interface WorkbenchMainContentProps {
   workspaces: WorkspaceItem[]
   pendingComposerAttachments: WorkbenchAttachment[]
   onExternalAttachmentsConsumed: () => void
+  decisionItem?: DecisionItem | null
+  decisionPosition?: number
+  decisionCount?: number
+  onDecisionSubmit?: (item: DecisionItem, submission: DecisionSubmission) => Promise<DecisionBarSubmitResult> | DecisionBarSubmitResult
+  onDraftDecision?: (decision: DraftDecisionItem) => void
+  onOpenDecisionThread?: (threadId: string) => void
+  pendingDecisionItem?: DecisionItem | null
+  pendingDecisionCount?: number
+  decisionNotice?: string | null
 }
 
 const WorkflowsPanel = React.lazy(() => import('./WorkflowsPanel').then(m => ({ default: m.WorkflowsPanel })))
@@ -138,7 +152,6 @@ export function WorkbenchMainContent({
   runSlashCommand,
   retryTurn,
   cancelAgent,
-  resolveGuard,
   createThread,
   selectThread,
   handleThreadScroll,
@@ -160,13 +173,24 @@ export function WorkbenchMainContent({
   setMode,
   modelSelection,
   setModelSelection,
+  multiModelFusion,
+  setMultiModelFusion,
   thinking,
   setThinking,
   schedules,
   scheduleForMode,
   workspaces,
   pendingComposerAttachments,
-  onExternalAttachmentsConsumed
+  onExternalAttachmentsConsumed,
+  decisionItem = null,
+  decisionPosition = 0,
+  decisionCount = 0,
+  onDecisionSubmit,
+  onDraftDecision,
+  onOpenDecisionThread,
+  pendingDecisionItem = null,
+  pendingDecisionCount = 0,
+  decisionNotice = null
 }: WorkbenchMainContentProps) {
   const composerProps: React.ComponentProps<typeof ComposerBar> = {
     mode,
@@ -175,6 +199,8 @@ export function WorkbenchMainContent({
     bindings,
     modelSelection,
     setModelSelection,
+    multiModelFusion,
+    setMultiModelFusion,
     thinking,
     setThinking,
     schedules,
@@ -198,7 +224,12 @@ export function WorkbenchMainContent({
     gitBranchNode: <GitBranchControl workspaceId={workspaceId} onOpenGit={() => setRightPanel('git')} compact />,
     threadId: activeThreadId,
     turns: activeTurns,
-    events: activeEvents
+    events: activeEvents,
+    decisionItem,
+    decisionPosition,
+    decisionCount,
+    onDecisionSubmit,
+    onDraftDecision
   }
   return (
     <main className="wb-main">
@@ -276,7 +307,6 @@ export function WorkbenchMainContent({
             events={activeEvents}
             onRetry={retryTurn}
             onCancelAgent={cancelAgent}
-            onResolveGuard={resolveGuard}
             openSetup={openSetup}
             onCreateProject={openCreateProject}
             onCreateThread={createThread}
@@ -292,6 +322,14 @@ export function WorkbenchMainContent({
         </>
         </ErrorBoundary>
       )}
+
+      <PendingDecisionNotice
+        view={view}
+        count={pendingDecisionCount}
+        threadId={pendingDecisionItem?.threadId ?? null}
+        onOpenThread={onOpenDecisionThread || (() => {})}
+      />
+      {decisionNotice && <div className="wb-decision-resolution-notice" role="status">{decisionNotice}</div>}
 
       <PersistentComposer active={view === 'chat'} composerProps={composerProps} />
 

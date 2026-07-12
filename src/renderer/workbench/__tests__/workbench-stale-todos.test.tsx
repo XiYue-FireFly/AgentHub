@@ -15,7 +15,6 @@ const observedSidebar = vi.hoisted(() => ({
   threads: [] as WorkbenchThread[]
 }))
 
-vi.mock('../../glass/approval-dialog', () => ({ ApprovalDialog: () => null }))
 vi.mock('../CommandPalette', () => ({ CommandPalette: () => null }))
 vi.mock('../CreateWorkspaceDialog', () => ({ CreateWorkspaceDialog: () => null }))
 vi.mock('../NativeTitlebar', () => ({ NativeTitlebar: () => null }))
@@ -95,11 +94,6 @@ function deferred<T>() {
 
 function installElectronApi(pendingTodosA: Promise<ThreadTodo[]>) {
   const api = {
-    agentic: {
-      getPendingApprovalIds: vi.fn(async () => stableEmptyArray),
-      resolveApproval: vi.fn(async () => true),
-      setApprovalOverride: vi.fn(async () => undefined)
-    },
     app: { onMenuCommand: vi.fn(() => vi.fn()) },
     goals: { get: vi.fn(async () => null) },
     localAgents: { status: vi.fn(async () => stableEmptyArray) },

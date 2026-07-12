@@ -104,6 +104,7 @@ export function syncRegistryFromBindings(registry: AgentRegistry, bindings: Agen
 
 function isRegistryBindingUsable(binding: AgentRouteBinding): boolean {
   const protocol = binding.protocol || "http"
+  if (protocol === "stdio-ndjson") return !!(binding.binary || "").trim()
   if (protocol !== "stdio-plain") return true
   if ((binding.binary || "").trim()) return true
   return ["codex", "claude", "hermes", "openclaw", "minimax-code"].includes(binding.agentId)

@@ -14,21 +14,18 @@ vi.mock("../store", () => ({
 
 vi.mock("../../agentic/approval", () => ({
   getApprovalConfig: () => ({
-    getConfig: () => ({ preset: "full-access" })
+    getConfig: () => ({ preset: "custom" })
   })
 }))
 
-vi.mock("../guard-approval-service", () => ({
-  emitGuardVerdict: vi.fn(async () => undefined),
-  requestGuardApproval: vi.fn(async () => ({ requestId: "guard-1", decision: "approved" })),
-  executorVerdictNeedsApproval: vi.fn(() => false)
-}))
-
 vi.mock("../guards", () => ({
-  guardShouldBlockExecutor: vi.fn(() => false)
+  explicitGuardVerdictFromText: vi.fn(() => ({ level: "high", status: "block", reasons: ["unsafe output"] })),
+  riskVerdictForText: vi.fn(() => ({ level: "low", status: "pass", reasons: [] })),
+  guardShouldBlockExecutor: vi.fn((verdict, role) => role === "reviewer" && verdict.status === "block")
 }))
 
 import { runCustomScheduleTurn } from "../schedule-helpers"
+import { GuardDecisionAdapter } from "../decision-adapters/guard-decision-adapter"
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -104,5 +101,57 @@ describe("custom schedule finalization", () => {
       "schedule prompt",
       "final schedule secret"
     )
+  })
+
+  it("does not invent a parent dispatch ID for a root schedule child", async () => {
+    h.completeTurnWithFinalEvent.mockResolvedValueOnce(true)
+    const input = scheduleInput(vi.fn(async () => undefined))
+
+    await expect(runCustomScheduleTurn(input)).resolves.toEqual({ status: "completed" })
+
+    const dispatchOptions = input.dispatcher.dispatch.mock.calls[0][3]
+    expect(dispatchOptions.parentDispatchId).toBeUndefined()
+    expect(dispatchOptions.lineage).toMatchObject({ origin: "internal:schedule", policy: "internal" })
+    expect(dispatchOptions.lineage.parentDispatchId).toBeUndefined()
+  })
+
+  it("uses the trusted Guard adapter for the same Turn identity", async () => {
+    h.completeTurnWithFinalEvent.mockResolvedValueOnce(true)
+    const decisionService = {
+      request: vi.fn(async () => ({
+        requestId: "guard-decision-1",
+        status: "selected" as const,
+        selectedOptionIds: ["allow-once"],
+        resolvedAt: 1
+      }))
+    }
+    const input = scheduleInput(vi.fn(async () => undefined))
+    input.workspaceId = "workspace-1"
+    input.schedule = {
+      preset: "custom",
+      label: "Review",
+      steps: [{ id: "review", label: "Review", role: "reviewer", agentId: "codex" }]
+    }
+    input.dispatcher.dispatch.mockResolvedValue({
+      status: "completed",
+      results: new Map([["codex", "BLOCK: unsafe output"]]),
+      errors: new Map<string, string>()
+    })
+    input.guardDecisionAdapter = new GuardDecisionAdapter({ decisionService })
+    input.guardDecisionOwner = {
+      type: "turn",
+      threadId: "thread-schedule",
+      turnId: "turn-schedule",
+      workspaceId: "workspace-1",
+      webContentsId: 7
+    }
+
+    await expect(runCustomScheduleTurn(input)).resolves.toEqual({ status: "completed" })
+    expect(decisionService.request).toHaveBeenCalledWith(expect.objectContaining({
+      source: "guard",
+      owner: input.guardDecisionOwner,
+      idempotencyKey: "guard:turn-schedule:review",
+      deadlineMs: 300_000
+    }))
   })
 })

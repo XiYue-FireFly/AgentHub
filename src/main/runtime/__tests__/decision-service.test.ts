@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs"
 import type { DecisionOwner, DecisionRequest, DecisionResolution } from "../../../shared/decision-contract"
 import type { DurableDecisionRecord } from "../types"
 import {
+  createAcpDecisionRequest,
   createAgentDecisionRequest,
   createPromptDecisionRequest,
   createToolDecisionRequest
@@ -76,10 +77,16 @@ function promptDecision(owner: DecisionOwner, title: string) {
   })
 }
 
-function toolDecision(owner: DecisionOwner, idempotencyKey: string, deadlineMs?: number, allowRemember = false) {
+function toolDecision(
+  owner: DecisionOwner,
+  idempotencyKey: string,
+  deadlineMs?: number,
+  allowRemember = false,
+  agentId = "codex"
+) {
   return createToolDecisionRequest({
     owner,
-    agentId: "codex",
+    agentId,
     tool: "exec",
     toolName: "shell",
     action: "run command",
@@ -88,6 +95,20 @@ function toolDecision(owner: DecisionOwner, idempotencyKey: string, deadlineMs?:
     risk: "high",
     deadlineMs,
     allowRemember,
+    idempotencyKey
+  })
+}
+
+function acpDecision(owner: DecisionOwner, idempotencyKey: string, agentId: string) {
+  return createAcpDecisionRequest({
+    owner,
+    agentId,
+    title: 'ACP permission',
+    toolName: 'shell',
+    options: [
+      { optionId: 'deny.exact', name: 'Deny', kind: 'deny_once' },
+      { optionId: 'allow.once/exact', name: 'Allow once', kind: 'allow_once' }
+    ],
     idempotencyKey
   })
 }
@@ -926,6 +947,68 @@ describe("DecisionService durable lifecycle", () => {
     await waitForRecord(runtime, shutdownRequest.id, "terminal")
   })
 
+  it("cancels only the selected agent's pending tool decision and promotes another agent", async () => {
+    const { runtime, thread, turn } = await createRuntimeTurn()
+    const service = createService(runtime)
+    const owner = turnOwner(thread.id, turn.id)
+    const codex = toolDecision(owner, "codex-pending", undefined, false, "codex")
+    const claude = toolDecision(owner, "claude-pending", undefined, false, "claude")
+    const codexWaiting = service.request(codex)
+    const claudeWaiting = service.request(claude)
+    await waitForRecord(runtime, codex.id, "active")
+    await waitForRecord(runtime, claude.id, "queued")
+
+    await service.cancelAgentDecisions(turn.id, "codex")
+
+    await expect(codexWaiting).resolves.toMatchObject({ status: "cancelled" })
+    await waitForRecord(runtime, claude.id, "active")
+    expect(service.listPending({ threadId: thread.id }).map(item => item.request.id)).toEqual([claude.id])
+    expect(runtime.getTurn(turn.id)?.status).toBe("awaiting-decision")
+    await resolveOne(service, claude)
+    await expect(claudeWaiting).resolves.toMatchObject({ status: "selected" })
+    expect(runtime.getTurn(turn.id)?.status).toBe("running")
+  })
+
+  it('cancels only the selected agent ACP decision using trusted ACP agent metadata', async () => {
+    const { runtime, thread, turn } = await createRuntimeTurn()
+    const service = createService(runtime)
+    const owner = turnOwner(thread.id, turn.id)
+    const codex = acpDecision(owner, 'acp:codex:step-1', 'codex')
+    const claude = acpDecision(owner, 'acp:claude:step-1', 'claude')
+    const codexWaiting = service.request(codex)
+    const claudeWaiting = service.request(claude)
+    await waitForRecord(runtime, codex.id, 'active')
+    await waitForRecord(runtime, claude.id, 'queued')
+
+    await service.cancelAgentDecisions(turn.id, 'codex')
+
+    await expect(codexWaiting).resolves.toMatchObject({ status: 'cancelled' })
+    await waitForRecord(runtime, claude.id, 'active')
+    await resolveOne(service, claude)
+    await expect(claudeWaiting).resolves.toMatchObject({ status: 'selected' })
+  })
+
+  it('admits only the first durable ACP request for a duplicate idempotency key', async () => {
+    const { runtime, thread, turn } = await createRuntimeTurn()
+    const service = createService(runtime)
+    const owner = turnOwner(thread.id, turn.id)
+    const first = acpDecision(owner, 'acp:duplicate', 'codex')
+    const duplicate = acpDecision(owner, 'acp:duplicate', 'codex')
+    const admitted = vi.fn()
+    const duplicateAdmitted = vi.fn()
+
+    const firstWaiting = service.request(first, { onAdmitted: admitted } as any)
+    const duplicateWaiting = service.request(duplicate, { onAdmitted: duplicateAdmitted } as any)
+    await waitForRecord(runtime, first.id, 'active')
+
+    expect(admitted).toHaveBeenCalledWith(expect.objectContaining({ id: first.id }))
+    expect(duplicateAdmitted).not.toHaveBeenCalled()
+    expect(runtime.listDurableDecisions().map(record => record.request.id)).toEqual([first.id])
+    await resolveOne(service, first)
+    await expect(firstWaiting).resolves.toMatchObject({ requestId: first.id, status: 'selected' })
+    await expect(duplicateWaiting).resolves.toMatchObject({ requestId: first.id, status: 'selected' })
+  })
+
   it.each(["completed", "failed", "interrupted"] as const)(
     "does not let a late cancel overwrite a %s Turn",
     async terminalStatus => {
@@ -1426,14 +1509,12 @@ describe("DecisionService durable lifecycle", () => {
     const producerClose = source.indexOf("runtimeProducers.close()", willQuit)
     const boundedShutdown = source.indexOf("runShutdownStepWithDeadline", producerClose)
     const hubStop = source.indexOf("hub?.stop()", willQuit)
-    const guardClear = source.indexOf("clearAllGuardApprovals()", willQuit)
     const adapterDrain = source.indexOf("drainRuntimeProducersForShutdown", serviceShutdown)
     const finalFlush = source.indexOf("finalizeRuntimePersistenceForShutdown", serviceShutdown)
     expect(serviceShutdown).toBeGreaterThan(willQuit)
     expect(serviceShutdown).toBeLessThan(producerClose)
     expect(producerClose).toBeLessThan(boundedShutdown)
     expect(serviceShutdown).toBeLessThan(hubStop)
-    expect(serviceShutdown).toBeLessThan(guardClear)
     expect(serviceShutdown).toBeLessThan(adapterDrain)
     expect(serviceShutdown).toBeLessThan(finalFlush)
   })

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
 // ActivityTrail reserved for future activity view integration
 
@@ -21,7 +21,6 @@ export function ThreadView({
   events,
   onRetry,
   onCancelAgent,
-  onResolveGuard,
   openSetup,
   onCreateProject,
   onCreateThread,
@@ -36,7 +35,6 @@ export function ThreadView({
   events: RuntimeEvent[]
   onRetry: (turnId: string) => void
   onCancelAgent: (turnId: string, agentId: string) => void
-  onResolveGuard: (requestId: string, approved: boolean) => void
   openSetup: (tab?: SetupTab | 'appearance') => void
   onCreateProject: () => void
   onCreateThread: () => void
@@ -76,25 +74,59 @@ export function ThreadView({
   return (
     <section className="wb-thread" ref={scrollRef} onScroll={onScroll}>
       {turns.map(turn => (
-        <article key={turn.id} className="wb-turn">
+        <article key={turn.id} className="wb-turn" data-turn-id={turn.id}>
           <div className="wb-user-message">
             <div>
               <strong>{turn.prompt}</strong>
               <small>{turnLabel(turn)} / {statusLabel(turn.status)}</small>
               {turn.attachments?.length ? <AttachmentStrip attachments={turn.attachments} /> : null}
             </div>
-            {isTerminalTurnStatus(turn.status) && (
+            {isTerminalTurnStatus(turn.status) && turn.status !== 'interrupted' && (
               <button onClick={() => onRetry(turn.id)} title={tr('重试', 'Retry')}><Icon d={IC.refresh} size={14} /></button>
             )}
           </div>
-          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} threadId={thread?.id} onForkThread={onForkThread} />
+          {turn.status === 'interrupted' && <InterruptedDecisionRecovery turnId={turn.id} />}
+          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} workspaceRoot={workspaceRoot} threadId={thread?.id} onForkThread={onForkThread} />
         </article>
       ))}
     </section>
   )
 }
 
-function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId, onForkThread }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string; onForkThread?: (threadId: string) => void }) {
+function InterruptedDecisionRecovery({ turnId }: { turnId: string }) {
+  const [rerunning, setRerunning] = useState(false)
+  const [rerunComplete, setRerunComplete] = useState(false)
+  const [rerunError, setRerunError] = useState<string | null>(null)
+  const rerunInFlight = useRef(false)
+
+  const rerunTurn = async () => {
+    if (rerunInFlight.current) return
+    rerunInFlight.current = true
+    setRerunning(true)
+    setRerunError(null)
+    try {
+      await window.electronAPI.turns.rerunInterrupted(turnId)
+      setRerunComplete(true)
+    } catch {
+      setRerunError('Unable to rerun turn. Try again.')
+    } finally {
+      rerunInFlight.current = false
+      setRerunning(false)
+    }
+  }
+
+  return (
+    <div className="wb-decision-recovery" role="status">
+      <span>Turn interrupted by restart</span>
+      <button type="button" disabled={rerunning || rerunComplete} onClick={() => { void rerunTurn() }}>
+        {rerunComplete ? 'Turn rerun' : rerunning ? 'Rerunning Turn…' : 'Rerun Turn'}
+      </button>
+      {rerunError && <span role="alert">{rerunError}</span>}
+    </div>
+  )
+}
+
+function AgentOutputs({ turn, events, openSetup, onCancelAgent, workspaceRoot, threadId, onForkThread }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; workspaceRoot?: string | null; threadId?: string; onForkThread?: (threadId: string) => void }) {
   const grouped = new Map<string, RuntimeEvent[]>()
   const visibleEvents = events.filter(isChatVisibleRuntimeEvent)
   for (const event of visibleEvents) {
@@ -148,7 +180,7 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
             )}
             {summary.orch.length > 0 && <OrchestrateCompact events={summary.orch} turnStatus={turn.status} workspaceRoot={workspaceRoot} />}
             {(summary.routeEvents.length > 0 || summary.guardEvents.length > 0) && (
-              <RoleEvents routeEvents={summary.routeEvents} guardEvents={summary.guardEvents} onResolveGuard={onResolveGuard} />
+              <RoleEvents routeEvents={summary.routeEvents} guardEvents={summary.guardEvents} />
             )}
             {text && (!isTerminalTurnStatus(status) ? <pre className="wb-streaming-text">{text}</pre> : <MarkdownBlock content={text} workspaceRoot={workspaceRoot} />)}
             {doneContent && !text && <MarkdownBlock content={doneContent} workspaceRoot={workspaceRoot} />}
@@ -597,22 +629,11 @@ function eventGroupKey(event: RuntimeEvent): string {
 
 function RoleEvents({
   routeEvents,
-  guardEvents,
-  onResolveGuard
+  guardEvents
 }: {
   routeEvents: RuntimeEvent[]
   guardEvents: RuntimeEvent[]
-  onResolveGuard: (requestId: string, approved: boolean) => void
 }) {
-  const resolvedGuardRequests = new Set(guardEvents
-    .filter(event => event.payload?.requestId && event.payload?.decision)
-    .map(event => String(event.payload.requestId)))
-  const visibleGuards = guardEvents.filter(event => {
-    const requestId = event.payload?.requestId
-    if (!requestId) return true
-    if (event.payload?.decision) return true
-    return !resolvedGuardRequests.has(String(requestId))
-  })
   return (
     <div className="wb-role-events">
       {routeEvents.slice(-2).map(event => (
@@ -622,17 +643,11 @@ function RoleEvents({
           {Array.isArray(event.payload?.scores) && <small>{event.payload.scores.slice(0, 3).map((item: any) => `${item.id} ${item.score}`).join(' / ')}</small>}
         </div>
       ))}
-      {visibleGuards.slice(-4).map(event => (
+      {guardEvents.slice(-4).map(event => (
         <div key={event.id} className={'wb-role-event guard ' + (event.payload?.level || 'low') + (event.payload?.requiresUserDecision ? ' pending' : '')}>
           <strong>{event.payload?.role || 'Guard'}</strong>
           <span>{guardStatusText(event.payload)}</span>
           {Array.isArray(event.payload?.reasons) && <small>{event.payload.reasons.join('; ')}</small>}
-          {event.payload?.requiresUserDecision && event.payload?.requestId && (
-            <div className="wb-role-event-actions">
-              <button onClick={() => onResolveGuard(event.payload.requestId, true)}>{tr('继续执行', 'Continue')}</button>
-              <button onClick={() => onResolveGuard(event.payload.requestId, false)}>{tr('停止', 'Stop')}</button>
-            </div>
-          )}
         </div>
       ))}
     </div>
@@ -825,10 +840,7 @@ function outputStatus(turnStatus: WorkbenchTurnStatus, eventsOrSummary: RuntimeE
     if (eventsOrSummary.hasError || eventsOrSummary.hasOrchestrateError) return 'failed'
     if (eventsOrSummary.hasDone || eventsOrSummary.hasOrchestrateFinal) return 'completed'
     if (eventsOrSummary.routeEvents.length > 0 || eventsOrSummary.guardEvents.length > 0) {
-      const pendingGuard = eventsOrSummary.guardEvents.some(event => event.payload?.requiresUserDecision && !event.payload?.decision)
-      return pendingGuard && !isTerminalTurnStatus(turnStatus)
-        ? turnStatus === 'queued' ? 'running' : turnStatus
-        : 'completed'
+      return turnStatus === 'queued' ? 'running' : turnStatus
     }
   }
   if (agentId === 'orchestrate' && isTerminalTurnStatus(turnStatus)) return turnStatus

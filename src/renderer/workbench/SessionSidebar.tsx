@@ -33,7 +33,8 @@ export function SessionSidebar({
   search,
   setSearch,
   proxyHost,
-  pendingThreadId
+  pendingThreadId,
+  decisionCount = {}
 }: {
   view: ViewMode
   setView: (view: ViewMode) => void
@@ -53,6 +54,7 @@ export function SessionSidebar({
   setSearch: (value: string) => void
   proxyHost: string
   pendingThreadId: string | null
+  decisionCount?: Record<string, number>
 }) {
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
@@ -332,6 +334,7 @@ export function SessionSidebar({
                     selectThread={selectThread}
                     onRename={startRename}
                     onDelete={removeThread}
+                    decisionCount={decisionCount[thread.id] ?? 0}
                   />
                 ))}
                 {query && visiblePersonalThreads.length === 0 && (
@@ -402,6 +405,7 @@ export function SessionSidebar({
                       selectThread={selectThread}
                       onRename={startRename}
                       onDelete={removeThread}
+                      decisionCount={decisionCount[thread.id] ?? 0}
                     />
                   ))}
                   {query && visibleThreads.length === 0 && (
@@ -474,7 +478,8 @@ function ThreadItem({
   pending,
   selectThread,
   onRename,
-  onDelete
+  onDelete,
+  decisionCount
 }: {
   thread: WorkbenchThread
   active: boolean
@@ -482,12 +487,25 @@ function ThreadItem({
   selectThread: (id: string | null) => void
   onRename: (thread: WorkbenchThread) => void
   onDelete: (thread: WorkbenchThread) => void
+  decisionCount: number
 }) {
   const running = Boolean(thread.lastTurnStatus && !isTerminalTurnStatus(thread.lastTurnStatus))
   return (
     <div className={'wb-thread-item' + (active ? ' active' : '') + (pending ? ' pending' : '')}>
       <button className="wb-thread-main" onClick={() => selectThread(thread.id)} title={thread.title} aria-busy={pending}>
-        <span>{thread.title}</span>
+        <span>
+          {thread.title}
+          {decisionCount > 0 && (
+            <span
+              className="wb-decision-count"
+              role="status"
+              aria-live="polite"
+              aria-label={`${decisionCount} pending decision${decisionCount === 1 ? '' : 's'}`}
+            >
+              {decisionCount}
+            </span>
+          )}
+        </span>
         <small>
           <i className={'wb-thread-status ' + statusClass(thread.lastTurnStatus)}></i>
           {pending && <i className="wb-thread-running" title={tr('切换中', 'Switching')} />}

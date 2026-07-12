@@ -30,7 +30,6 @@ describe('agentic IPC runtime validation', () => {
     const presetHandler = vi.fn(async () => approvalConfig)
     const defaultHandler = vi.fn(async () => approvalConfig)
     const overrideHandler = vi.fn(async () => approvalConfig)
-    const resolveHandler = vi.fn(async () => true)
     const { typedHandle } = await import('../typed-ipc')
     typedHandle('agentic:capabilities', capabilitiesHandler)
     typedHandle('agentic:setEnabled', setEnabledHandler)
@@ -38,7 +37,6 @@ describe('agentic IPC runtime validation', () => {
     typedHandle('agentic:setApprovalPreset', presetHandler)
     typedHandle('agentic:setApprovalDefault', defaultHandler)
     typedHandle('agentic:setApprovalOverride', overrideHandler)
-    typedHandle('agentic:resolveApproval', resolveHandler)
 
     expect(() => electronMock.handlers.get('agentic:capabilities')?.({}, 'extra')).toThrow(
       new IpcPayloadValidationError('agentic:capabilities', 'expected no arguments')
@@ -61,17 +59,12 @@ describe('agentic IPC runtime validation', () => {
     expect(() => electronMock.handlers.get('agentic:setApprovalOverride')?.({}, 'codex', 'write', 'sometimes')).toThrow(
       new IpcPayloadValidationError('agentic:setApprovalOverride', 'policy must be one of: allow, ask, deny')
     )
-    expect(() => electronMock.handlers.get('agentic:resolveApproval')?.({}, 'approval-1', 1)).toThrow(
-      new IpcPayloadValidationError('agentic:resolveApproval', 'approved must be a boolean')
-    )
-
     expect(capabilitiesHandler).not.toHaveBeenCalled()
     expect(setEnabledHandler).not.toHaveBeenCalled()
     expect(setModeHandler).not.toHaveBeenCalled()
     expect(presetHandler).not.toHaveBeenCalled()
     expect(defaultHandler).not.toHaveBeenCalled()
     expect(overrideHandler).not.toHaveBeenCalled()
-    expect(resolveHandler).not.toHaveBeenCalled()
   })
 
   it('passes valid agentic payloads through unchanged', async () => {
@@ -81,7 +74,6 @@ describe('agentic IPC runtime validation', () => {
     const presetHandler = vi.fn(async () => approvalConfig)
     const defaultHandler = vi.fn(async () => approvalConfig)
     const overrideHandler = vi.fn(async () => approvalConfig)
-    const resolveHandler = vi.fn(async () => false)
     const { typedHandle } = await import('../typed-ipc')
     typedHandle('agentic:getEnabled', getEnabledHandler)
     typedHandle('agentic:setEnabled', setEnabledHandler)
@@ -89,7 +81,6 @@ describe('agentic IPC runtime validation', () => {
     typedHandle('agentic:setApprovalPreset', presetHandler)
     typedHandle('agentic:setApprovalDefault', defaultHandler)
     typedHandle('agentic:setApprovalOverride', overrideHandler)
-    typedHandle('agentic:resolveApproval', resolveHandler)
 
     await expect(electronMock.handlers.get('agentic:getEnabled')?.({})).resolves.toEqual(['codex'])
     await expect(electronMock.handlers.get('agentic:setEnabled')?.({}, 'codex', true)).resolves.toEqual(['codex'])
@@ -97,7 +88,6 @@ describe('agentic IPC runtime validation', () => {
     await expect(electronMock.handlers.get('agentic:setApprovalPreset')?.({}, 'custom')).resolves.toBe(approvalConfig)
     await expect(electronMock.handlers.get('agentic:setApprovalDefault')?.({}, 'write', 'ask')).resolves.toBe(approvalConfig)
     await expect(electronMock.handlers.get('agentic:setApprovalOverride')?.({}, 'codex', 'exec', null)).resolves.toBe(approvalConfig)
-    await expect(electronMock.handlers.get('agentic:resolveApproval')?.({}, 'approval-1', false)).resolves.toBe(false)
 
     expect(getEnabledHandler).toHaveBeenCalledWith({})
     expect(setEnabledHandler).toHaveBeenCalledWith({}, 'codex', true)
@@ -105,6 +95,5 @@ describe('agentic IPC runtime validation', () => {
     expect(presetHandler).toHaveBeenCalledWith({}, 'custom')
     expect(defaultHandler).toHaveBeenCalledWith({}, 'write', 'ask')
     expect(overrideHandler).toHaveBeenCalledWith({}, 'codex', 'exec', null)
-    expect(resolveHandler).toHaveBeenCalledWith({}, 'approval-1', false)
   })
 })

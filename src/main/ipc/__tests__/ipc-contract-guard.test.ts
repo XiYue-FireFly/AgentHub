@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
@@ -20,6 +20,10 @@ const mcpIpc = readFileSync(join(__dirname, '../mcp-ipc.ts'), 'utf-8')
 const memoryIpc = readFileSync(join(__dirname, '../memory-ipc.ts'), 'utf-8')
 const gitIpc = readFileSync(join(__dirname, '../git-ipc.ts'), 'utf-8')
 const missingIpc = readFileSync(join(__dirname, '../missing-ipc.ts'), 'utf-8')
+const decisionIpcPath = join(__dirname, '../decision-ipc.ts')
+const decisionIpc = existsSync(decisionIpcPath) ? readFileSync(decisionIpcPath, 'utf-8') : ''
+const turnsIpcPath = join(__dirname, '../turns-ipc.ts')
+const turnsIpc = existsSync(turnsIpcPath) ? readFileSync(turnsIpcPath, 'utf-8') : ''
 const indexIpc = readFileSync(join(__dirname, '../index.ts'), 'utf-8')
 const mainIndex = readFileSync(join(__dirname, '../../index.ts'), 'utf-8')
 const preload = readFileSync(join(__dirname, '../../../preload/index.ts'), 'utf-8')
@@ -318,11 +322,9 @@ const contractedChannels = [
   'agentic:getMode',
   'agentic:setMode',
   'agentic:getApprovalConfig',
-  'agentic:getPendingApprovalIds',
   'agentic:setApprovalPreset',
   'agentic:setApprovalDefault',
   'agentic:setApprovalOverride',
-  'agentic:resolveApproval',
   'threads:list',
   'threads:create',
   'threads:rename',
@@ -331,9 +333,13 @@ const contractedChannels = [
   'threads:fork',
   'turns:create',
   'turns:retry',
+  'turns:rerunInterrupted',
   'turns:cancel',
   'turns:cancelAgent',
-  'turns:resolveGuard',
+  'turns:listQueuedSubmissions',
+  'turns:clearQueue',
+  'turns:listPendingDecisions',
+  'turns:resolveDecision',
   'runtime:snapshot',
   'runtime:eventsSince',
   'shortcuts:list',
@@ -417,7 +423,7 @@ describe('IPC contract guard', () => {
   })
 
   it('registers migrated main-process handlers through typedHandle', () => {
-    const source = `${indexIpc}\n${mainIndex}\n${providerIpc}\n${workflowIpc}\n${pluginsIpc}\n${passthroughIpc}\n${browserIpc}\n${terminalIpc}\n${terminalPtyIpc}\n${hubThreadsIpc}\n${conversationIpc}\n${agentLoopIpc}\n${modelsIpc}\n${mcpIpc}\n${memoryIpc}\n${gitIpc}\n${workspaceIpc}\n${sddIpc}\n${missingIpc}`
+    const source = `${indexIpc}\n${mainIndex}\n${providerIpc}\n${workflowIpc}\n${pluginsIpc}\n${passthroughIpc}\n${browserIpc}\n${terminalIpc}\n${terminalPtyIpc}\n${hubThreadsIpc}\n${conversationIpc}\n${agentLoopIpc}\n${modelsIpc}\n${mcpIpc}\n${memoryIpc}\n${gitIpc}\n${workspaceIpc}\n${sddIpc}\n${missingIpc}\n${decisionIpc}\n${turnsIpc}`
     const typedChannels = collectFirstStringArgs(source, 'typedHandle')
     const directChannels = collectFirstStringArgs(source, 'ipcMain.handle')
     for (const channel of contractedChannels) {
@@ -441,11 +447,42 @@ describe('IPC contract guard', () => {
     expect(preload).toMatch(/typedInvoke\(\s*['"]turns:create['"]/)
     expect(preload).toMatch(/typedInvoke\(\s*['"]turns:retry['"]/)
     expect(contract).toMatch(/['"]turns:create['"]:\s*{\s*args:\s*\[payload: TurnCreateInputLike\]\s*result:\s*TurnCreateResultLike\s*}/)
-    expect(contract).toMatch(/['"]turns:retry['"]:\s*{\s*args:\s*\[turnId: string\]\s*result:\s*TurnCreateResultLike\s*}/)
+    expect(contract).toMatch(/export type TurnRetryStrategyLike = ['"]reuse-selection['"] \| ['"]reoptimize['"]/)
+    expect(contract).toMatch(/export interface TurnRetryInputLike\s*{\s*turnId: string\s*retryStrategy\?: TurnRetryStrategyLike\s*}/)
+    expect(contract).toMatch(/['"]turns:retry['"]:\s*{\s*args:\s*\[input: TurnRetryInputLike\]\s*result:\s*TurnCreateResultLike\s*}/)
     expect(preload).toMatch(/create:\s*\(input: IpcArgs<['"]turns:create['"]>\[0\]\)/)
-    expect(preload).toMatch(/retry:\s*\(turnId: string\) => typedInvoke\(['"]turns:retry['"], turnId\)/)
+    expect(preload).toMatch(/retry:\s*\(input: IpcArgs<['"]turns:retry['"]>\[0\]\) => typedInvoke\(['"]turns:retry['"], input\)/)
     expect(readFileSync(join(__dirname, '../../../renderer/vite-env.d.ts'), 'utf-8')).not.toMatch(
       /(create:\s*\([^)]*\)\s*=>\s*Promise<any>|retry:\s*\([^)]*\)\s*=>\s*Promise<any>)/
     )
+  })
+
+  it('keeps sender-bound Decision IPC in the contract, preload, and central registrar', () => {
+    expect(contract).toMatch(/['"]turns:listPendingDecisions['"]:\s*{\s*args:\s*\[threadId\?: string\]/)
+    expect(contract).toMatch(/['"]turns:resolveDecision['"]:\s*{\s*args:\s*\[submission: DecisionSubmission\]/)
+    expect(contract).toMatch(/function validateDecisionSubmission/)
+    expect(preload).toMatch(/typedInvoke\(\s*['"]turns:listPendingDecisions['"]/)
+    expect(preload).toMatch(/typedInvoke\(\s*['"]turns:resolveDecision['"]/)
+    expect(indexIpc).toMatch(/registerDecisionIpc\(/)
+    expect(decisionIpc).toMatch(/function registerDecisionIpc/)
+    expect(decisionIpc).toMatch(/function senderScope/)
+  })
+
+  it('keeps durable queue IPC in the contract, preload, and central registrar', () => {
+    expect(contract).toMatch(/['"]turns:listQueuedSubmissions['"]:\s*{\s*args:\s*\[threadId\?: string\]/)
+    expect(contract).toMatch(/['"]turns:clearQueue['"]:\s*{\s*args:\s*\[threadId: string\]/)
+    expect(contract).toMatch(/['"]turns:rerunInterrupted['"]:\s*{\s*args:\s*\[originalTurnId: string\]/)
+    expect(preload).toMatch(/typedInvoke\(\s*['"]turns:listQueuedSubmissions['"]/)
+    expect(preload).toMatch(/typedInvoke\(\s*['"]turns:clearQueue['"]/)
+    expect(indexIpc).toMatch(/registerTurnsIpc\(/)
+    expect(turnsIpc).toMatch(/function registerTurnsIpc/)
+  })
+
+  it('keeps main-process turn execution in the runner and central registrar', () => {
+    expect(mainIndex).not.toContain('Legacy turns handlers')
+    expect(mainIndex).not.toMatch(/typedHandle\(\s*['"]turns:/)
+    expect(mainIndex).toMatch(/new WorkbenchTurnRunner(?:<[^>]+>)?\s*\(/)
+    expect(mainIndex).toMatch(/new ThreadExecutionCoordinator\(/)
+    expect(indexIpc).toMatch(/registerTurnsIpc\(/)
   })
 })

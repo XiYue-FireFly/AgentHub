@@ -54,7 +54,7 @@ describe('agenthub-cli (Wave4 P4)', () => {
     const result = runCli([
       'run',
       '--workspace', ws,
-      '--prompt', 'hello world',
+      '--prompt', 'Run the focused tests',
       '--mode', 'orchestrate',
       '--dry-run',
       '--runs-dir', runsDir
@@ -64,8 +64,27 @@ describe('agenthub-cli (Wave4 P4)', () => {
     expect(json.ok).toBe(true)
     expect(json.dryRun).toBe(true)
     expect(json.mode).toBe('orchestrate')
-    expect(json.promptChars).toBe('hello world'.length)
+    expect(json.promptChars).toBe('Run the focused tests'.length)
     expect(result.stderr).not.toContain('MODULE_TYPELESS_PACKAGE_JSON')
+  })
+
+  it('dry-runs an ambiguous non-interactive prompt without requesting a decision', () => {
+    const ws = tempDir()
+    const runsDir = tempDir()
+    const result = runCli([
+      'run',
+      '--workspace', ws,
+      '--prompt', 'Fix it',
+      '--dry-run',
+      '--runs-dir', runsDir
+    ])
+
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      status: 'dry-run',
+      exitCode: 0
+    })
   })
 
   it('fails when workspace path is missing', () => {
@@ -95,5 +114,24 @@ describe('agenthub-cli (Wave4 P4)', () => {
     expect(status.code).toBe(0)
     expect(JSON.parse(status.stdout).status).toBe('completed')
     expect(status.stderr).not.toContain('MODULE_TYPELESS_PACKAGE_JSON')
+  })
+
+  it('reports a structured decision_required result for an ambiguous non-TTY prompt', () => {
+    const ws = tempDir()
+    const runsDir = tempDir()
+    const result = runCli([
+      'run',
+      '--workspace', ws,
+      '--prompt', 'Fix it',
+      '--mock',
+      '--runs-dir', runsDir
+    ])
+
+    expect(result.code).toBe(6)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      status: 'decision_required',
+      exitCode: 6
+    })
   })
 })

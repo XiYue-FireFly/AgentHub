@@ -47,7 +47,8 @@ function queuedSubmission(id: string, threadId: string, turnId: string): QueuedT
     input: { threadId, prompt: `Prompt ${id}`, mode: "auto" },
     source: "create",
     state: "queued",
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    admissionSequence: 1
   }
 }
 
@@ -92,16 +93,229 @@ describe("WorkbenchRuntimeStore", () => {
     expect(runtime.eventsSince(thread.id, 1).some(e => e.kind === "turn:status")).toBe(true)
   })
 
-  it("atomically interrupts every non-terminal Turn and Run at the shutdown deadline", async () => {
+  it("persists the immutable multi-model fusion snapshot on a Workbench Turn", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const multiModelFusion = {
+      enabled: true,
+      maxCandidates: 3 as const,
+      maxRounds: 3 as const,
+      allowExecutor: true
+    }
+    const created = await runtime.createQueuedSubmission({
+      payload: {
+        prompt: "Compare independent solutions",
+        mode: "auto",
+        multiModelFusion
+      } as any,
+      ownerWebContentsId: 7,
+      source: "create"
+    })
+
+    expect(created.turn.multiModelFusion).toEqual(multiModelFusion)
+    expect(runtime.eventsSince(created.thread.id, 0).find(event => event.kind === "turn:created")?.payload)
+      .toMatchObject({ multiModelFusion })
+    expect(runtime.listQueuedSubmissions(created.thread.id)[0]?.input).toMatchObject({ multiModelFusion })
+
+    const reloaded = new WorkbenchRuntimeStore()
+    runtimes.push(reloaded)
+    expect(reloaded.getTurn(created.turn.id)?.multiModelFusion).toEqual(multiModelFusion)
+  })
+
+  it("atomically persists queued admissions with a durable monotonic sequence", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const first = await runtime.createQueuedSubmission({
+      payload: { prompt: "first queued", mode: "auto" },
+      ownerWebContentsId: 7,
+      source: "create"
+    })
+    const second = await runtime.createQueuedSubmission({
+      payload: { threadId: first.thread.id, prompt: "second queued", mode: "auto" },
+      ownerWebContentsId: 7,
+      source: "create"
+    })
+
+    expect([first.turn.status, second.turn.status]).toEqual(["queued", "queued"])
+    expect(runtime.listQueuedSubmissions(first.thread.id).map(submission => submission.admissionSequence))
+      .toEqual([1, 2])
+    expect(runtime.eventsSince(first.thread.id, 0).filter(event => event.kind === "turn:created"))
+      .toHaveLength(2)
+
+    const reloaded = new WorkbenchRuntimeStore()
+    runtimes.push(reloaded)
+    expect(reloaded.listQueuedSubmissions(first.thread.id).map(submission => submission.admissionSequence))
+      .toEqual([1, 2])
+  })
+
+  it("persists retry identity on a retry Turn across runtime store reload", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const original = await runtime.createQueuedSubmission({
+      payload: { prompt: "interrupted original", mode: "auto" },
+      ownerWebContentsId: 7,
+      source: "create"
+    })
+    const retry = await runtime.createQueuedSubmission({
+      payload: { threadId: original.thread.id, prompt: original.turn.prompt, mode: original.turn.mode },
+      ownerWebContentsId: 7,
+      source: "retry",
+      retryOfTurnId: original.turn.id
+    })
+    await runtime.setTurnStatus(retry.turn.id, "failed")
+
+    const reloaded = new WorkbenchRuntimeStore()
+    runtimes.push(reloaded)
+    expect(runtime.getTurn(retry.turn.id)?.retryOfTurnId).toBe(original.turn.id)
+    expect(reloaded.getTurn(retry.turn.id)?.retryOfTurnId).toBe(original.turn.id)
+  })
+
+  it("atomically finds or creates one durable normal retry admission", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const original = await runtime.createQueuedSubmission({
+      payload: { prompt: "completed original", mode: "auto" },
+      ownerWebContentsId: 7,
+      source: "create"
+    })
+    await runtime.setTurnStatus(original.turn.id, "completed")
+    const retryInput = {
+      payload: { threadId: original.thread.id, prompt: original.turn.prompt, mode: original.turn.mode },
+      ownerWebContentsId: 7,
+      source: "retry" as const,
+      retryOfTurnId: original.turn.id,
+      retryStrategy: "reuse-selection" as const
+    }
+
+    const [first, second] = await Promise.all([
+      runtime.findOrCreateQueuedRetry(retryInput),
+      runtime.findOrCreateQueuedRetry(retryInput)
+    ])
+
+    expect(first.turn.id).toBe(second.turn.id)
+    expect([first.created, second.created].sort()).toEqual([false, true])
+    expect(runtime.listQueuedSubmissions(original.thread.id)
+      .filter(submission => submission.retryOfTurnId === original.turn.id)).toHaveLength(1)
+  })
+
+  it("admits a fresh normal retry after the prior child reaches a terminal state", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const original = await runtime.createQueuedSubmission({
+      payload: { prompt: "completed original", mode: "auto" },
+      ownerWebContentsId: 7,
+      source: "create"
+    })
+    await runtime.setTurnStatus(original.turn.id, "completed")
+    const retryInput = {
+      payload: { threadId: original.thread.id, prompt: original.turn.prompt, mode: original.turn.mode },
+      ownerWebContentsId: 7,
+      source: "retry" as const,
+      retryOfTurnId: original.turn.id,
+      retryStrategy: "reuse-selection" as const
+    }
+    const first = await runtime.findOrCreateQueuedRetry(retryInput)
+    await runtime.setTurnStatus(first.turn.id, "failed")
+
+    const second = await runtime.findOrCreateQueuedRetry(retryInput)
+
+    expect(first.created).toBe(true)
+    expect(second.created).toBe(true)
+    expect(second.turn.id).not.toBe(first.turn.id)
+    expect(runtime.getTurn(first.turn.id)?.status).toBe("failed")
+  })
+
+  it("deduplicates active normal retries by normalized strategy only", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const original = await runtime.createQueuedSubmission({
+      payload: { prompt: "completed original", mode: "auto" },
+      ownerWebContentsId: 7,
+      source: "create"
+    })
+    await runtime.setTurnStatus(original.turn.id, "completed")
+    const base = {
+      payload: { threadId: original.thread.id, prompt: original.turn.prompt, mode: original.turn.mode },
+      ownerWebContentsId: 7,
+      source: "retry" as const,
+      retryOfTurnId: original.turn.id
+    }
+
+    const [reuse, reoptimize] = await Promise.all([
+      runtime.findOrCreateQueuedRetry({ ...base, retryStrategy: "reuse-selection" }),
+      runtime.findOrCreateQueuedRetry({ ...base, retryStrategy: "reoptimize" })
+    ])
+    const repeatedReuse = await runtime.findOrCreateQueuedRetry({ ...base, retryStrategy: "reuse-selection" })
+
+    expect(reuse.turn.id).not.toBe(reoptimize.turn.id)
+    expect(repeatedReuse).toMatchObject({ turn: { id: reuse.turn.id }, created: false })
+    expect(runtime.listQueuedSubmissions(original.thread.id)
+      .filter(submission => submission.retryOfTurnId === original.turn.id)
+      .map(submission => submission.retryStrategy).sort())
+      .toEqual(["reoptimize", "reuse-selection"])
+  })
+
+  it("persists original/effective Prompt and a write-once root envelope", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const envelope = Object.freeze({
+      envelopeId: "envelope-1",
+      sessionId: "session-1",
+      rootInputId: "input-1",
+      displayOriginalPrompt: "Fix this",
+      effectivePrompt: "Reproduce the failure, make a minimal fix, and run focused tests.",
+      origin: "workbench:create" as const,
+      policy: "optimize" as const,
+      status: "candidate-selected" as const,
+      optimizerVersion: "prompt-preparation-v1",
+      inputHash: "input-hash",
+      preparedTextHash: "prepared-hash",
+      optimizationCount: 1 as const,
+      finalizedAt: 1
+    })
+    const created = await runtime.createQueuedSubmission({
+      payload: { prompt: envelope.displayOriginalPrompt, mode: "auto", workspaceId: null },
+      ownerWebContentsId: 7,
+      source: "create"
+    })
+
+    await runtime.commitRuntimeMutation(tx => {
+      tx.attachPromptEnvelope(created.turn.id, envelope)
+    })
+
+    const turn = runtime.getTurn(created.turn.id)!
+    expect(turn).toMatchObject({
+      prompt: envelope.displayOriginalPrompt,
+      displayOriginalPrompt: envelope.displayOriginalPrompt,
+      effectivePrompt: envelope.effectivePrompt,
+      promptEnvelope: envelope
+    })
+    await expect(runtime.commitRuntimeMutation(tx => {
+      tx.attachPromptEnvelope(created.turn.id, { ...envelope, envelopeId: "replacement" })
+    })).rejects.toThrow("already has a PromptEnvelope")
+  })
+
+  it("interrupts active work at shutdown while preserving durable queued tails", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
     const running = await runtime.createTurn({ prompt: "running", mode: "auto", workspaceId: "ws-1" })
-    const queued = await runtime.createTurn({
-      threadId: running.thread.id,
-      prompt: "queued",
-      mode: "auto",
-      workspaceId: "ws-1"
+    const queued = await runtime.createQueuedSubmission({
+      payload: {
+        threadId: running.thread.id,
+        prompt: "queued",
+        mode: "auto",
+        workspaceId: "ws-1"
+      },
+      ownerWebContentsId: 7,
+      source: "create"
     })
     const awaiting = await runtime.createTurn({
       threadId: running.thread.id,
@@ -115,11 +329,9 @@ describe("WorkbenchRuntimeStore", () => {
       mode: "auto",
       workspaceId: "ws-1"
     })
-    await runtime.setTurnStatus(queued.turn.id, "queued")
     await runtime.setTurnStatus(awaiting.turn.id, "awaiting-decision")
     await runtime.setTurnStatus(completed.turn.id, "completed")
     const runningRun = await runtime.createRun({ turnId: running.turn.id, agentId: "codex", role: "target" })
-    const queuedRun = await runtime.createRun({ turnId: queued.turn.id, agentId: "claude", role: "target", status: "queued" })
     const awaitingRun = await runtime.createRun({ turnId: awaiting.turn.id, agentId: "gemini", role: "target", status: "awaiting-decision" })
     const completedRun = await runtime.createRun({
       turnId: completed.turn.id,
@@ -134,16 +346,18 @@ describe("WorkbenchRuntimeStore", () => {
     expect(commit).toHaveBeenCalledOnce()
     const snapshot = runtime.snapshot(undefined)
     expect(snapshot.turns.find(turn => turn.id === running.turn.id)?.status).toBe("interrupted")
-    expect(snapshot.turns.find(turn => turn.id === queued.turn.id)?.status).toBe("interrupted")
+    expect(snapshot.turns.find(turn => turn.id === queued.turn.id)?.status).toBe("queued")
     expect(snapshot.turns.find(turn => turn.id === awaiting.turn.id)?.status).toBe("interrupted")
     expect(snapshot.turns.find(turn => turn.id === completed.turn.id)?.status).toBe("completed")
     expect(snapshot.runs.find(run => run.id === runningRun.id)?.status).toBe("interrupted")
-    expect(snapshot.runs.find(run => run.id === queuedRun.id)?.status).toBe("interrupted")
     expect(snapshot.runs.find(run => run.id === awaitingRun.id)?.status).toBe("interrupted")
     expect(snapshot.runs.find(run => run.id === completedRun.id)?.status).toBe("completed")
     expect(runtime.eventsSince(running.thread.id, 0).filter(event => (
       event.payload?.status === "interrupted" && event.payload?.reason === "Shutdown deadline exceeded"
-    ))).toHaveLength(6)
+    ))).toHaveLength(4)
+    expect(runtime.listQueuedSubmissions(running.thread.id)).toEqual([
+      expect.objectContaining({ turnId: queued.turn.id, state: "queued" })
+    ])
   })
 
   it("atomically interrupts one Turn and its non-terminal Runs without touching siblings", async () => {
@@ -261,6 +475,78 @@ describe("WorkbenchRuntimeStore", () => {
     expect(runtime.dispose()).toBe(retryDisposal)
   })
 
+  it("gates a live deletion without permanently blocking admission after a restart", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = await runtime.createTurn({
+      prompt: "delete with gate",
+      mode: "auto",
+      workspaceId: "ws-1",
+      ownerWebContentsId: 7
+    })
+
+    await expect(runtime.beginThreadDeletion(thread.id, 7)).resolves.toMatchObject({
+      status: "started",
+      work: {
+        turns: [expect.objectContaining({ id: turn.id, ownerWebContentsId: 7 })]
+      }
+    })
+    await expect(runtime.finalizeThreadDeletion(thread.id, 7)).resolves.toMatchObject({
+      status: "in-progress",
+      work: {
+        turns: [expect.objectContaining({ id: turn.id })]
+      }
+    })
+
+    await expect(runtime.createQueuedSubmission({
+      payload: { threadId: thread.id, workspaceId: thread.workspaceId, prompt: "foreign create", mode: "auto" },
+      ownerWebContentsId: 8,
+      source: "create"
+    })).rejects.toThrow(/deletion.*progress/i)
+    await expect(runtime.createQueuedSubmission({
+      payload: { threadId: thread.id, workspaceId: thread.workspaceId, prompt: "foreign retry", mode: "auto" },
+      ownerWebContentsId: 8,
+      source: "retry",
+      retryOfTurnId: turn.id
+    })).rejects.toThrow(/deletion.*progress/i)
+
+    const reloaded = new WorkbenchRuntimeStore()
+    runtimes.push(reloaded)
+    await expect(reloaded.createQueuedSubmission({
+      payload: { threadId: thread.id, workspaceId: thread.workspaceId, prompt: "reloaded create", mode: "auto" },
+      ownerWebContentsId: 8,
+      source: "create"
+    })).resolves.toMatchObject({
+      thread: { id: thread.id },
+      turn: { ownerWebContentsId: 8, status: "queued" }
+    })
+  })
+
+  it("reclaims a deletion gate from a closed owner but denies a live foreign owner", async () => {
+    const { WorkbenchRuntimeStore } = await import("../store")
+    const runtime = new WorkbenchRuntimeStore()
+    runtimes.push(runtime)
+    const { thread, turn } = await runtime.createTurn({
+      prompt: "reclaim deletion gate",
+      mode: "auto",
+      workspaceId: "ws-1",
+      ownerWebContentsId: 7
+    })
+    await runtime.beginThreadDeletion(thread.id, 7)
+
+    await expect(runtime.beginThreadDeletion(thread.id, 8, () => true)).resolves.toMatchObject({
+      status: "forbidden"
+    })
+    await expect(runtime.beginThreadDeletion(thread.id, 8, () => false)).resolves.toMatchObject({
+      status: "reclaimed",
+      work: { turns: [expect.objectContaining({ id: turn.id })] }
+    })
+    await expect(runtime.finalizeThreadDeletion(thread.id, 7)).resolves.toMatchObject({
+      status: "forbidden"
+    })
+  })
+
   it("removes hidden-task and decision ledger entries owned by a deleted thread", async () => {
     const { WorkbenchRuntimeStore } = await import("../store")
     const runtime = new WorkbenchRuntimeStore()
@@ -274,6 +560,8 @@ describe("WorkbenchRuntimeStore", () => {
     })
     const other = await runtime.createTurn({ prompt: "keep ledger", mode: "auto", workspaceId: "ws-2" })
     await runtime.deleteTask(target.turn.id)
+    await runtime.cancelTurn(target.turn.id)
+    await runtime.cancelTurn(sibling.turn.id)
     await runtime.commitRuntimeMutation(tx => {
       tx.upsertDecision(decisionRecord("delete-by-turn", {
         type: "turn",
@@ -281,14 +569,14 @@ describe("WorkbenchRuntimeStore", () => {
         turnId: target.turn.id,
         workspaceId: "ws-2",
         webContentsId: 7
-      }))
+      }, { requestId: "delete-by-turn", status: "cancelled", resolvedAt: Date.now() }))
       tx.upsertDecision(decisionRecord("delete-by-thread", {
         type: "turn",
         threadId: target.thread.id,
         turnId: other.turn.id,
         workspaceId: "ws-1",
         webContentsId: 7
-      }))
+      }, { requestId: "delete-by-thread", status: "cancelled", resolvedAt: Date.now() }))
       tx.upsertDecision(decisionRecord("keep-other", {
         type: "turn",
         threadId: other.thread.id,
@@ -298,7 +586,8 @@ describe("WorkbenchRuntimeStore", () => {
       }))
     })
 
-    expect(await runtime.deleteThread(target.thread.id)).toBe(true)
+    await expect(runtime.beginThreadDeletion(target.thread.id, 7)).resolves.toMatchObject({ status: "started" })
+    await expect(runtime.finalizeThreadDeletion(target.thread.id, 7)).resolves.toMatchObject({ status: "deleted" })
     expect(runtime.getTurn(target.turn.id)).toBeUndefined()
     expect(runtime.getTurn(sibling.turn.id)).toBeUndefined()
     expect(memory["runtime.workbench.v1"].hiddenTaskTurnIds).toEqual([])
