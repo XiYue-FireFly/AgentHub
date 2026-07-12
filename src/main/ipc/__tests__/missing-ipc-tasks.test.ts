@@ -27,7 +27,12 @@ describe("missing IPC task handlers", () => {
   })
 
   it("deletes task history from runtimeStore before legacy dispatcher cleanup", async () => {
-    const runtimeStore = { deleteTask: vi.fn(() => true) }
+    let releaseRuntime!: () => void
+    const runtimeStore = {
+      deleteTask: vi.fn(() => new Promise<boolean>(resolve => {
+        releaseRuntime = () => resolve(true)
+      }))
+    }
     const dispatcher = { deleteTask: vi.fn() }
     const { registerMissingIpc } = await import("../missing-ipc")
     registerMissingIpc({
@@ -43,13 +48,22 @@ describe("missing IPC task handlers", () => {
 
     const handler = electronMock.handlers.get("tasks:delete")
     expect(handler).toBeTruthy()
-    await expect(handler?.({}, "turn-1")).resolves.toBe(true)
+    const operation = handler?.({}, "turn-1")
+    await Promise.resolve()
+    expect(dispatcher.deleteTask).not.toHaveBeenCalled()
+    releaseRuntime()
+    await expect(operation).resolves.toBe(true)
     expect(runtimeStore.deleteTask).toHaveBeenCalledWith("turn-1")
     expect(dispatcher.deleteTask).toHaveBeenCalledWith("turn-1")
   })
 
   it("clears completed task cards for the requested workspace from runtimeStore and legacy dispatcher", async () => {
-    const runtimeStore = { clearCompletedTasks: vi.fn(() => ["turn-1"]) }
+    let releaseRuntime!: () => void
+    const runtimeStore = {
+      clearCompletedTasks: vi.fn(() => new Promise<string[]>(resolve => {
+        releaseRuntime = () => resolve(["turn-1"])
+      }))
+    }
     const dispatcher = { clearCompleted: vi.fn() }
     const { registerMissingIpc } = await import("../missing-ipc")
     registerMissingIpc({
@@ -65,7 +79,11 @@ describe("missing IPC task handlers", () => {
 
     const handler = electronMock.handlers.get("tasks:clearCompleted")
     expect(handler).toBeTruthy()
-    await expect(handler?.({}, "ws-1")).resolves.toBe(true)
+    const operation = handler?.({}, "ws-1")
+    await Promise.resolve()
+    expect(dispatcher.clearCompleted).not.toHaveBeenCalled()
+    releaseRuntime()
+    await expect(operation).resolves.toBe(true)
     expect(runtimeStore.clearCompletedTasks).toHaveBeenCalledWith("ws-1")
     expect(dispatcher.clearCompleted).toHaveBeenCalled()
   })

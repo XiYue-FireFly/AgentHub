@@ -1,5 +1,6 @@
 ﻿"use strict"
 import { EventEmitter } from "node:events"
+import type { AgentDecisionResultEvent } from "../../agentic/user-decision-transport"
 
 export interface AgentAdapter {
  id: string
@@ -12,6 +13,9 @@ export interface AgentAdapter {
  send(prompt: string): void
  onOutput: ((chunk: string) => void) | null
  onError: ((err: Error) => void) | null
+ decisionContinuation?: 'none' | 'live' | 'checkpoint'
+ onProtocolEvent?: ((event: unknown) => void) | null
+ resumeDecision?(result: AgentDecisionResultEvent): Promise<void>
  status: "idle" | "busy" | "error"
 }
 

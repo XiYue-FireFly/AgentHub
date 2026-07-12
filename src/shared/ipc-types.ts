@@ -38,6 +38,13 @@ export interface ModelSelection {
   source?: 'provider' | 'local-cli'
 }
 
+export interface MultiModelFusionConfig {
+  enabled: boolean
+  maxCandidates: 2 | 3
+  maxRounds: 1 | 2 | 3
+  allowExecutor: boolean
+}
+
 export interface TurnCreateInput {
   threadId?: string | null
   workspaceId?: string | null
@@ -46,6 +53,7 @@ export interface TurnCreateInput {
   targetAgent?: string | null
   thinking?: ThinkingConfig
   modelSelection?: ModelSelection
+  multiModelFusion?: MultiModelFusionConfig
   attachments?: WorkbenchAttachment[]
   customSchedule?: SchedulePreview
 }

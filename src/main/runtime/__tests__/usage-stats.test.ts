@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const memory: Record<string, any> = {}
-const runtimes: Array<{ dispose?: () => void }> = []
+const runtimes: Array<{ dispose?: () => void | Promise<void> }> = []
+const jsonCanonical = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 
 function usageLedgerRecord(overrides: Record<string, any> = {}) {
   const eventId = overrides.eventId || "event-test"
@@ -38,7 +39,12 @@ function usageLedgerRecord(overrides: Record<string, any> = {}) {
 vi.mock("../../store", () => ({
   store: {
     get: (key: string) => memory[key],
-    set: (key: string, value: any) => { memory[key] = value }
+    set: (key: string, value: any) => { memory[key] = value },
+    commit: async (key: string, value: any) => {
+      const canonical = jsonCanonical(value)
+      memory[key] = structuredClone(canonical)
+      return structuredClone(canonical)
+    }
   }
 }))
 
@@ -50,8 +56,8 @@ describe("usageStats", () => {
     vi.resetModules()
   })
 
-  afterEach(() => {
-    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+  afterEach(async () => {
+    await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose?.()))
     vi.useRealTimers()
   })
 
@@ -60,8 +66,8 @@ describe("usageStats", () => {
     const { usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "hello", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "hello", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-4o",
       content: "done",
@@ -84,13 +90,13 @@ describe("usageStats", () => {
     const { usageRecords, usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({
+    const { thread, turn } = await runtime.createTurn({
       prompt: "Who are you?",
       mode: "auto",
       workspaceId: null,
       modelSelection: { providerId: "deepseek", modelId: "deepseek-v4-flash", source: "provider" }
     })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:deepseek", {
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:deepseek", {
       providerId: "deepseek",
       modelId: "deepseek-v4-flash",
       content: "DeepSeek answer",
@@ -120,13 +126,13 @@ describe("usageStats", () => {
     const { usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({
+    const { thread, turn } = await runtime.createTurn({
       prompt: "Summarize this text",
       mode: "auto",
       workspaceId: null,
       attachments: [{ id: "a1", kind: "text", name: "notes.txt", text: "local attachment text" }]
     })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
       providerId: "local-cli",
       modelId: "claude-sonnet-4-5",
       content: "A concise answer with enough characters to estimate."
@@ -152,14 +158,14 @@ describe("usageStats", () => {
     const { usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "/git status", mode: "auto", workspaceId: "repo" })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "system", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "/git status", mode: "auto", workspaceId: "repo" })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "system", {
       providerId: "local-git",
       modelId: "git",
       content: "M file.ts",
       usage: { total_tokens: 999 }
     })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "system", {
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "system", {
       providerId: "terminal",
       modelId: "terminal",
       content: "ok"
@@ -180,14 +186,14 @@ describe("usageStats", () => {
     const { usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "review then answer", mode: "firefly-custom", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "review then answer", mode: "firefly-custom", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "local-cli",
       modelId: "codex",
       content: "candidate answer",
       visibility: "run"
     })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "local-cli",
       modelId: "codex",
       content: "candidate answer",
@@ -251,8 +257,8 @@ describe("usageStats", () => {
     const { usageRecords, usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "cached", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "cached", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-cache",
       content: "ok",
@@ -276,8 +282,8 @@ describe("usageStats", () => {
     vi.setSystemTime(new Date("2035-01-15T00:00:00Z"))
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "cache ratio", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "cache ratio", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
       providerId: "anthropic",
       modelId: "claude-sonnet",
       content: "ok",
@@ -298,8 +304,8 @@ describe("usageStats", () => {
     vi.setSystemTime(new Date("2035-02-15T00:00:00Z"))
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "inclusive cache ratio", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "inclusive cache ratio", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-4o",
       content: "ok",
@@ -318,13 +324,13 @@ describe("usageStats", () => {
     const { usageRecords, usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({
+    const { thread, turn } = await runtime.createTurn({
       prompt: "fallback model",
       mode: "auto",
       workspaceId: null,
       modelSelection: { providerId: "openrouter", modelId: "requested-model", source: "provider" }
     })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:openrouter", {
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:openrouter", {
       providerId: "openrouter",
       modelId: "requested-model",
       content: "ok",
@@ -347,13 +353,13 @@ describe("usageStats", () => {
     const { usageRecords, usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "two requests", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "two requests", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-4o",
       content: "estimated response without usage"
     })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-4o",
       content: "actual response",
@@ -374,8 +380,8 @@ describe("usageStats", () => {
     const { usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "local estimate", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "gemini", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "local estimate", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "gemini", {
       providerId: "local-cli",
       modelId: "gemini-cli",
       content: "local answer without usage"
@@ -401,15 +407,15 @@ describe("usageStats", () => {
     })
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const priced = runtime.createTurn({ prompt: "priced", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(priced.thread.id, priced.turn.id, "agent:done", "codex", {
+    const priced = await runtime.createTurn({ prompt: "priced", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(priced.thread.id, priced.turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-priced",
       content: "ok",
       usage: { input_tokens: 100, output_tokens: 50, input_tokens_details: { cached_tokens: 40 }, cache_creation_tokens: 10 }
     })
-    const unpriced = runtime.createTurn({ prompt: "unpriced", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(unpriced.thread.id, unpriced.turn.id, "agent:done", "codex", {
+    const unpriced = await runtime.createTurn({ prompt: "unpriced", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(unpriced.thread.id, unpriced.turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-unpriced",
       content: "ok",
@@ -436,8 +442,8 @@ describe("usageStats", () => {
     })
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "anthropic cache", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "anthropic cache", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
       providerId: "anthropic",
       modelId: "claude-sonnet",
       content: "ok",
@@ -484,8 +490,8 @@ describe("usageStats", () => {
     })
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "free", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:free", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "free", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:free", {
       providerId: "free",
       modelId: "free-model",
       content: "ok",
@@ -504,8 +510,8 @@ describe("usageStats", () => {
     const { usageRecords, usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "hello", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "hello", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-4o",
       content: "done",
@@ -526,14 +532,14 @@ describe("usageStats", () => {
     const { usageRecords, usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const failed = runtime.createTurn({ prompt: "fail this", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(failed.thread.id, failed.turn.id, "agent:error", "provider:deepseek", {
+    const failed = await runtime.createTurn({ prompt: "fail this", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(failed.thread.id, failed.turn.id, "agent:error", "provider:deepseek", {
       providerId: "deepseek",
       modelId: "deepseek-v4-flash",
       error: "quota exceeded"
     })
-    const cancelled = runtime.createTurn({ prompt: "cancel this", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(cancelled.thread.id, cancelled.turn.id, "agent:error", "codex", {
+    const cancelled = await runtime.createTurn({ prompt: "cancel this", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(cancelled.thread.id, cancelled.turn.id, "agent:error", "codex", {
       providerId: "local-cli",
       modelId: "codex",
       code: "AGENT_CANCELLED",
@@ -567,13 +573,13 @@ describe("usageStats", () => {
     const { usageRecords, usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { turn } = runtime.createTurn({
+    const { turn } = await runtime.createTurn({
       prompt: "cancel provider request",
       mode: "auto",
       workspaceId: null,
       modelSelection: { providerId: "deepseek", modelId: "deepseek-chat", source: "provider" }
     })
-    runtime.setTurnStatus(turn.id, "cancelled")
+    await runtime.setTurnStatus(turn.id, "cancelled")
 
     const stats = usageStats("all", "overview")
     const page = usageRecords({ range: "all", status: "cancelled" }, 1, 10)
@@ -599,8 +605,8 @@ describe("P0-5 usage ledger persistence", () => {
     vi.resetModules()
   })
 
-  afterEach(() => {
-    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+  afterEach(async () => {
+    await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose?.()))
     vi.useRealTimers()
   })
 
@@ -609,8 +615,8 @@ describe("P0-5 usage ledger persistence", () => {
     const { usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "hello", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "hello", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-4o",
       content: "done",
@@ -702,8 +708,8 @@ describe("P0-5 usage ledger persistence", () => {
     const { usageRecords, usageStats } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "replace estimated", mode: "auto", workspaceId: null })
-    const event = runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:deepseek", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "replace estimated", mode: "auto", workspaceId: null })
+    const event = await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "provider:deepseek", {
       providerId: "deepseek",
       modelId: "deepseek-chat",
       content: "actual answer",
@@ -738,8 +744,8 @@ describe("P0-5 usage ledger persistence", () => {
     const { usageRecords } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "这是一段二十个中文字符的测试文本用于验证", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "这是一段二十个中文字符的测试文本用于验证", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "local-cli",
       modelId: "codex",
       content: "这是一段二十个中文字符的测试文本用于验证"
@@ -761,8 +767,8 @@ describe("cacheHitRate computation", () => {
     vi.resetModules()
   })
 
-  afterEach(() => {
-    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+  afterEach(async () => {
+    await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose?.()))
   })
 
   it("computes cacheHitRate from cacheReadTokens/inputTokens", async () => {
@@ -770,8 +776,8 @@ describe("cacheHitRate computation", () => {
     const { usageRecords } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "cache rate", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "cache rate", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "claude", {
       providerId: "anthropic",
       modelId: "claude-sonnet",
       content: "ok",
@@ -788,8 +794,8 @@ describe("cacheHitRate computation", () => {
     const { usageRecords } = await import("../usage-stats")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({ prompt: "no cache", mode: "auto", workspaceId: null })
-    runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
+    const { thread, turn } = await runtime.createTurn({ prompt: "no cache", mode: "auto", workspaceId: null })
+    await runtime.appendSystemEvent(thread.id, turn.id, "agent:done", "codex", {
       providerId: "openai",
       modelId: "gpt-4o",
       content: "ok",
@@ -808,8 +814,8 @@ describe("usage ledger monthly sharding", () => {
     vi.resetModules()
   })
 
-  afterEach(() => {
-    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+  afterEach(async () => {
+    await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose?.()))
   })
 
   it("loads empty ledger for non-existent month", async () => {

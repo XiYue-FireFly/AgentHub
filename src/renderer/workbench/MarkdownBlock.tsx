@@ -1,5 +1,6 @@
 import React from 'react'
 import { readAppearanceLocal } from '../appearance'
+import { tr } from '../glass/i18n'
 import { sanitizeHtml } from '../lib/sanitize'
 import { renderMarkdown } from './markdown-renderer'
 
@@ -36,7 +37,7 @@ export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: 
     setOpenError(null)
     window.electronAPI.app.openPath({ path, target, line, workspaceRoot: workspaceRoot || undefined }).then(result => {
       if (!result.ok) {
-        const message = result.error || 'Unknown error'
+        const message = result.error || tr('未知错误', 'Unknown error')
         setOpenError(message)
         console.warn('[AgentHub] open path failed:', message)
       }
@@ -58,7 +59,7 @@ export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: 
     const result = await window.electronAPI.app.readTextFile({ path, workspaceRoot: workspaceRoot || undefined }).catch((error: any) => ({ ok: false as const, path, content: '', error: error?.message || String(error) }))
     if (result.ok) await navigator.clipboard?.writeText(result.content || '')
     else {
-      setOpenError(result.error || 'Read failed')
+      setOpenError(result.error || tr('读取失败', 'Read failed'))
       console.warn('[AgentHub] read file failed:', result.error)
     }
   }
@@ -100,20 +101,20 @@ export function MarkdownBlock({ content, emptyText, workspaceRoot }: { content: 
             <span>{fileMenu.label}</span>
             <small>{targetLabel(readAppearanceLocal().defaultOpenTarget)}</small>
           </div>
-          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'editor'); setFileMenu(null) }}>Open in editor</button>
-          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'explorer'); setFileMenu(null) }}>Reveal in file manager</button>
-          <div className="wb-file-context-subtitle">Open with</div>
-          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line); setFileMenu(null) }}>Default target</button>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'editor'); setFileMenu(null) }}>{tr('在编辑器中打开', 'Open in editor')}</button>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'explorer'); setFileMenu(null) }}>{tr('在文件管理器中显示', 'Reveal in file manager')}</button>
+          <div className="wb-file-context-subtitle">{tr('打开方式', 'Open with')}</div>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line); setFileMenu(null) }}>{tr('默认目标', 'Default target')}</button>
           <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'vscode'); setFileMenu(null) }}>VS Code</button>
           <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'cursor'); setFileMenu(null) }}>Cursor</button>
           <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'antigravity'); setFileMenu(null) }}>Antigravity</button>
-          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'system'); setFileMenu(null) }}>System default</button>
+          <button type="button" onClick={() => { openFileReference(fileMenu.path, fileMenu.line, 'system'); setFileMenu(null) }}>{tr('系统默认', 'System default')}</button>
           <div className="wb-file-context-sep" />
-          <button type="button" onClick={() => { copyResolvedPath(fileMenu.path).finally(() => setFileMenu(null)) }}>Copy resolved path</button>
-          <button type="button" onClick={() => { copyFileContent(fileMenu.path).finally(() => setFileMenu(null)) }}>Copy file content</button>
+          <button type="button" onClick={() => { copyResolvedPath(fileMenu.path).finally(() => setFileMenu(null)) }}>{tr('复制解析后的路径', 'Copy resolved path')}</button>
+          <button type="button" onClick={() => { copyFileContent(fileMenu.path).finally(() => setFileMenu(null)) }}>{tr('复制文件内容', 'Copy file content')}</button>
         </div>
       )}
-      {openError && <div className="wb-file-open-error" role="status">Open failed: {openError}</div>}
+      {openError && <div className="wb-file-open-error" role="status">{tr('打开失败：', 'Open failed: ')}{openError}</div>}
     </>
   )
 }
@@ -126,8 +127,8 @@ function resolveMarkdownPath(path: string, workspaceRoot?: string | null): strin
 }
 
 function targetLabel(target: string): string {
-  if (target === 'antigravity') return 'Default: Antigravity'
-  if (target === 'system') return 'Default: system'
-  if (target === 'explorer' || target === 'file-manager') return 'Default: file manager'
-  return `Default: ${target}`
+  if (target === 'antigravity') return tr('默认：Antigravity', 'Default: Antigravity')
+  if (target === 'system') return tr('默认：系统', 'Default: system')
+  if (target === 'explorer' || target === 'file-manager') return tr('默认：文件管理器', 'Default: file manager')
+  return tr(`默认：${target}`, `Default: ${target}`)
 }

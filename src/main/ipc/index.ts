@@ -21,8 +21,12 @@ import { registerHubThreadsIpc } from './hub-threads-ipc'
 import { registerMissingIpc } from './missing-ipc'
 import { registerAgentLoopIpc } from './agent-loop-ipc'
 import { registerSddIpc } from './sdd-ipc'
+import { registerDecisionIpc } from './decision-ipc'
+import { registerTurnsIpc } from './turns-ipc'
 import { typedHandle } from './typed-ipc'
 import { BrowserWindow, dialog } from 'electron'
+import type { RuntimeProducerTracker } from '../runtime/producer-tracker'
+import type { PromptPreparationService } from '../runtime/prompt-preparation-service'
 
 interface IpcRegistrationDeps {
   memory: () => any
@@ -37,9 +41,14 @@ interface IpcRegistrationDeps {
   hub: any
   router: any
   proxy: any
+  runtimeProducers: Pick<RuntimeProducerTracker, 'run'>
+  decisionService: any
+  threadExecutionCoordinator: any
   getMainWindow: () => BrowserWindow | null
   getActiveWindow?: () => BrowserWindow | null
   openWorkbench?: () => BrowserWindow
+  isLiveWorkbenchWindow: (window: BrowserWindow) => boolean
+  promptPreparationService?: Pick<PromptPreparationService, 'prepareRoot'>
 }
 
 /**
@@ -116,11 +125,40 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
   registerHubThreadsIpc({
     hub: deps.hub,
     dispatcher: deps.dispatcher,
+    decisionService: deps.decisionService,
     registry: deps.registry,
     runtimeStore: deps.runtimeStore,
     memory: deps.memory,
     proxy: deps.proxy,
-    getWorkspaceManager: deps.getWorkspaceManager
+    getWorkspaceManager: deps.getWorkspaceManager,
+    runtimeProducers: deps.runtimeProducers,
+    isDeletionOwnerLive: ownerWebContentsId => {
+      try {
+        return BrowserWindow.getAllWindows().some(window => (
+          !window.isDestroyed()
+          && !window.webContents.isDestroyed()
+          && window.webContents.id === ownerWebContentsId
+          && deps.isLiveWorkbenchWindow(window)
+        ))
+      } catch {
+        // Failing open would permit a renderer to take over another live
+        // window's deletion lease, so uncertainty is treated as live.
+        return true
+      }
+    }
+  })
+
+  registerDecisionIpc({
+    decisionService: deps.decisionService,
+    runtimeStore: deps.runtimeStore,
+    isLiveWorkbenchWindow: deps.isLiveWorkbenchWindow
+  })
+
+  registerTurnsIpc({
+    coordinator: deps.threadExecutionCoordinator,
+    runtimeStore: deps.runtimeStore,
+    decisionService: deps.decisionService,
+    dispatcher: deps.dispatcher
   })
 
   // Missing handlers: skills, agentic, app, proxy, takeover, AI quick-complete
@@ -132,7 +170,8 @@ export function registerAllIpcHandlers(deps: IpcRegistrationDeps): void {
     proxy: deps.proxy,
     hub: deps.hub,
     getMainWindow: deps.getMainWindow,
-    memory: deps.memory
+    memory: deps.memory,
+    promptPreparationService: deps.promptPreparationService
   })
 
   // Dialog operations

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { IpcPayloadValidationError } from '../../../shared/ipc-contract'
+import { RuntimeProducerTracker } from '../../runtime/producer-tracker'
 
 type IpcHandler = (event: any, ...args: any[]) => any
 
@@ -7,6 +8,16 @@ const handlers = new Map<string, IpcHandler>()
 const optionalWorkbenchWorkspace = vi.fn((workspaceId?: string | null): string | null => workspaceId ?? 'active-workspace')
 const buildContextProjection = vi.fn((): any => ({ blocks: [] }))
 const runGitQuery = vi.fn()
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -48,33 +59,42 @@ describe('Hub threads IPC', () => {
 
   async function setup(
     overrides: Partial<Record<string, any>> = {},
-    depOverrides: Partial<Record<'hub' | 'dispatcher' | 'registry' | 'proxy' | 'memory', any>> = {}
+    depOverrides: Partial<Record<'hub' | 'dispatcher' | 'registry' | 'proxy' | 'memory' | 'runtimeProducers' | 'decisionService' | 'isDeletionOwnerLive', any>> = {}
   ) {
     const knownTurnIds = new Set(['turn-1'])
     const runtimeStore = {
       listThreads: vi.fn(() => [thread('thread-1')]),
-      createThread: vi.fn((input) => thread('created', input?.title ?? 'created')),
-      renameThread: vi.fn((id, title) => thread(id, title)),
-      deleteThread: vi.fn(() => true),
-      selectThread: vi.fn((id) => id),
+      createThread: vi.fn(async (input) => thread('created', input?.title ?? 'created')),
+      renameThread: vi.fn(async (id, title) => thread(id, title)),
+      deleteThread: vi.fn(async () => true),
+      beginThreadDeletion: vi.fn(async () => ({ status: 'started', work: { turns: [], decisionTurnIds: [] } })),
+      finalizeThreadDeletion: vi.fn(async () => ({ status: 'deleted', work: { turns: [], decisionTurnIds: [] } })),
+      selectThread: vi.fn(async (id) => id),
       eventsSince: vi.fn(() => []),
-      appendStreamEvent: vi.fn((turnId) => {
+      appendStreamEvent: vi.fn(async (turnId) => {
         if (!knownTurnIds.has(turnId)) throw new Error(`Turn not found: ${turnId}`)
       }),
       snapshot: vi.fn(() => ({ threads: [thread('snapshot-thread')], turns: [], runs: [], activeThreadId: 'snapshot-thread' })),
       getThread: vi.fn(),
-      createTurn: vi.fn((input) => {
+      createTurn: vi.fn(async (input) => {
         const turnId = input?.threadId === 'created' ? 'fork-turn' : 'turn-1'
         knownTurnIds.add(turnId)
         return { thread: thread(input?.threadId ?? 'git-thread'), turn: { id: turnId } }
       }),
-      setTurnStatus: vi.fn(),
+      setTurnStatus: vi.fn(async () => undefined),
+      transitionTurnStatus: vi.fn(async () => true),
+      cancelTurn: vi.fn(async () => true),
+      interruptTurn: vi.fn(async () => true),
       ...overrides
     }
     const mod = await import('../hub-threads-ipc')
     const defaultDispatcher = { getRecentTasks: vi.fn(() => []) }
+    const defaultDecisionService = { cancelTurn: vi.fn(async () => undefined) }
     const defaultRegistry = { getAll: vi.fn(() => []) }
     const defaultProxy = { getUrl: vi.fn(() => '') }
+    const runtimeProducers = 'runtimeProducers' in depOverrides
+      ? depOverrides.runtimeProducers
+      : new RuntimeProducerTracker()
     mod.registerHubThreadsIpc({
       hub: 'hub' in depOverrides ? depOverrides.hub : null,
       dispatcher: 'dispatcher' in depOverrides ? depOverrides.dispatcher : defaultDispatcher,
@@ -82,9 +102,14 @@ describe('Hub threads IPC', () => {
       runtimeStore,
       memory: 'memory' in depOverrides ? depOverrides.memory : () => ({ selectContextEntries: vi.fn(() => []) }),
       proxy: 'proxy' in depOverrides ? depOverrides.proxy : defaultProxy,
-      getWorkspaceManager: vi.fn()
+      getWorkspaceManager: vi.fn(),
+      runtimeProducers,
+      decisionService: 'decisionService' in depOverrides ? depOverrides.decisionService : defaultDecisionService,
+      isDeletionOwnerLive: 'isDeletionOwnerLive' in depOverrides
+        ? depOverrides.isDeletionOwnerLive
+        : () => true
     })
-    return runtimeStore
+    return Object.assign(runtimeStore, { runtimeProducers })
   }
 
   it('registers thread handlers through the typed IPC path', async () => {
@@ -256,11 +281,157 @@ describe('Hub threads IPC', () => {
     expect(await handlers.get('threads:rename')?.({}, 'thread-1', 'Renamed')).toMatchObject({ id: 'thread-1', title: 'Renamed' })
     expect(runtimeStore.renameThread).toHaveBeenCalledWith('thread-1', 'Renamed')
 
-    expect(await handlers.get('threads:delete')?.({}, 'thread-1')).toBe(true)
-    expect(runtimeStore.deleteThread).toHaveBeenCalledWith('thread-1')
+    expect(await handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1')).toBe(true)
+    expect(runtimeStore.beginThreadDeletion).toHaveBeenCalledWith('thread-1', 7, expect.any(Function))
+    expect(runtimeStore.finalizeThreadDeletion).toHaveBeenCalledWith('thread-1', 7)
+    expect(runtimeStore.deleteThread).not.toHaveBeenCalled()
 
     expect(await handlers.get('threads:select')?.({}, 'thread-1')).toBe('thread-1')
     expect(runtimeStore.selectThread).toHaveBeenCalledWith('thread-1')
+  })
+
+  it('cancels a pending decision waiter before deleting its live Turn', async () => {
+    const calls: string[] = []
+    const decisionWaiter = deferred<'cancelled'>()
+    let continuationObservedCancellation = false
+    const decisionService = {
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`decision:${turnId}`)
+        decisionWaiter.resolve('cancelled')
+      })
+    }
+    const dispatcher = {
+      getRecentTasks: vi.fn(() => []),
+      preCancelTurn: vi.fn((turnId: string) => {
+        calls.push(`tombstone:${turnId}`)
+        return true
+      }),
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`dispatcher:${turnId}`)
+        await decisionWaiter.promise
+        continuationObservedCancellation = true
+        return true
+      })
+    }
+    const runtimeStore = await setup({
+      beginThreadDeletion: vi.fn(async () => ({
+        status: 'started',
+        work: {
+          turns: [{
+            id: 'turn-1',
+            threadId: 'thread-1',
+            ownerWebContentsId: 7,
+            status: 'awaiting-decision'
+          }],
+          decisionTurnIds: ['turn-1']
+        }
+      })),
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`runtime:${turnId}`)
+        return true
+      }),
+      finalizeThreadDeletion: vi.fn(async (threadId: string) => {
+        calls.push(`delete:${threadId}`)
+        return { status: 'deleted', work: { turns: [], decisionTurnIds: [] } }
+      })
+    }, { dispatcher, decisionService })
+
+    await expect(handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1')).resolves.toBe(true)
+
+    expect(continuationObservedCancellation).toBe(true)
+    expect(calls).toEqual([
+      'tombstone:turn-1',
+      'decision:turn-1',
+      'dispatcher:turn-1',
+      'runtime:turn-1',
+      'delete:thread-1'
+    ])
+  })
+
+  it('does not delete a thread containing a live Turn owned by another renderer', async () => {
+    const dispatcher = {
+      getRecentTasks: vi.fn(() => []),
+      preCancelTurn: vi.fn(),
+      cancelTurn: vi.fn(async () => true)
+    }
+    const decisionService = { cancelTurn: vi.fn(async () => undefined) }
+    const runtimeStore = await setup({
+      beginThreadDeletion: vi.fn(async () => ({ status: 'forbidden', work: { turns: [], decisionTurnIds: [] } }))
+    }, { dispatcher, decisionService })
+
+    await expect(handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1')).resolves.toBe(false)
+
+    expect(dispatcher.preCancelTurn).not.toHaveBeenCalled()
+    expect(decisionService.cancelTurn).not.toHaveBeenCalled()
+    expect(runtimeStore.finalizeThreadDeletion).not.toHaveBeenCalled()
+  })
+
+  it('passes the main-process owner liveness predicate into the deletion reservation', async () => {
+    const isDeletionOwnerLive = vi.fn((ownerWebContentsId: number) => ownerWebContentsId === 8)
+    const beginThreadDeletion = vi.fn(async (_threadId: string, _senderId: number, isOwnerLive: (id: number) => boolean) => {
+      expect(isOwnerLive(8)).toBe(true)
+      expect(isOwnerLive(9)).toBe(false)
+      return { status: 'not-found', work: { turns: [], decisionTurnIds: [] } }
+    })
+    const runtimeStore = await setup({ beginThreadDeletion }, { isDeletionOwnerLive })
+
+    await expect(handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1')).resolves.toBe(false)
+
+    expect(beginThreadDeletion).toHaveBeenCalledWith('thread-1', 7, isDeletionOwnerLive)
+    expect(isDeletionOwnerLive).toHaveBeenCalledWith(8)
+    expect(isDeletionOwnerLive).toHaveBeenCalledWith(9)
+  })
+
+  it('keeps the durable deletion gate when cancellation cleanup fails', async () => {
+    const calls: string[] = []
+    const decisionService = {
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`decision:${turnId}`)
+        if (turnId === 'turn-1') throw new Error('decision database unavailable')
+      })
+    }
+    const dispatcher = {
+      getRecentTasks: vi.fn(() => []),
+      preCancelTurn: vi.fn((turnId: string) => {
+        calls.push(`tombstone:${turnId}`)
+        return true
+      }),
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`dispatcher:${turnId}`)
+        return true
+      })
+    }
+    const runtimeStore = await setup({
+      beginThreadDeletion: vi.fn(async () => ({
+        status: 'started',
+        work: {
+          turns: [
+            { id: 'turn-1', threadId: 'thread-1', ownerWebContentsId: 7, status: 'awaiting-decision' },
+            { id: 'turn-2', threadId: 'thread-1', ownerWebContentsId: 7, status: 'running' }
+          ],
+          decisionTurnIds: ['turn-1', 'turn-2']
+        }
+      })),
+      cancelTurn: vi.fn(async (turnId: string) => {
+        calls.push(`runtime:${turnId}`)
+        return true
+      })
+    }, { dispatcher, decisionService })
+
+    await expect(handlers.get('threads:delete')?.({ sender: { id: 7 } }, 'thread-1'))
+      .rejects.toThrow(/deletion.*progress/i)
+
+    expect(calls).toEqual([
+      'tombstone:turn-1',
+      'tombstone:turn-2',
+      'decision:turn-1',
+      'decision:turn-2',
+      'dispatcher:turn-1',
+      'dispatcher:turn-2',
+      'runtime:turn-1',
+      'runtime:turn-2'
+    ])
+    expect(runtimeStore.finalizeThreadDeletion).not.toHaveBeenCalled()
   })
 
   it('delegates runtime snapshot and eventsSince queries', async () => {
@@ -388,19 +559,27 @@ describe('Hub threads IPC', () => {
   it('git:query success creates a turn, runs the query, appends with turn id, completes, and returns result', async () => {
     runGitQuery.mockResolvedValue('clean')
     const existingThread = thread('thread-1')
+    let releaseAppend!: () => void
     const runtimeStore = await setup({
       getThread: vi.fn(() => existingThread),
       createTurn: vi.fn((input) => ({
         thread: thread(input?.threadId ?? 'git-thread'),
         turn: { id: 'turn-1' }
+      })),
+      appendStreamEvent: vi.fn(() => new Promise<void>(resolve => {
+        releaseAppend = resolve
       }))
     })
 
-    const result = await handlers.get('git:query')?.({}, {
+    const operation = handlers.get('git:query')?.({}, {
       workspaceId: 'ws-1',
       threadId: 'thread-1',
       query: 'log --oneline'
     })
+    await vi.waitFor(() => expect(runtimeStore.appendStreamEvent).toHaveBeenCalledOnce())
+    expect(runtimeStore.transitionTurnStatus).not.toHaveBeenCalled()
+    releaseAppend()
+    const result = await operation
 
     expect(runtimeStore.createTurn).toHaveBeenCalledWith({
       threadId: 'thread-1',
@@ -419,22 +598,74 @@ describe('Hub threads IPC', () => {
       content: 'clean',
       agentId: 'git'
     })
-    expect(runtimeStore.setTurnStatus).toHaveBeenCalledWith('turn-1', 'completed')
+    expect(runtimeStore.transitionTurnStatus).toHaveBeenCalledWith('turn-1', ['running'], 'completed')
     expect(result).toEqual({ threadId: 'thread-1', turnId: 'turn-1', result: 'clean' })
+  })
+
+  it('tracks an admitted git query until its final runtime write completes', async () => {
+    const query = deferred<string>()
+    runGitQuery.mockReturnValue(query.promise)
+    const runtimeStore = await setup()
+
+    const operation = handlers.get('git:query')?.({}, { workspaceId: 'ws-1', query: 'status' })
+    await vi.waitFor(() => expect(runGitQuery).toHaveBeenCalledOnce())
+    runtimeStore.runtimeProducers.close()
+    let drained = false
+    const draining = runtimeStore.runtimeProducers.drain().then(() => { drained = true })
+    await Promise.resolve()
+    expect(drained).toBe(false)
+
+    query.resolve('clean')
+    await operation
+    await draining
+    expect(runtimeStore.transitionTurnStatus).toHaveBeenCalledWith('turn-1', ['running'], 'completed')
+  })
+
+  it('does not resurrect a cancelled Turn when a deferred git query completes', async () => {
+    const query = deferred<string>()
+    runGitQuery.mockReturnValue(query.promise)
+    let status = 'running'
+    const runtimeStore = await setup({
+      setTurnStatus: vi.fn(async (_turnId, nextStatus) => { status = nextStatus }),
+      transitionTurnStatus: vi.fn(async (_turnId, expectedStatuses, nextStatus) => {
+        if (!expectedStatuses.includes(status)) return false
+        status = nextStatus
+        return true
+      })
+    })
+
+    const operation = handlers.get('git:query')?.({}, { workspaceId: 'ws-1', query: 'status' })
+    await vi.waitFor(() => expect(runGitQuery).toHaveBeenCalledOnce())
+    status = 'cancelled'
+    query.resolve('clean')
+    await operation
+
+    expect(status).toBe('cancelled')
+    expect(runtimeStore.setTurnStatus).not.toHaveBeenCalled()
+    expect(runtimeStore.transitionTurnStatus).toHaveBeenCalledWith('turn-1', ['running'], 'completed')
   })
 
   it('git:query failure appends the error with turn id, marks failed, and returns null result with error', async () => {
     runGitQuery.mockRejectedValue(new Error('git exploded'))
-    const runtimeStore = await setup()
+    let releaseAppend!: () => void
+    const runtimeStore = await setup({
+      appendStreamEvent: vi.fn(() => new Promise<void>(resolve => {
+        releaseAppend = resolve
+      }))
+    })
 
-    const result = await handlers.get('git:query')?.({}, { workspaceId: 'ws-1', query: '' })
+    const operation = handlers.get('git:query')?.({}, { workspaceId: 'ws-1', query: '' })
+    await vi.waitFor(() => expect(runtimeStore.appendStreamEvent).toHaveBeenCalledOnce())
+    expect(runtimeStore.transitionTurnStatus).not.toHaveBeenCalled()
+    releaseAppend()
+    const result = await operation
 
     expect(runtimeStore.createTurn).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws-1',
       prompt: 'git status'
     }))
     expect(runGitQuery).toHaveBeenCalledWith('ws-1', 'status')
-    expect(runtimeStore.setTurnStatus).toHaveBeenCalledWith('turn-1', 'failed')
+    expect(runtimeStore.transitionTurnStatus).toHaveBeenCalledWith('turn-1', ['running'], 'failed')
     expect(runtimeStore.appendStreamEvent).toHaveBeenCalledWith('turn-1', {
       turnId: 'turn-1',
       type: 'content',
@@ -442,7 +673,7 @@ describe('Hub threads IPC', () => {
       agentId: 'git'
     })
     expect(runtimeStore.appendStreamEvent.mock.invocationCallOrder[0]).toBeLessThan(
-      runtimeStore.setTurnStatus.mock.invocationCallOrder[0]
+      runtimeStore.transitionTurnStatus.mock.invocationCallOrder[0]
     )
     expect(result).toEqual({ threadId: 'git-thread', turnId: 'turn-1', result: null, error: 'git exploded' })
   })
@@ -503,8 +734,154 @@ describe('Hub threads IPC', () => {
       agentId: 'codex',
       turnId: 'fork-turn'
     })
-    expect(runtimeStore.setTurnStatus).toHaveBeenCalledWith('fork-turn', 'failed')
+    expect(runtimeStore.transitionTurnStatus).toHaveBeenCalledWith('fork-turn', ['running'], 'failed')
     expect(result).toMatchObject({ id: 'created' })
+  })
+
+  it('tracks an admitted fork until its final runtime write completes', async () => {
+    const created = deferred<ReturnType<typeof thread>>()
+    const runtimeStore = await setup({
+      createThread: vi.fn(() => created.promise)
+    })
+
+    const operation = handlers.get('threads:fork')?.({}, {
+      sourceThreadId: 'source',
+      sourceTurnId: 'turn-a',
+      message: 'Tracked fork'
+    })
+    await vi.waitFor(() => expect(runtimeStore.createThread).toHaveBeenCalledOnce())
+    runtimeStore.runtimeProducers.close()
+    let drained = false
+    const draining = runtimeStore.runtimeProducers.drain().then(() => { drained = true })
+    await Promise.resolve()
+    expect(drained).toBe(false)
+
+    created.resolve(thread('created'))
+    await operation
+    await draining
+    expect(runtimeStore.transitionTurnStatus).toHaveBeenCalledWith('fork-turn', ['running'], 'completed')
+  })
+
+  it('does not resurrect a cancelled fork while deferred events finish copying', async () => {
+    const append = deferred<void>()
+    let status = 'running'
+    const runtimeStore = await setup({
+      eventsSince: vi.fn(() => [{
+        id: 'event-1',
+        threadId: 'source',
+        turnId: 'turn-a',
+        kind: 'agent:delta',
+        agentId: 'codex',
+        payload: { kind: 'delta', content: 'copy me' }
+      }]),
+      appendStreamEvent: vi.fn(() => append.promise),
+      setTurnStatus: vi.fn(async (_turnId, nextStatus) => { status = nextStatus }),
+      transitionTurnStatus: vi.fn(async (_turnId, expectedStatuses, nextStatus) => {
+        if (!expectedStatuses.includes(status)) return false
+        status = nextStatus
+        return true
+      })
+    })
+
+    const operation = handlers.get('threads:fork')?.({}, {
+      sourceThreadId: 'source',
+      sourceTurnId: 'turn-a',
+      message: 'Cancelled fork'
+    })
+    await vi.waitFor(() => expect(runtimeStore.appendStreamEvent).toHaveBeenCalledOnce())
+    status = 'cancelled'
+    append.resolve()
+    await operation
+
+    expect(status).toBe('cancelled')
+    expect(runtimeStore.setTurnStatus).not.toHaveBeenCalled()
+    expect(runtimeStore.transitionTurnStatus).toHaveBeenCalledWith('fork-turn', ['running'], 'completed')
+  })
+
+  it.each(['cancelled', 'interrupted'] as const)(
+    'terminalizes copied Runs when the source Turn is %s',
+    async terminalStatus => {
+      let turnStatus = 'running'
+      const runStatuses: string[] = []
+      const terminalize = async (status: typeof terminalStatus) => {
+        turnStatus = status
+        for (let index = 0; index < runStatuses.length; index += 1) {
+          if (runStatuses[index] === 'running') runStatuses[index] = status
+        }
+        return true
+      }
+      const runtimeStore = await setup({
+        eventsSince: vi.fn(() => [
+          {
+            id: 'event-start',
+            threadId: 'source',
+            turnId: 'turn-a',
+            kind: 'agent:start',
+            agentId: 'codex',
+            payload: { kind: 'start', agentId: 'codex' }
+          },
+          {
+            id: 'event-status',
+            threadId: 'source',
+            turnId: 'turn-a',
+            kind: 'turn:status',
+            payload: { status: terminalStatus }
+          }
+        ]),
+        appendStreamEvent: vi.fn(async (_turnId, stream) => {
+          if (stream.kind === 'start') runStatuses.push('running')
+        }),
+        transitionTurnStatus: vi.fn(async (_turnId, expectedStatuses, nextStatus) => {
+          if (!expectedStatuses.includes(turnStatus)) return false
+          turnStatus = nextStatus
+          return true
+        }),
+        cancelTurn: vi.fn(async () => terminalize('cancelled')),
+        interruptTurn: vi.fn(async () => terminalize('interrupted'))
+      })
+
+      await handlers.get('threads:fork')?.({}, {
+        sourceThreadId: 'source',
+        sourceTurnId: 'turn-a',
+        message: `Fork ${terminalStatus}`
+      })
+
+      expect(turnStatus).toBe(terminalStatus)
+      expect(runStatuses).toEqual([terminalStatus])
+      const terminalizer = terminalStatus === 'cancelled' ? runtimeStore.cancelTurn : runtimeStore.interruptTurn
+      expect(terminalizer).toHaveBeenCalledWith('fork-turn')
+    }
+  )
+
+  it.each([
+    ['git:query', { workspaceId: 'ws-1', query: 'status' }, 'createTurn'],
+    ['threads:fork', { sourceThreadId: 'source', sourceTurnId: 'turn-a', message: 'Too late' }, 'createThread']
+  ] as const)('rejects new %s work after producer admission closes', async (channel, input, sideEffect) => {
+    const runtimeStore = await setup()
+    runtimeStore.runtimeProducers.close()
+
+    await expect(handlers.get(channel)?.({}, input)).rejects.toThrow('Runtime producers are shutting down')
+    expect(runtimeStore[sideEffect]).not.toHaveBeenCalled()
+  })
+
+  it('preserves an interrupted terminal status when forking a turn', async () => {
+    const runtimeStore = await setup({
+      eventsSince: vi.fn(() => [{
+        id: 'event-1',
+        threadId: 'source',
+        turnId: 'turn-a',
+        kind: 'turn:status',
+        payload: { status: 'interrupted' }
+      }])
+    })
+
+    await handlers.get('threads:fork')?.({}, {
+      sourceThreadId: 'source',
+      sourceTurnId: 'turn-a',
+      message: 'Resume interrupted work'
+    })
+
+    expect(runtimeStore.interruptTurn).toHaveBeenCalledWith('fork-turn')
   })
 
   it('rejects fork input without a non-empty message', async () => {

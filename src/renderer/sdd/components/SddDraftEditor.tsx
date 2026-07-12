@@ -203,7 +203,7 @@ function SddHistoryPanel({ draftId, workspaceRoot }: { draftId: string; workspac
     setRestoring(true)
     setStatus(null)
     try {
-      const restored = restoreFromHistory(draftId, selectedVersion, workspaceRoot)
+      const restored = await restoreFromHistory(draftId, selectedVersion, workspaceRoot)
       if (!restored) {
         setStatus(tr('未找到可恢复的历史版本', 'History version not found'))
         return
@@ -213,7 +213,27 @@ function SddHistoryPanel({ draftId, workspaceRoot }: { draftId: string; workspac
         setStatus(tr('恢复后保存失败', 'Restore failed to save'))
         return
       }
-      await parseRequirementBlocks()
+      const parseSource = useSddDraftStore.getState()
+      if (parseSource.activeDraft?.id !== draftId || parseSource.activeDraft.workspaceRoot !== workspaceRoot) {
+        setStatus(tr('恢复期间需求文档已变更', 'Restore stopped because the requirement draft changed'))
+        return
+      }
+      const sourceSession = parseSource.draftSession
+      const sourceRevision = parseSource.editRevision
+      const sourceContent = parseSource.content
+      const parsed = await parseRequirementBlocks()
+      const afterParse = useSddDraftStore.getState()
+      if (
+        !parsed ||
+        afterParse.activeDraft?.id !== draftId ||
+        afterParse.activeDraft.workspaceRoot !== workspaceRoot ||
+        afterParse.draftSession !== sourceSession ||
+        afterParse.editRevision !== sourceRevision ||
+        afterParse.content !== sourceContent
+      ) {
+        setStatus(tr('恢复期间需求文档已变更', 'Restore stopped because the requirement draft changed'))
+        return
+      }
       refresh()
       setStatus(tr('已恢复并保存', 'Restored and saved'))
     } catch (error: any) {
@@ -315,6 +335,8 @@ export function SddDraftEditor({ providers, modelSelection, onModelSelectionChan
   const {
     activeDraft,
     content,
+    draftSession,
+    editRevision,
     saveStatus,
     operationStatus,
     error,
@@ -343,15 +365,15 @@ export function SddDraftEditor({ providers, modelSelection, onModelSelectionChan
         saveTimerRef.current = null
       }
     }
-  }, [activeDraft?.id, content, saveStatus])
+  }, [activeDraft?.id, activeDraft?.workspaceRoot, editRevision, saveStatus])
 
   // 解析需求块
   useEffect(() => {
     const timer = setTimeout(() => {
-      parseRequirementBlocks()
+      void parseRequirementBlocks()
     }, 300)
     return () => clearTimeout(timer)
-  }, [content])
+  }, [activeDraft?.id, activeDraft?.workspaceRoot, content, draftSession, editRevision])
 
   // 清理：卸载时刷盘 dirty，避免 G2-MH7 丢键入
   useEffect(() => {

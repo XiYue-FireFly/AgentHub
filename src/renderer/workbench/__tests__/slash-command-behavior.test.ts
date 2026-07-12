@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { addPaletteQuery, replaceAddToken, shouldRunComposerCommand } from "../utils/composerCommandUtils"
+import { resolveDispatchRequest } from "../utils/dispatchRequest"
 import { parseLoopLimit, parseSlashInput, stripLoopFlags } from "../utils/slashCommandUtils"
 import { reasoningFromCommand, resolveModelCommand } from "../utils/modelUtils"
 
@@ -186,41 +187,45 @@ describe("workbench slash command behavior", () => {
   })
 
   it("routes provider model selections through provider direct runs", () => {
-    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
-    const dispatchRequest = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/dispatchRequest.ts"), "utf8")
-    const modelUtils = readFileSync(join(process.cwd(), "src/renderer/workbench/utils/modelUtils.ts"), "utf8")
-    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
-    const main = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
-    const dispatcher = readFileSync(join(process.cwd(), "src/main/hub/dispatcher.ts"), "utf8")
+    const providerSelection = { providerId: "deepseek", modelId: "deepseek-chat", source: "provider" as const }
+    const schedule = {
+      preset: "firefly-custom" as const,
+      label: "Five role",
+      description: "Five role schedule",
+      steps: [{ id: "lead", label: "Lead", agentId: "codex", role: "lead" as const, mode: "auto" as const }]
+    }
+    const fromComposer = resolveDispatchRequest({
+      targetAgent: null,
+      modelSelection: providerSelection,
+      mode: "firefly-custom",
+      usableLocalAgents: ["codex", "claude"],
+      scheduleForMode: () => schedule
+    })
+    const localSelection = resolveDispatchRequest({
+      targetAgent: "codex",
+      modelSelection: providerSelection,
+      mode: "firefly-custom",
+      usableLocalAgents: ["codex", "claude"],
+      scheduleForMode: () => schedule
+    })
 
-    expect(layout).toContain("resolveDispatchRequest")
-    expect(dispatchRequest).toContain("selectedProviderDirect")
-    expect(dispatchRequest).toContain("requestedModelSelection?.source === 'provider'")
-    expect(layout).toContain("setTargetAgent(null)")
-    expect(modelUtils).toContain("source: 'provider'")
-    expect(composer).toContain("source: 'provider'")
-    expect(main).toContain("isProviderDirectSelection")
-    expect(main).toContain("dispatcher.dispatchProviderDirect")
-    expect(main).toContain("retryProviderDirect")
-    expect(main).toContain("const requestedDirectTarget = payload.targetAgent?.trim()")
-    expect(main).toContain("usableLocalAgentIds.includes(requestedDirectTarget)")
-    expect(main).toContain("await dispatcher.dispatchProviderDirect(message.payload.text, modelSelection")
-    expect(main).toContain("activeDispatcher.dispatchProviderDirect(")
-    expect(main).toContain("const providerDirect = !directTarget && isProviderDirectSelection(payload.modelSelection)")
-    expect(main).toContain("const turnModelSelection = providerDirect ? payload.modelSelection : directTarget ? undefined : payload.modelSelection")
-    expect(main).not.toContain("isProviderDirectSelection(payload.modelSelection, directTarget)")
-    expect(dispatcher).toContain("dispatchProviderDirect")
-    expect(dispatcher).toContain("providerDirectAgentId")
-    expect(dispatcher).toContain("Provider model selections must run through provider direct dispatch")
-    const directBody = dispatcher.slice(
-      dispatcher.indexOf("async dispatchProviderDirect"),
-      dispatcher.indexOf("private resolveTargets")
-    )
-    expect(directBody).not.toContain("runOrchestrate")
-    expect(directBody).not.toContain("resolveTargets")
-    expect(directBody).not.toContain("sendToAgentStdio")
-    expect(directBody).not.toContain("sendToAgentAcp")
-    expect(directBody).not.toContain("runAgenticHttpBranch")
+    expect(fromComposer).toMatchObject({
+      mode: "auto",
+      targetAgent: null,
+      modelSelection: providerSelection,
+      customSchedule: undefined,
+      selectedProviderDirect: true,
+      selectedLocalDirect: false
+    })
+    expect(localSelection).toMatchObject({
+      mode: "auto",
+      targetAgent: "codex",
+      modelSelection: undefined,
+      customSchedule: undefined,
+      selectedProviderDirect: false,
+      selectedLocalDirect: true
+    })
+
   })
 
   it("keeps the 258k context fallback without rendering a composer context chip", () => {

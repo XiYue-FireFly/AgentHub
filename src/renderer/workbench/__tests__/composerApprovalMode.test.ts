@@ -7,9 +7,8 @@ describe("Composer approval mode picker", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
 
     expect(source).toContain("wb-approval-mode-trigger")
-    expect(source).toContain("approvalPoliciesForMode")
-    expect(source).toContain("window.electronAPI.agentic.setApprovalDefault('write'")
-    expect(source).toContain("window.electronAPI.agentic.setApprovalDefault('exec'")
+    expect(source).toContain("approvalDisplayModeFromConfig")
+    expect(source).toContain("window.electronAPI.agentic.setApprovalPreset")
     expect(source).toContain("id: 'ask'")
     expect(source).toContain("id: 'auto'")
     expect(source).toContain("id: 'full'")

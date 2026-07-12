@@ -2,8 +2,9 @@
  * ConfirmDialog: React confirmation dialog.
  */
 
-import React, { useCallback, useEffect, useState, useRef } from 'react'
+import React, { useCallback, useId, useRef, useState } from 'react'
 import { tr } from './i18n'
+import { useModalFocus } from '../hooks/useModalFocus'
 
 interface ConfirmDialogProps {
   open: boolean
@@ -18,34 +19,17 @@ interface ConfirmDialogProps {
 
 export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel, danger, onConfirm, onCancel }: ConfirmDialogProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const onConfirmRef = useRef(onConfirm)
-  const onCancelRef = useRef(onCancel)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+  const titleId = useId()
+  const messageId = useId()
 
-  // Update refs on every render to always have latest callbacks
-  useEffect(() => {
-    onConfirmRef.current = onConfirm
-    onCancelRef.current = onCancel
+  useModalFocus({
+    containerRef,
+    initialFocusRef: danger ? cancelRef : confirmRef,
+    onEscape: onCancel,
+    active: open
   })
-
-  useEffect(() => {
-    if (!open || !containerRef.current) return
-    const el = containerRef.current
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        onCancelRef.current()
-      }
-      if (e.key === 'Enter') {
-        e.preventDefault()
-        e.stopPropagation()
-        onConfirmRef.current()
-      }
-    }
-    el.addEventListener('keydown', onKeyDown)
-    el.focus()
-    return () => el.removeEventListener('keydown', onKeyDown)
-  }, [open])
 
   if (!open) return null
 
@@ -56,18 +40,20 @@ export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel,
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={messageId}
         ref={containerRef}
         tabIndex={-1}
       >
         <div className="wb-confirm-title">
-          <strong>{title}</strong>
+          <strong id={titleId}>{title}</strong>
         </div>
-        <div className="wb-confirm-message">{message}</div>
+        <div className="wb-confirm-message" id={messageId}>{message}</div>
         <div className="wb-confirm-actions">
-          <button className="ah-btn sm" onClick={onCancel}>
+          <button ref={cancelRef} className="ah-btn sm" onClick={onCancel}>
             {cancelLabel || tr('取消', 'Cancel')}
           </button>
-          <button className={`ah-btn sm ${danger ? 'danger' : 'primary'}`} onClick={onConfirm}>
+          <button ref={confirmRef} className={`ah-btn sm ${danger ? 'danger' : 'primary'}`} onClick={onConfirm}>
             {confirmLabel || tr('确认', 'Confirm')}
           </button>
         </div>

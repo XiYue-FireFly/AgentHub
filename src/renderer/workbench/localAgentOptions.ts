@@ -3,8 +3,8 @@ import { AGENT_META } from '../glass/meta'
 export function isUsableLocalAgent(agent: LocalAgentStatus): boolean {
   if (!agent.agentId || (!agent.configured && !agent.installed)) return false
   if (agent.loginState === 'needs-login' || agent.loginState === 'not-installed') return false
-  if (agent.configured && (agent.protocol === 'stdio-plain' || agent.protocol === 'acp') && !agent.binary?.trim()) return false
-  if (agent.manualOnly && agent.requiresPromptArg && agent.protocol !== 'acp' && !/\{prompt\}/i.test(agent.args || '')) return false
+  if (agent.configured && (agent.protocol === 'stdio-plain' || agent.protocol === 'stdio-ndjson' || agent.protocol === 'acp') && !agent.binary?.trim()) return false
+  if (agent.manualOnly && agent.requiresPromptArg && agent.protocol !== 'acp' && agent.protocol !== 'stdio-ndjson' && !/\{prompt\}/i.test(agent.args || '')) return false
   return true
 }
 

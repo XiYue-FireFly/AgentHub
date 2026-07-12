@@ -91,12 +91,26 @@ describe('typed IPC runtime validation', () => {
     expect(() => electronMock.handlers.get('localAgents:configure')?.({}, 'opencode', {
       protocol: 'shell',
       binary: 'opencode'
-    })).toThrow(new IpcPayloadValidationError('localAgents:configure', 'patch.protocol must be one of: stdio-plain, acp'))
+    })).toThrow(new IpcPayloadValidationError('localAgents:configure', 'patch.protocol must be one of: stdio-plain, stdio-ndjson, acp'))
 
     expect(() => electronMock.handlers.get('localAgents:configure')?.({}, '', {
       protocol: 'stdio-plain'
     })).toThrow(new IpcPayloadValidationError('localAgents:configure', 'agentId must not be empty'))
 
     expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('accepts controlled NDJSON local agent configuration unchanged', async () => {
+    const handler = vi.fn(async () => [])
+    const { typedHandle } = await import('../typed-ipc')
+    typedHandle('localAgents:configure', handler)
+
+    const patch = {
+      protocol: 'stdio-ndjson',
+      binary: 'C:\\Tools\\structured-cli.cmd',
+      args: 'serve'
+    }
+    await expect(electronMock.handlers.get('localAgents:configure')?.({}, 'gemini', patch)).resolves.toEqual([])
+    expect(handler).toHaveBeenCalledWith({}, 'gemini', patch)
   })
 })

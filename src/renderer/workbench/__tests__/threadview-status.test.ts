@@ -25,6 +25,9 @@ describe("ThreadView agent output status", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
     expect(source).toContain("const text = normalizeOutput(rawText)")
+    expect(source).toContain("text && (!isTerminalTurnStatus(status) ? <pre className=\"wb-streaming-text\"")
+    expect(source).toContain("!isTerminalTurnStatus(status)\n                ? <ProcessingState events={agentEvents} turn={turn} />")
+    expect(source).toContain("const running = !isTerminalTurnStatus(outputStatus(turn.status, events, turn.targetAgent || ''))")
     expect(source).not.toContain("status === 'running' ? rawText.trim()")
     expect(source).not.toContain("status === 'running' ? rawText : normalizeOutput(rawText)")
   })
@@ -39,13 +42,13 @@ describe("ThreadView agent output status", () => {
     expect(source).toContain("summary.done?.payload?.visibility === 'run' ? ''")
   })
 
-  it("collapses tool streams after an agent finishes", () => {
+  it("collapses tool streams only after an agent reaches a shared terminal status", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
-    expect(source).toContain("defaultOpen={status === 'running'}")
-    expect(source).toContain("collapseWhenComplete={status !== 'running'}")
-    expect(source).toContain("const [open, setOpen] = useState(status === 'running')")
-    expect(source).toContain("setOpen(status === 'running')")
+    expect(source).toContain("defaultOpen={!isTerminalTurnStatus(status)}")
+    expect(source).toContain("collapseWhenComplete={isTerminalTurnStatus(status)}")
+    expect(source).toContain("const [open, setOpen] = useState(!isTerminalTurnStatus(status))")
+    expect(source).toContain("setOpen(!isTerminalTurnStatus(status))")
   })
 
   it("uses raw event duration and counts failed agent runs in completion reports", () => {
@@ -70,7 +73,8 @@ describe("ThreadView agent output status", () => {
     const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
 
     expect(source).toContain("eventsOrSummary.routeEvents.length > 0 || eventsOrSummary.guardEvents.length > 0")
-    expect(source).toContain("return pendingGuard && (turnStatus === 'running' || turnStatus === 'queued') ? 'running' : 'completed'")
+    expect(source).toContain("turnStatus === 'queued' ? 'running' : turnStatus")
+    expect(source).not.toContain("return pendingGuard")
   })
 
   it("groups repeated agent runs by schedule role so reviewer failures do not overwrite main output", () => {
@@ -112,6 +116,7 @@ describe("ThreadView agent output status", () => {
     expect(source).toContain("function stepsToToolCalls(steps: any[], runStatus: WorkbenchTurnStatus = 'running', terminalTime?: number)")
     expect(source).toContain("rawStatus === 'started' && runStatus === 'completed' ? 'succeeded'")
     expect(source).toContain("rawStatus === 'started' && runStatus === 'failed' ? 'failed'")
+    expect(source).toContain("rawStatus === 'started' && isTerminalTurnStatus(runStatus) ? 'declined'")
     expect(source).toContain("const fallbackEndTime = terminalTime && terminalTime >= startTime")
     expect(source).toContain("calls={stepsToToolCalls(summary.steps, status, terminalEventTime(agentEvents))}")
     expect(source).toContain("!isLikelySourceFilePath(parsed.path)")
@@ -136,5 +141,34 @@ describe("ThreadView agent output status", () => {
     expect(source).toContain("function isApprovalRequiredStep(step: any): boolean")
     expect(source).toContain("requires approval|approval required|This command requires approval")
     expect(source).toContain(": step.status === 'error' ? approvalRequired ? 'declined' : 'failed'")
+  })
+
+  it("keeps awaiting-decision active and presents interrupted as terminal", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("isTerminalTurnStatus")
+    expect(source).toContain("isTerminalTurnStatus(turn.status) &&")
+    expect(source).toContain("isTerminalTurnStatus(status) && <CompletionSummary")
+    expect(source).toContain("status === 'awaiting-decision'")
+    expect(source).toContain("'Waiting for decision'")
+    expect(source).toContain("status === 'interrupted'")
+    expect(source).toContain("'Interrupted'")
+  })
+
+  it("routes normal terminal retries separately from interrupted recovery", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).toContain("isTerminalTurnStatus(turn.status) && turn.status !== 'interrupted'")
+    expect(source).toContain("onClick={() => onRetry(turn.id)}")
+    expect(source).toContain("turn.status === 'interrupted' && <InterruptedDecisionRecovery")
+  })
+
+  it("renders guard history as read-only audit text", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/ThreadView.tsx"), "utf8")
+
+    expect(source).not.toContain('onResolveGuard')
+    expect(source).not.toContain('wb-role-event-actions')
+    expect(source).not.toContain("'Continue'")
+    expect(source).not.toContain("'Stop'")
   })
 })

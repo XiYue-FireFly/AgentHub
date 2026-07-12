@@ -84,8 +84,18 @@ describe("createAdapter", () => {
     const a = createAdapter("aider", "Aider", "stdio-plain", "C:/bin/aider.cmd", ["--prompt", "{prompt}"])
     expect(a).toBeInstanceOf(StdioAgentAdapter)
     expect((a as any).protocol).toBe("stdio-plain")
+    expect((a as any).decisionContinuation).toBe("none")
     expect((a as any).binary).toBe("C:/bin/aider.cmd")
     expect((a as any).execArgs).toEqual(["--prompt", "{prompt}"])
+  })
+  it("creates an explicitly live structured stdio adapter for controlled NDJSON bindings", () => {
+    const a = createAdapter("structured-cli", "Structured CLI", "stdio-ndjson", "C:/bin/structured-cli.cmd", ["serve"])
+
+    expect(a).toBeInstanceOf(StdioAgentAdapter)
+    expect((a as any).protocol).toBe("stdio-ndjson")
+    expect((a as any).decisionContinuation).toBe("live")
+    expect((a as any).binary).toBe("C:/bin/structured-cli.cmd")
+    expect((a as any).execArgs).toEqual(["serve"])
   })
   it("falls back to HttpAgentAdapter for stdio-plain unknown agents without a binary", () => {
     const a = createAdapter("aider", "Aider", "stdio-plain")

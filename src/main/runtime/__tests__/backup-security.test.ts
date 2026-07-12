@@ -1,13 +1,18 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { join } from 'node:path'
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
-const tmpDir = join(process.cwd(), 'test-tmp-backup-security')
+let tmpDir = ''
 
 describe('backup security', () => {
   beforeEach(() => {
-    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true })
-    mkdirSync(tmpDir, { recursive: true })
+    tmpDir = mkdtempSync(join(tmpdir(), 'agenthub-backup-security-'))
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+    tmpDir = ''
   })
 
   it('backup does not contain plaintext API keys', async () => {

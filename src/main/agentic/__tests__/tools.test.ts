@@ -54,6 +54,16 @@ describe('executeTool', () => {
   })
 
   it('未知工具返回 ok:false', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const abortedWrite = await executeTool('fs_write', { path: 'late.txt', content: 'x' }, {
+      ...ctx,
+      signal: controller.signal
+    })
+    expect(abortedWrite.ok).toBe(false)
+    expect(abortedWrite.output).toMatch(/abort/i)
+    expect(existsSync(join(root, 'late.txt'))).toBe(false)
+
     const r = await executeTool('nope', {}, ctx)
     expect(r.ok).toBe(false)
   })

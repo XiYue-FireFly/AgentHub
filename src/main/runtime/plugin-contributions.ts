@@ -5,6 +5,7 @@ import type { ResolvedHook } from "../hooks/hook-engine"
 
 export interface PluginContributionRuntimeOptions {
   workspaceRoot?: string | null
+  includeApproval?: boolean
 }
 
 type ActivityParser = {
@@ -74,9 +75,14 @@ export function resolvePluginPreDispatchHooks(options: PluginContributionRuntime
       if (hook.pattern?.trim() && !new RegExp(hook.pattern, "i").test(invocation.prompt)) return
       if (hook.denyMessage?.trim()) return { decision: "deny", message: hook.denyMessage.trim() }
       if (hook.requireApproval) {
+        if (options.includeApproval === false) return
         return {
-          decision: "deny",
-          message: hook.message?.trim() || `Plugin ${hook.pluginId || "plugin"} requires approval before dispatch.`
+          decision: 'request-approval',
+          requestApproval: {
+            pluginId: hook.pluginId || 'plugin',
+            hookId: hook.id,
+            message: hook.message?.trim() || `Plugin ${hook.pluginId || "plugin"} requires approval before dispatch.`
+          }
         }
       }
       if (hook.appendContext?.trim()) return { additionalContext: renderHookTemplate(hook.appendContext, invocation.prompt) }

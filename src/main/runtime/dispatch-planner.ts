@@ -1,5 +1,5 @@
 import type { RouteDecision } from "../hub/router"
-import type { PromptOptimizerResult } from "./prompt-optimizer"
+import type { PromptDispatchAnalysis } from "./prompt-optimizer"
 import { executorGateTemplate, fireflyFiveRoleTemplate, parallelReviewTemplate, toDispatcherMode } from "./schedules"
 import type { DispatchPreset, SchedulePreview, WorkbenchAttachment } from "./types"
 
@@ -10,7 +10,7 @@ export interface DispatchPlannerInput {
   customSchedule?: SchedulePreview
   availableAgentIds: string[]
   attachments?: WorkbenchAttachment[]
-  optimization: PromptOptimizerResult
+  optimization: PromptDispatchAnalysis
 }
 
 export interface DispatchPlan {
@@ -96,7 +96,7 @@ function planExplicitMode(requestedMode: DispatchPreset, availableAgentIds: stri
 }
 
 function planAuto(input: DispatchPlannerInput, availableAgentIds: string[], reasons: string[]): DispatchPlan {
-  const prompt = `${input.optimization.originalPrompt}\n${input.optimization.optimizedPrompt}`
+  const prompt = input.optimization.originalPrompt
   const matchCount = input.optimization.matchedSkills.length + input.optimization.matchedPlugins.length
   const hasAttachments = (input.attachments || []).length > 0
   const multiAgent = availableAgentIds.length >= 2

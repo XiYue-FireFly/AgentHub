@@ -103,6 +103,117 @@ describe('deriveTaskItems', () => {
     ])
   })
 
+  it('maps an interrupted terminal Turn to a terminal task card with run duration', () => {
+    const snapshot: WorkbenchSnapshot = {
+      threads: [baseThread],
+      turns: [{
+        id: 'turn-interrupted',
+        threadId: 'thread-1',
+        prompt: 'Resume later',
+        mode: 'auto',
+        status: 'interrupted',
+        taskIds: [],
+        createdAt: 10
+      }],
+      runs: [{
+        id: 'run-interrupted',
+        turnId: 'turn-interrupted',
+        agentId: 'codex',
+        role: 'target',
+        status: 'interrupted',
+        startedAt: 10,
+        endedAt: 25
+      }],
+      activeThreadId: 'thread-1'
+    }
+
+    expect(deriveTaskItems(snapshot, {})[0]).toMatchObject({
+      status: 'cancelled',
+      durationMs: 15
+    })
+  })
+
+  it('does not derive a terminal duration for an awaiting-decision Turn from stale timestamps', () => {
+    const snapshot: WorkbenchSnapshot = {
+      threads: [baseThread],
+      turns: [{
+        id: 'turn-waiting',
+        threadId: 'thread-1',
+        prompt: 'Approve the next step',
+        mode: 'auto',
+        status: 'awaiting-decision',
+        taskIds: [],
+        createdAt: 10,
+        completedAt: 30
+      }],
+      runs: [{
+        id: 'run-waiting',
+        turnId: 'turn-waiting',
+        agentId: 'codex',
+        role: 'target',
+        status: 'awaiting-decision',
+        startedAt: 10,
+        endedAt: 20
+      }],
+      activeThreadId: 'thread-1'
+    }
+
+    expect(deriveTaskItems(snapshot, {})[0]).toMatchObject({
+      status: 'running',
+      durationMs: null
+    })
+  })
+
+  it('uses an explicit terminal event duration while a Turn awaits a decision', () => {
+    const snapshot: WorkbenchSnapshot = {
+      threads: [baseThread],
+      turns: [{
+        id: 'turn-waiting',
+        threadId: 'thread-1',
+        prompt: 'Approve the next step',
+        mode: 'auto',
+        status: 'awaiting-decision',
+        taskIds: [],
+        createdAt: 10
+      }],
+      runs: [],
+      activeThreadId: 'thread-1'
+    }
+    const terminalEvent = event({
+      threadId: 'thread-1',
+      turnId: 'turn-waiting',
+      kind: 'agent:done',
+      payload: { durationMs: 7 }
+    })
+
+    expect(deriveTaskItems(snapshot, { 'thread-1': [terminalEvent] })[0].durationMs).toBe(7)
+  })
+
+  it('ignores a non-terminal event duration while a Turn awaits a decision', () => {
+    const snapshot: WorkbenchSnapshot = {
+      threads: [baseThread],
+      turns: [{
+        id: 'turn-waiting',
+        threadId: 'thread-1',
+        prompt: 'Approve the next step',
+        mode: 'auto',
+        status: 'awaiting-decision',
+        taskIds: [],
+        createdAt: 10
+      }],
+      runs: [],
+      activeThreadId: 'thread-1'
+    }
+    const activityEvent = event({
+      threadId: 'thread-1',
+      turnId: 'turn-waiting',
+      kind: 'agent:activity',
+      payload: { durationMs: 9 }
+    })
+
+    expect(deriveTaskItems(snapshot, { 'thread-1': [activityEvent] })[0].durationMs).toBeNull()
+  })
+
   it('includes non-selected threads when their full event lists are supplied', () => {
     const thread2 = { ...baseThread, id: 'thread-2', title: 'Thread 2', createdAt: 2, updatedAt: 2 }
     const snapshot: WorkbenchSnapshot = {

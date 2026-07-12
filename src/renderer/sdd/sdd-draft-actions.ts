@@ -13,6 +13,91 @@ import { deriveTraceStatuses } from './sdd-trace-dispatch'
 // Draft Actions
 // ============================================================
 
+interface DraftSaveIdentity {
+  workspaceRoot: string
+  draftId: string
+  draftSession: number
+  editRevision: number
+}
+
+interface DraftContentIdentity extends DraftSaveIdentity {
+  content: string
+}
+
+interface InFlightDraftSave {
+  identity: DraftSaveIdentity
+  promise: Promise<boolean>
+}
+
+let inFlightDraftSave: InFlightDraftSave | null = null
+let draftLoadGeneration = 0
+
+function isLatestDraftLoad(generation: number): boolean {
+  return generation === draftLoadGeneration
+}
+
+export function invalidateDraftLoads(): void {
+  draftLoadGeneration++
+}
+
+function sameSaveIdentity(left: DraftSaveIdentity, right: DraftSaveIdentity): boolean {
+  return (
+    left.workspaceRoot === right.workspaceRoot &&
+    left.draftId === right.draftId &&
+    left.draftSession === right.draftSession &&
+    left.editRevision === right.editRevision
+  )
+}
+
+function matchesDraftContentIdentity(state: ReturnType<typeof useSddDraftStore.getState>, identity: DraftContentIdentity): boolean {
+  return state.activeDraft?.workspaceRoot === identity.workspaceRoot &&
+    state.activeDraft.id === identity.draftId &&
+    state.draftSession === identity.draftSession &&
+    state.editRevision === identity.editRevision &&
+    state.content === identity.content
+}
+
+function captureSourceIdentity(): DraftSaveIdentity | null {
+  const state = useSddDraftStore.getState()
+  return state.activeDraft
+    ? {
+        workspaceRoot: state.activeDraft.workspaceRoot,
+        draftId: state.activeDraft.id,
+        draftSession: state.draftSession,
+        editRevision: state.editRevision
+      }
+    : null
+}
+
+function isSourceSafelySaved(identity: DraftSaveIdentity | null): boolean {
+  const state = useSddDraftStore.getState()
+  if (!identity) return state.activeDraft === null
+  return (
+    state.activeDraft?.workspaceRoot === identity.workspaceRoot &&
+    state.activeDraft.id === identity.draftId &&
+    state.draftSession === identity.draftSession &&
+    state.editRevision === identity.editRevision &&
+    state.saveStatus === 'saved' &&
+    state.content === state.lastSavedContent
+  )
+}
+
+async function ensureSourceDurable(identity: DraftSaveIdentity | null): Promise<boolean> {
+  if (!identity) return isSourceSafelySaved(null)
+  const state = useSddDraftStore.getState()
+  if (!sameSaveIdentity(identity, {
+    workspaceRoot: state.activeDraft?.workspaceRoot ?? '',
+    draftId: state.activeDraft?.id ?? '',
+    draftSession: state.draftSession,
+    editRevision: state.editRevision
+  })) return false
+  if (['dirty', 'saving', 'error'].includes(state.saveStatus)) {
+    const saved = await saveDraftToDisk()
+    if (!saved) return false
+  }
+  return isSourceSafelySaved(identity)
+}
+
 /**
  * 创建新需求草稿
  */
@@ -20,13 +105,18 @@ export async function createNewDraft(
   workspaceRoot: string,
   title: string,
   template?: 'blank' | 'standard' | 'minimal'
-): Promise<SddDraft> {
+): Promise<SddDraft | null> {
+  const sourceIdentity = captureSourceIdentity()
+  if (!await ensureSourceDurable(sourceIdentity) || !isSourceSafelySaved(sourceIdentity)) return null
   try {
     const draft = await window.electronAPI.sdd.createDraft(workspaceRoot, title, template)
+    if (!draft || !isSourceSafelySaved(sourceIdentity)) return null
     useSddDraftStore.getState().setActiveDraft(draft)
     return draft
   } catch (error: any) {
-    useSddDraftStore.getState().setError(error.message || 'Failed to create draft')
+    if (isSourceSafelySaved(sourceIdentity)) {
+      useSddDraftStore.getState().setError(error.message || 'Failed to create draft')
+    }
     throw error
   }
 }
@@ -35,15 +125,26 @@ export async function createNewDraft(
  * F-W4: After persist rehydrate, reload draft from disk so buffer matches filesystem.
  */
 export async function reloadActiveDraftFromDisk(): Promise<void> {
-  const { activeDraft } = useSddDraftStore.getState()
+  const { activeDraft, draftSession, editRevision } = useSddDraftStore.getState()
   if (!activeDraft?.id || !activeDraft.workspaceRoot) return
+  const snapshot: DraftSaveIdentity = {
+    workspaceRoot: activeDraft.workspaceRoot,
+    draftId: activeDraft.id,
+    draftSession,
+    editRevision
+  }
   try {
-    const draft = await window.electronAPI.sdd.getDraft(activeDraft.workspaceRoot, activeDraft.id)
+    const draft = await window.electronAPI.sdd.getDraft(snapshot.workspaceRoot, snapshot.draftId)
     if (!draft) return
-    // Only overwrite if still same draft and not dirty user edits
+    // Only overwrite the exact saved draft instance captured before the disk read.
     const current = useSddDraftStore.getState()
-    if (current.saveStatus === 'dirty') return
-    if (current.activeDraft?.id !== activeDraft.id) return
+    if (
+      current.saveStatus !== 'saved' ||
+      current.activeDraft?.id !== snapshot.draftId ||
+      current.activeDraft.workspaceRoot !== snapshot.workspaceRoot ||
+      current.draftSession !== snapshot.draftSession ||
+      current.editRevision !== snapshot.editRevision
+    ) return
     useSddDraftStore.getState().setActiveDraft(draft)
   } catch {
     /* keep rehydrated snapshot */
@@ -53,101 +154,166 @@ export async function reloadActiveDraftFromDisk(): Promise<void> {
 /**
  * 加载需求草稿
  */
-export async function loadDraft(workspaceRoot: string, draftId: string): Promise<void> {
+export async function loadDraft(workspaceRoot: string, draftId: string): Promise<boolean> {
+  const loadGeneration = ++draftLoadGeneration
+  const sourceIdentity = captureSourceIdentity()
+  const canCommitLoad = () => isLatestDraftLoad(loadGeneration) && isSourceSafelySaved(sourceIdentity)
+
   try {
     // G2-MH7: flush dirty buffer before replacing active draft; abort switch on failure
-    const current = useSddDraftStore.getState()
-    if (current.activeDraft && current.saveStatus === 'dirty') {
-      const ok = await saveDraftToDisk()
-      if (!ok) return
-    }
+    const sourceDurable = await ensureSourceDurable(sourceIdentity)
+    if (!isLatestDraftLoad(loadGeneration)) return false
+    if (!sourceDurable || !isSourceSafelySaved(sourceIdentity)) return false
+
     const draft = await window.electronAPI.sdd.getDraft(workspaceRoot, draftId)
-    if (draft) {
-      useSddDraftStore.getState().setActiveDraft(draft)
-      hydrateDraftHistoryFromDisk(draft.id, draft.workspaceRoot).catch(() => {})
-      try {
-        const trace = await window.electronAPI.sdd.getTrace(workspaceRoot, draftId)
-        const activeDraft = useSddDraftStore.getState().activeDraft
-        if (activeDraft?.id === draftId && activeDraft.workspaceRoot === workspaceRoot) {
-          useSddDraftStore.getState().setTrace(trace)
-        }
-      } catch (traceError) {
-        console.error('Failed to load draft trace:', traceError)
-      }
-    } else {
+    if (!canCommitLoad()) return false
+    if (!draft) {
+      if (!canCommitLoad()) return false
       useSddDraftStore.getState().setError('Draft not found')
+      return false
     }
+
+    let trace: SddTrace | null = null
+    try {
+      trace = await window.electronAPI.sdd.getTrace(workspaceRoot, draftId)
+      if (!canCommitLoad()) return false
+    } catch (traceError) {
+      if (!canCommitLoad()) return false
+      console.error('Failed to load draft trace:', traceError)
+    }
+
+    if (!canCommitLoad()) return false
+    // Commit draft and trace together only after both target reads are settled.
+    useSddDraftStore.setState(state => ({
+      activeDraft: draft,
+      content: draft.content || '',
+      lastSavedContent: draft.content || '',
+      saveStatus: 'saved',
+      operationStatus: 'idle',
+      error: null,
+      draftSession: state.draftSession + 1,
+      editRevision: 0,
+      requirementBlocks: [],
+      trace
+    }))
+
+    if (!isLatestDraftLoad(loadGeneration)) return false
+    const committedDraft = useSddDraftStore.getState().activeDraft
+    if (committedDraft?.id !== draft.id || committedDraft.workspaceRoot !== draft.workspaceRoot) return false
+    hydrateDraftHistoryFromDisk(draft.id, draft.workspaceRoot).catch(() => {})
+    return true
   } catch (error: any) {
+    if (!canCommitLoad()) return false
     useSddDraftStore.getState().setError(error.message || 'Failed to load draft')
+    return false
   }
 }
 
 /**
  * 保存草稿到磁盘
  */
-export async function saveDraftToDisk(): Promise<boolean> {
+export function saveDraftToDisk(): Promise<boolean> {
   const store = useSddDraftStore.getState()
   const draft = store.activeDraft
-  const content = store.content
-  const designContext = draft?.designContext
 
-  if (!draft) return true
-  if (store.saveStatus === 'saved' && content === store.lastSavedContent) return true
+  if (!draft) return Promise.resolve(true)
+
+  const snapshot = {
+    workspaceRoot: draft.workspaceRoot,
+    draftId: draft.id,
+    content: store.content,
+    designContext: draft.designContext
+      ? {
+          ...draft.designContext,
+          ...(draft.designContext.tone ? { tone: [...draft.designContext.tone] } : {})
+        }
+      : undefined,
+    draftSession: store.draftSession,
+    editRevision: store.editRevision
+  }
+  const identity: DraftSaveIdentity = snapshot
+
+  if (inFlightDraftSave && sameSaveIdentity(inFlightDraftSave.identity, identity)) {
+    return inFlightDraftSave.promise
+  }
+  if (store.saveStatus === 'saved' && store.content === store.lastSavedContent) return Promise.resolve(true)
 
   // G2-MC1: refuse accidental empty overwrite of a non-empty document
   // (e.g. rehydrate left content empty while lastSaved/disk had body).
-  if (content === '' && (store.lastSavedContent || '').length > 0) {
-    store.setSaveStatus('error')
-    store.setError('Refused to save empty content over a non-empty draft')
-    return false
+  if (snapshot.content === '' && (store.lastSavedContent || '').length > 0) {
+    store.markError(snapshot.draftSession, snapshot.editRevision, 'Refused to save empty content over a non-empty draft')
+    return Promise.resolve(false)
   }
 
   store.setSaveStatus('saving')
 
-  try {
-    // 保存需求内容
-    await window.electronAPI.sdd.updateDraft(
-      draft.workspaceRoot,
-      draft.id,
-      content
-    )
-    // 同时保存设计上下文（防止仅在内存中更新而未持久化）
-    if (designContext) {
-      await window.electronAPI.sdd.updateDesignContext(
-        draft.workspaceRoot,
-        draft.id,
-        designContext
+  const operation = (async (): Promise<boolean> => {
+    try {
+      // 保存需求内容
+      await window.electronAPI.sdd.updateDraft(
+        snapshot.workspaceRoot,
+        snapshot.draftId,
+        snapshot.content,
+        snapshot.designContext
       )
+      const current = useSddDraftStore.getState()
+      const isCurrentSnapshot = (
+        current.activeDraft?.id === snapshot.draftId &&
+        current.activeDraft.workspaceRoot === snapshot.workspaceRoot &&
+        current.draftSession === snapshot.draftSession &&
+        current.editRevision === snapshot.editRevision
+      )
+      if (isCurrentSnapshot) {
+        current.markSaved(snapshot.draftSession, snapshot.editRevision)
+      }
+      return isCurrentSnapshot
+    } catch (error: any) {
+      const current = useSddDraftStore.getState()
+      if (
+        current.activeDraft?.id === snapshot.draftId &&
+        current.activeDraft.workspaceRoot === snapshot.workspaceRoot
+      ) {
+        current.markError(snapshot.draftSession, snapshot.editRevision, error.message || 'Failed to save draft')
+      }
+      return false
     }
-    const current = useSddDraftStore.getState()
-    if (
-      current.activeDraft?.id === draft.id &&
-      current.activeDraft.workspaceRoot === draft.workspaceRoot &&
-      current.content === content
-    ) {
-      current.markSaved()
+  })()
+  const trackedSave: InFlightDraftSave = { identity, promise: operation }
+  trackedSave.promise = operation.finally(() => {
+    if (inFlightDraftSave === trackedSave) {
+      inFlightDraftSave = null
     }
-    return true
-  } catch (error: any) {
-    const current = useSddDraftStore.getState()
-    current.setSaveStatus('error')
-    current.setError(error.message || 'Failed to save draft')
-    return false
-  }
+  })
+  inFlightDraftSave = trackedSave
+  return trackedSave.promise
 }
 
 /**
  * 删除需求草稿
  */
 export async function deleteDraft(workspaceRoot: string, draftId: string): Promise<void> {
+  const state = useSddDraftStore.getState()
+  const sourceSession = (
+    state.activeDraft?.id === draftId &&
+    state.activeDraft.workspaceRoot === workspaceRoot
+  ) ? state.draftSession : null
+  const isCurrentDeleteSource = () => {
+    if (sourceSession === null) return false
+    const current = useSddDraftStore.getState()
+    return current.activeDraft?.id === draftId &&
+      current.activeDraft.workspaceRoot === workspaceRoot &&
+      current.draftSession === sourceSession
+  }
+  invalidateDraftLoads()
   try {
     await window.electronAPI.sdd.deleteDraft(workspaceRoot, draftId)
-    const store = useSddDraftStore.getState()
-    if (store.activeDraft?.id === draftId) {
-      store.clearDraft()
+    if (isCurrentDeleteSource()) {
+      useSddDraftStore.getState().clearDraft()
     }
   } catch (error: any) {
-    useSddDraftStore.getState().setError(error.message || 'Failed to delete draft')
+    if (isCurrentDeleteSource()) {
+      useSddDraftStore.getState().setError(error.message || 'Failed to delete draft')
+    }
     throw error
   }
 }
@@ -171,32 +337,43 @@ export async function updateDesignContext(
 /**
  * 解析需求块
  */
-export async function parseRequirementBlocks(): Promise<void> {
-  const { content, activeDraft } = useSddDraftStore.getState()
-  const draftId = activeDraft?.id
+export async function parseRequirementBlocks(): Promise<boolean> {
+  const { content, activeDraft, draftSession, editRevision } = useSddDraftStore.getState()
+  if (!activeDraft) return false
+  const { id: draftId, workspaceRoot } = activeDraft
   try {
     const blocks = await window.electronAPI.sdd.parseBlocks(content)
-    // Only apply if content and draft haven't changed during async operation
     const current = useSddDraftStore.getState()
-    if (current.content === content && current.activeDraft?.id === draftId) {
-      current.setRequirementBlocks(blocks)
-    }
+    if (
+      current.activeDraft?.id !== draftId ||
+      current.activeDraft.workspaceRoot !== workspaceRoot ||
+      current.draftSession !== draftSession ||
+      current.editRevision !== editRevision ||
+      current.content !== content
+    ) return false
+    current.setRequirementBlocks(blocks)
+    return true
   } catch (error: any) {
     console.error('Failed to parse requirement blocks:', error)
+    return false
   }
 }
 
 async function parseRequirementBlocksForDraft(
   draft: Pick<SddDraft, 'workspaceRoot' | 'id'>,
-  content: string
+  content: string,
+  sourceIdentity?: DraftContentIdentity
 ): Promise<SddRequirementBlock[]> {
   const blocks = await window.electronAPI.sdd.parseBlocks(content)
   const current = useSddDraftStore.getState()
-  if (
+  const canCommit = sourceIdentity
+    ? matchesDraftContentIdentity(current, sourceIdentity)
+    : (
     current.activeDraft?.id === draft.id &&
     current.activeDraft.workspaceRoot === draft.workspaceRoot &&
     current.content === content
-  ) {
+    )
+  if (canCommit) {
     current.setRequirementBlocks(blocks)
   }
   return blocks
@@ -225,8 +402,29 @@ export async function computeTrace(planMarkdown?: string): Promise<void> {
  * Compute and persist the requirement trace for an assistant-generated plan.
  */
 export async function persistPlanTrace(planMarkdown: string, draftInput?: Pick<SddDraft, 'workspaceRoot' | 'id'>): Promise<SddTrace | null> {
-  const targetDraft = draftInput ?? useSddDraftStore.getState().activeDraft
+  const sourceState = useSddDraftStore.getState()
+  const targetDraft = draftInput ?? sourceState.activeDraft
   if (!targetDraft) return null
+  const sourceSnapshot: DraftContentIdentity | null =
+    sourceState.activeDraft?.id === targetDraft.id && sourceState.activeDraft.workspaceRoot === targetDraft.workspaceRoot
+      ? {
+          workspaceRoot: targetDraft.workspaceRoot,
+          draftId: targetDraft.id,
+          draftSession: sourceState.draftSession,
+          editRevision: sourceState.editRevision,
+          content: sourceState.content
+        }
+      : null
+  let sourceInvalidated = false
+  const unsubscribeSource = sourceSnapshot
+    ? useSddDraftStore.subscribe(currentState => {
+        const targetIsActive = currentState.activeDraft?.id === targetDraft.id &&
+          currentState.activeDraft.workspaceRoot === targetDraft.workspaceRoot
+        if (targetIsActive && !matchesDraftContentIdentity(currentState, sourceSnapshot)) {
+          sourceInvalidated = true
+        }
+      })
+    : null
 
   try {
     const trace = await window.electronAPI.sdd.computeTrace(
@@ -234,9 +432,12 @@ export async function persistPlanTrace(planMarkdown: string, draftInput?: Pick<S
       targetDraft.id,
       planMarkdown
     )
-    const activeDraft = useSddDraftStore.getState().activeDraft
-    if (activeDraft?.id === targetDraft.id && activeDraft.workspaceRoot === targetDraft.workspaceRoot) {
-      useSddDraftStore.getState().setTrace(trace)
+    const currentState = useSddDraftStore.getState()
+    const targetIsActive = currentState.activeDraft?.id === targetDraft.id &&
+      currentState.activeDraft.workspaceRoot === targetDraft.workspaceRoot
+    if (sourceInvalidated) return null
+    if (targetIsActive && sourceSnapshot && matchesDraftContentIdentity(currentState, sourceSnapshot)) {
+      currentState.setTrace(trace)
     }
     if (trace) {
       await window.electronAPI.sdd.saveTrace(targetDraft.workspaceRoot, targetDraft.id, trace)
@@ -245,6 +446,8 @@ export async function persistPlanTrace(planMarkdown: string, draftInput?: Pick<S
   } catch (error: any) {
     console.error('Failed to persist plan trace:', error)
     return null
+  } finally {
+    unsubscribeSource?.()
   }
 }
 
@@ -254,19 +457,34 @@ export async function refreshTraceRequirementBlocksAfterVerification(
   verifiedBlocks?: SddRequirementBlock[]
 ): Promise<SddTrace | null> {
   const store = useSddDraftStore.getState()
-  const storeTrace = store.trace?.draftId === draft.id ? store.trace : null
+  const isTargetActive = store.activeDraft?.id === draft.id && store.activeDraft.workspaceRoot === draft.workspaceRoot
+  const sourceSnapshot = isTargetActive
+    ? {
+        draftSession: store.draftSession,
+        editRevision: store.editRevision,
+        content: store.content
+      }
+    : null
+  const isSameActiveSource = () => {
+    if (!sourceSnapshot) return false
+    const current = useSddDraftStore.getState()
+    return current.activeDraft?.id === draft.id &&
+      current.activeDraft.workspaceRoot === draft.workspaceRoot &&
+      current.draftSession === sourceSnapshot.draftSession &&
+      current.editRevision === sourceSnapshot.editRevision &&
+      current.content === sourceSnapshot.content
+  }
+  const storeTrace = isTargetActive && store.trace?.draftId === draft.id ? store.trace : null
   const trace = storeTrace ?? await window.electronAPI.sdd.getTrace?.(draft.workspaceRoot, draft.id)
   if (trace?.draftId !== draft.id) return null
   if (!trace) return null
-  const activeDraft = useSddDraftStore.getState().activeDraft
-  const isActiveDraft = activeDraft?.id === draft.id && activeDraft.workspaceRoot === draft.workspaceRoot
   const requirementBlocks = verifiedBlocks
     ? verifiedBlocks
     : verifiedContent
     ? await window.electronAPI.sdd.parseBlocks(verifiedContent)
-    : isActiveDraft && store.requirementBlocks.length > 0
+    : isSameActiveSource() && store.requirementBlocks.length > 0
       ? store.requirementBlocks
-      : isActiveDraft
+      : isSameActiveSource()
         ? await window.electronAPI.sdd.parseBlocks(store.content)
         : trace.requirementBlocks
   const nextTrace: SddTrace = {
@@ -276,8 +494,7 @@ export async function refreshTraceRequirementBlocksAfterVerification(
     timestamp: new Date().toISOString()
   }
   await window.electronAPI.sdd.saveTrace(draft.workspaceRoot, draft.id, nextTrace)
-  const currentDraft = useSddDraftStore.getState().activeDraft
-  if (currentDraft?.id === draft.id && currentDraft.workspaceRoot === draft.workspaceRoot) {
+  if (isSameActiveSource()) {
     useSddDraftStore.getState().setTrace(nextTrace)
   }
   return nextTrace
@@ -315,12 +532,41 @@ export async function applyVerifyVerdicts(verdicts: VerifyCriterionVerdict[], sn
     }
   }
 
-  recordAiHistory(draft, store.content, 'acceptance verification writeback')
-  store.setContent(result.content)
+  const source = {
+    draftId: draft.id,
+    workspaceRoot: draft.workspaceRoot,
+    draftSession: store.draftSession,
+    editRevision: store.editRevision,
+    content: store.content
+  }
+  await recordAiHistory(draft, source.content, 'acceptance verification writeback')
+  const afterHistory = useSddDraftStore.getState()
+  if (
+    afterHistory.activeDraft?.id !== source.draftId ||
+    afterHistory.activeDraft.workspaceRoot !== source.workspaceRoot ||
+    afterHistory.draftSession !== source.draftSession ||
+    afterHistory.editRevision !== source.editRevision ||
+    afterHistory.content !== source.content ||
+    (snapshot && hashVerifyContent(afterHistory.content) !== snapshot.contentHash)
+  ) {
+    throw new Error('Requirement document changed while recording verification history. Re-run verification before applying results.')
+  }
+  afterHistory.setContent(result.content)
   const saved = await saveDraftToDisk()
-  if (!saved) throw new Error('Failed to save verification updates')
-  const activeDraftAfterSave = useSddDraftStore.getState().activeDraft
-  const contentAfterSave = useSddDraftStore.getState().content
+  if (!saved) {
+    const current = useSddDraftStore.getState()
+    if (
+      current.activeDraft?.id !== draft.id ||
+      current.activeDraft.workspaceRoot !== draft.workspaceRoot ||
+      current.content !== result.content
+    ) {
+      throw new Error('Requirement draft changed while saving verification updates. Re-open the verified draft and re-run verification.')
+    }
+    throw new Error('Failed to save verification updates')
+  }
+  const verifiedState = useSddDraftStore.getState()
+  const activeDraftAfterSave = verifiedState.activeDraft
+  const contentAfterSave = verifiedState.content
   if (
     activeDraftAfterSave?.id !== draft.id ||
     activeDraftAfterSave.workspaceRoot !== draft.workspaceRoot ||
@@ -328,7 +574,19 @@ export async function applyVerifyVerdicts(verdicts: VerifyCriterionVerdict[], sn
   ) {
     throw new Error('Requirement draft changed while saving verification updates. Re-open the verified draft and re-run verification.')
   }
-  const verifiedBlocks = await parseRequirementBlocksForDraft(draft, result.content)
+  const verifiedSource: DraftContentIdentity = {
+    workspaceRoot: draft.workspaceRoot,
+    draftId: draft.id,
+    draftSession: verifiedState.draftSession,
+    editRevision: verifiedState.editRevision,
+    content: result.content
+  }
+  const verifiedBlocks = await parseRequirementBlocksForDraft(draft, result.content, verifiedSource)
+  const afterParsing = useSddDraftStore.getState()
+  const targetIsActive = afterParsing.activeDraft?.id === draft.id && afterParsing.activeDraft.workspaceRoot === draft.workspaceRoot
+  if (targetIsActive && !matchesDraftContentIdentity(afterParsing, verifiedSource)) {
+    throw new Error('Requirement draft changed while parsing verification updates. Re-open the verified draft and re-run verification.')
+  }
   await refreshTraceRequirementBlocksAfterVerification(draft, result.content, verifiedBlocks)
 
   return {

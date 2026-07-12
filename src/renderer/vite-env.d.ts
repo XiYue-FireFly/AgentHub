@@ -31,12 +31,16 @@ interface HubStatus {
 }
 
 type AgentCapabilityLike = 'fs-read' | 'fs-write' | 'exec' | 'agentic-loop' | 'skills' | 'system-control'
-type AgenticProtocolLike = 'http' | 'stdio-plain' | 'acp'
+type AgenticProtocolLike = 'http' | 'stdio-plain' | 'stdio-ndjson' | 'acp'
 type AgenticModeLike = 'all' | 'selected'
 type AgenticApprovalPolicyLike = 'allow' | 'ask' | 'deny'
 type AgenticGuardedToolLike = 'write' | 'exec'
 type AgenticApprovalPresetLike = 'read-only' | 'auto' | 'full-access' | 'ask-all' | 'custom'
 type TakeoverAppLike = 'codex' | 'claude' | 'hermes' | 'openclaw'
+
+type DecisionSubmission = import('../shared/decision-contract').DecisionSubmission
+type PendingDecision = import('../shared/decision-contract').PendingDecision
+type DecisionResolveResult = import('../shared/decision-contract').DecisionResolveResult
 
 interface AgentCapabilityStateLike {
   agentId: string
@@ -169,8 +173,22 @@ interface ElectronAPI {
     create: (input: TurnCreateInput) => Promise<TurnCreateResult>
     cancel: (turnId: string) => Promise<boolean>
     cancelAgent: (turnId: string, agentId: string) => Promise<boolean>
-    resolveGuard: (requestId: string, approved: boolean) => Promise<boolean>
-    retry: (turnId: string) => Promise<TurnCreateResult>
+    retry: (input: { turnId: string; retryStrategy?: 'reuse-selection' | 'reoptimize' }) => Promise<TurnCreateResult>
+    rerunInterrupted: (originalTurnId: string) => Promise<TurnCreateResult>
+    listQueuedSubmissions: (threadId?: string) => Promise<Array<{
+      id: string
+      threadId: string
+      turnId: string
+      ownerWebContentsId: number
+      source: 'create' | 'retry'
+      retryOfTurnId?: string
+      state: 'queued' | 'starting'
+      createdAt: number
+      admissionSequence: number
+    }>>
+    clearQueue: (threadId: string) => Promise<string[]>
+    listPendingDecisions: (threadId?: string) => Promise<PendingDecision[]>
+    resolveDecision: (submission: DecisionSubmission) => Promise<DecisionResolveResult>
   }
   runtime: {
     snapshot: (workspaceId?: string | null) => Promise<WorkbenchSnapshot>
@@ -184,7 +202,7 @@ interface ElectronAPI {
     detect: () => Promise<LocalAgentStatus[]>
     status: () => Promise<LocalAgentStatus[]>
     options: () => Promise<Array<{ agentId: string; label: string; status: 'idle' | 'busy' | 'error' | 'off'; installed: boolean; configured: boolean }>>
-    configure: (agentId: string, patch: { binary?: string; args?: string; protocol?: 'stdio-plain' | 'acp' }) => Promise<LocalAgentStatus[]>
+    configure: (agentId: string, patch: { binary?: string; args?: string; protocol?: 'stdio-plain' | 'stdio-ndjson' | 'acp' }) => Promise<LocalAgentStatus[]>
   }
   localModels: {
     scan: (agentId?: string | null) => Promise<LocalModelConfig[]>
@@ -337,7 +355,6 @@ interface ElectronAPI {
     setApprovalPreset: (preset: AgenticApprovalPresetLike) => Promise<AgenticApprovalConfigLike>
     setApprovalDefault: (tool: AgenticGuardedToolLike, policy: AgenticApprovalPolicyLike) => Promise<AgenticApprovalConfigLike>
     setApprovalOverride: (agentId: string, tool: AgenticGuardedToolLike, policy: AgenticApprovalPolicyLike | null) => Promise<AgenticApprovalConfigLike>
-    resolveApproval: (requestId: string, approved: boolean) => Promise<boolean>
   }
   prompts: {
     list: (category?: PromptCategory) => Promise<PromptEntry[]>
@@ -472,6 +489,7 @@ interface ElectronAPI {
   }
   ai: {
     quickComplete: (input: QuickCompleteInputLike) => Promise<QuickCompleteResultLike>
+    promptCandidates: (input: PromptCandidateInputLike) => Promise<PromptCandidateResultLike>
   }
   models: {
     list: (providers?: ProviderForModelList[]) => Promise<ModelRouteInfo[]>
@@ -522,7 +540,7 @@ interface ElectronAPI {
   sdd: {
     createDraft: (workspaceRoot: string, title: string, template?: string) => Promise<SddDraft>
     getDraft: (workspaceRoot: string, draftId: string) => Promise<SddDraft | null>
-    updateDraft: (workspaceRoot: string, draftId: string, content: string) => Promise<void>
+    updateDraft: (workspaceRoot: string, draftId: string, content: string, designContext?: SddDesignContext) => Promise<void>
     updateDesignContext: (workspaceRoot: string, draftId: string, designContext: SddDesignContext) => Promise<void>
     deleteDraft: (workspaceRoot: string, draftId: string) => Promise<void>
     listDrafts: (workspaceRoot: string) => Promise<SddDraftMeta[]>
@@ -564,7 +582,7 @@ interface ElectronAPI {
   platform: string
 }
 
-type WorkbenchTurnStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+type WorkbenchTurnStatus = import('../shared/turn-status').WorkbenchTurnStatus
 type DispatchPreset = 'auto' | 'broadcast' | 'chain' | 'orchestrate' | 'lead-workers' | 'parallel-review' | 'firefly-custom' | 'custom'
 type MemoryCategory = 'conversation' | 'task' | 'skill' | 'file' | 'system' | 'preference' | 'project' | 'style' | 'decision' | 'correction' | 'imported_conversation'
 type MemoryEntryStatus = 'candidate' | 'approved' | 'disabled'
@@ -841,11 +859,22 @@ interface WorkbenchTurn {
   customSchedule?: SchedulePreview
   targetAgent?: string | null
   modelSelection?: ModelSelection
+  multiModelFusion?: MultiModelFusionConfig
   thinking?: any
   status: WorkbenchTurnStatus
   taskIds: string[]
+  displayOriginalPrompt?: string
+  effectivePrompt?: string
+  promptEnvelope?: import('../shared/prompt-contract').PromptEnvelope
   createdAt: number
   completedAt?: number
+}
+
+interface MultiModelFusionConfig {
+  enabled: boolean
+  maxCandidates: 2 | 3
+  maxRounds: 1 | 2 | 3
+  allowExecutor: boolean
 }
 
 interface TurnCreateInput {
@@ -856,6 +885,7 @@ interface TurnCreateInput {
   targetAgent?: string | null
   thinking?: unknown
   modelSelection?: ModelSelection
+  multiModelFusion?: MultiModelFusionConfig
   attachments?: WorkbenchAttachment[]
   customSchedule?: SchedulePreview
 }
@@ -2050,7 +2080,15 @@ interface TerminalContext {
   lastExitCode?: number
 }
 
+type QuickCompleteOriginLike =
+  | 'quick-complete:prompt-enhancer'
+  | 'quick-complete:sdd-requirements'
+  | 'quick-complete:inline-edit'
+  | 'quick-complete:browser-summary'
+  | 'quick-complete:browser-analysis'
+
 interface QuickCompleteInputLike {
+  origin: QuickCompleteOriginLike
   prompt: string
   systemPrompt?: string
   providerId?: string
@@ -2062,6 +2100,18 @@ interface QuickCompleteInputLike {
 interface QuickCompleteResultLike {
   ok: boolean
   content?: string
+  error?: string
+}
+
+interface PromptCandidateInputLike {
+  origin: 'quick-complete:prompt-enhancer'
+  prompt: string
+  draftHash: string
+}
+
+interface PromptCandidateResultLike {
+  candidates: string[]
+  draftHash: string
   error?: string
 }
 

@@ -56,6 +56,16 @@ const providers = [{
   models: [{ id: 'deepseek-chat', label: 'DeepSeek Chat', enabled: true }]
 }]
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 function installElectronApi(planMarkdown: string, options: {
   draftOverride?: SddDraft
   parseBlocks?: SddTrace['requirementBlocks']
@@ -82,7 +92,7 @@ function installElectronApi(planMarkdown: string, options: {
     sdd: {
       listDrafts: vi.fn(async () => [activeDraft]),
       createDraft: vi.fn(),
-      getDraft: vi.fn(async () => activeDraft),
+      getDraft: vi.fn(async (): Promise<SddDraft | null> => activeDraft),
       getTrace: vi.fn(async () => null),
       updateDraft: vi.fn(async () => { calls.push('updateDraft') }),
       updateDesignContext: vi.fn(),
@@ -101,9 +111,9 @@ function installElectronApi(planMarkdown: string, options: {
 }
 
 describe('SddRequirementsList closed loop', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setLang('en')
-    clearDraftHistory(draft.id, draft.workspaceRoot)
+    await clearDraftHistory(draft.id, draft.workspaceRoot)
     useSddDraftStore.persist.clearStorage()
     useSddDraftStore.getState().clearDraft()
     useSddDraftStore.getState().setActiveDraft(draft)
@@ -117,12 +127,87 @@ describe('SddRequirementsList closed loop', () => {
     }])
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
     vi.restoreAllMocks()
     delete (window as any).electronAPI
-    clearDraftHistory(draft.id, draft.workspaceRoot)
+    await clearDraftHistory(draft.id, draft.workspaceRoot)
     useSddDraftStore.getState().clearDraft()
+  })
+
+  it('stays in the list when opening a draft does not commit', async () => {
+    const { api } = installElectronApi('- [ ] ignored')
+    api.sdd.getDraft.mockResolvedValue(null)
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    await waitFor(() => expect(useSddDraftStore.getState().error).toBe('Draft not found'))
+
+    expect(view.container.querySelector('.sdd-list-mode')).toBeTruthy()
+    expect(view.container.querySelector('.sdd-editor-container')).toBeNull()
+  })
+
+  it('invalidates an old pending open when workspaceRoot changes', async () => {
+    const oldDraft = { ...draft, title: 'Old workspace draft' }
+    const newDraft = { ...draft, id: 'draft-2', workspaceRoot: 'E:\\workspace-new', title: 'New workspace draft' }
+    const pendingOldDraft = deferred<SddDraft | null>()
+    const getDraft = vi.fn(() => pendingOldDraft.promise)
+    const getTrace = vi.fn(async () => null)
+    ;(window as any).electronAPI = {
+      sdd: {
+        listDrafts: vi.fn(async (workspaceRoot: string) => workspaceRoot === oldDraft.workspaceRoot ? [oldDraft] : [newDraft]),
+        getDraft,
+        getTrace
+      }
+    }
+    useSddDraftStore.getState().clearDraft()
+    const view = render(<SddRequirementsList workspaceRoot={oldDraft.workspaceRoot} threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText(oldDraft.title))
+    await waitFor(() => expect(getDraft).toHaveBeenCalledWith(oldDraft.workspaceRoot, oldDraft.id))
+    view.rerender(<SddRequirementsList workspaceRoot={newDraft.workspaceRoot} threadId="thread-1" />)
+    await view.findByText(newDraft.title)
+
+    await act(async () => {
+      pendingOldDraft.resolve(oldDraft)
+      await pendingOldDraft.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(getTrace).not.toHaveBeenCalled()
+    expect(useSddDraftStore.getState().activeDraft).toBeNull()
+    expect(view.container.querySelector('.sdd-list-mode')).toBeTruthy()
+    expect(view.container.querySelector('.sdd-editor-container')).toBeNull()
+  })
+
+  it('invalidates an old pending open when the component unmounts', async () => {
+    const pendingDraft = deferred<SddDraft | null>()
+    const getDraft = vi.fn(() => pendingDraft.promise)
+    const getTrace = vi.fn(async () => null)
+    ;(window as any).electronAPI = {
+      sdd: {
+        listDrafts: vi.fn(async () => [draft]),
+        getDraft,
+        getTrace
+      }
+    }
+    useSddDraftStore.getState().clearDraft()
+    const view = render(<SddRequirementsList workspaceRoot={draft.workspaceRoot} threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText(draft.title))
+    await waitFor(() => expect(getDraft).toHaveBeenCalledWith(draft.workspaceRoot, draft.id))
+    view.unmount()
+
+    await act(async () => {
+      pendingDraft.resolve(draft)
+      await pendingDraft.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(getTrace).not.toHaveBeenCalled()
+    expect(useSddDraftStore.getState().activeDraft).toBeNull()
   })
 
   it('persists plan trace and syncs assistant plan todos to the active thread', async () => {
@@ -158,6 +243,77 @@ describe('SddRequirementsList closed loop', () => {
     await view.findByText('Synced 1 todos')
   })
 
+  it('does not persist an old plan response after an A-B-A draft session change', async () => {
+    const planMarkdown = '- [ ] Stale plan for A (covers: R-1)'
+    const pendingResponse = deferred<{ ok: true; content: string }>()
+    const { api } = installElectronApi(planMarkdown)
+    api.ai.quickComplete.mockImplementation(() => pendingResponse.promise)
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: /Generate Plan/ }))
+    await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      useSddDraftStore.getState().setActiveDraft({
+        ...draft,
+        id: 'draft-2',
+        relativePath: '.agenthub/requirements/draft-2/requirement.md',
+        title: 'Other draft'
+      })
+    })
+    act(() => {
+      useSddDraftStore.getState().setActiveDraft(draft)
+    })
+
+    await act(async () => {
+      pendingResponse.resolve({ ok: true, content: planMarkdown })
+      await pendingResponse.promise
+    })
+    await waitFor(() => expect(view.container.querySelector('.sdd-message-loading')).toBeNull())
+
+    expect(api.sdd.computeTrace).not.toHaveBeenCalled()
+    expect(api.sdd.saveTrace).not.toHaveBeenCalled()
+    expect(useSddDraftStore.getState().trace).toBeNull()
+  })
+
+  it('does not attribute an old chat response after an A-B-A draft session change', async () => {
+    const staleResponse = 'Add an A-only shipping address requirement.'
+    const pendingResponse = deferred<{ ok: true; content: string }>()
+    const { api } = installElectronApi(staleResponse)
+    api.ai.quickComplete.mockImplementation(() => pendingResponse.promise)
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    await waitFor(() => expect(view.container.querySelector('button[title="AI Assistant"]')).toBeTruthy())
+    fireEvent.click(view.container.querySelector('button[title="AI Assistant"]') as HTMLButtonElement)
+    const input = await view.findByPlaceholderText('Ask the assistant...')
+    fireEvent.change(input, { target: { value: 'Improve draft A.' } })
+    fireEvent.click(view.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+    await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      useSddDraftStore.getState().setActiveDraft({
+        ...draft,
+        id: 'draft-2',
+        relativePath: '.agenthub/requirements/draft-2/requirement.md',
+        title: 'Other draft'
+      })
+    })
+    act(() => {
+      useSddDraftStore.getState().setActiveDraft(draft)
+    })
+
+    await act(async () => {
+      pendingResponse.resolve({ ok: true, content: staleResponse })
+      await pendingResponse.promise
+    })
+    await waitFor(() => expect(view.container.querySelector('.sdd-message-loading')).toBeNull())
+
+    expect(view.queryByText(staleResponse)).toBeNull()
+    expect(view.queryByRole('button', { name: /Apply to document/ })).toBeNull()
+  })
+
   it('uses the selected provider model for requirement AI requests', async () => {
     const { api } = installElectronApi('- [ ] Implement checkout')
     const view = render(
@@ -177,6 +333,42 @@ describe('SddRequirementsList closed loop', () => {
       providerId: 'deepseek',
       modelId: 'deepseek-chat',
       workspaceRoot: 'E:\\workspace'
+    })
+  })
+
+  it('uses the latest selected provider model after a parent rerender', async () => {
+    const { api } = installElectronApi('- [ ] Implement checkout')
+    const stableEvents: RuntimeEvent[] = []
+    const stableThreadTodos: ThreadTodo[] = []
+    const stableProviders = [{
+      ...providers[0],
+      models: [
+        { id: 'M1', label: 'Model M1', enabled: true },
+        { id: 'M2', label: 'Model M2', enabled: true }
+      ]
+    }]
+    const modelM1 = { providerId: 'deepseek', modelId: 'M1', source: 'provider' as const }
+    const modelM2 = { providerId: 'deepseek', modelId: 'M2', source: 'provider' as const }
+    const renderList = (modelSelection: typeof modelM1) => (
+      <SddRequirementsList
+        workspaceRoot="E:\\workspace"
+        threadId="thread-1"
+        events={stableEvents}
+        threadTodos={stableThreadTodos}
+        providers={stableProviders}
+        modelSelection={modelSelection}
+      />
+    )
+    const view = render(renderList(modelM1))
+
+    view.rerender(renderList(modelM2))
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: /Generate Plan/ }))
+
+    await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
+    expect(api.ai.quickComplete.mock.calls[0][0]).toMatchObject({
+      providerId: 'deepseek',
+      modelId: 'M2'
     })
   })
 
@@ -210,6 +402,33 @@ describe('SddRequirementsList closed loop', () => {
     }))
     expect(onThreadTodosChanged).toHaveBeenCalledWith('thread-1')
     await view.findByText('Synced 1 todos')
+  })
+
+  it('does not reuse V1 requirement blocks when V2 document Todo parsing succeeds with no blocks', async () => {
+    const oldBlocks = useSddDraftStore.getState().requirementBlocks
+    const v2Content = '# Checkout V2\n\n- [ ] generic current-document task'
+    const { api } = installElectronApi('- [ ] ignored plan', { parseBlocks: [] })
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    const syncButton = await view.findByRole('button', { name: /Sync Todo/ })
+    act(() => {
+      useSddDraftStore.getState().setRequirementBlocks(oldBlocks)
+      useSddDraftStore.getState().setContent(v2Content)
+    })
+    fireEvent.click(syncButton)
+
+    await waitFor(() => expect(api.sdd.parseBlocks).toHaveBeenCalledWith(v2Content))
+    await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith('thread-1', '', {
+      workspaceRoot: 'E:\\workspace',
+      draftId: 'draft-1',
+      relativePath: '.agenthub/requirements/draft-1/requirement.md'
+    }))
+    expect(api.todos.syncFromMarkdown).not.toHaveBeenCalledWith(
+      'thread-1',
+      expect.stringContaining('R-1'),
+      expect.anything()
+    )
   })
 
   it('shows explicit feedback when the requirement document has no todo checklist items', async () => {
@@ -268,6 +487,58 @@ describe('SddRequirementsList closed loop', () => {
     await view.findByText('Open a thread first.')
   })
 
+  it('does not send a requirement document to chat when block parsing fails', async () => {
+    const { api } = installElectronApi('- [ ] ignored plan')
+    ;(api.sdd.parseBlocks as any).mockRejectedValue(new Error('parse unavailable'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onSendRequirementToChat = vi.fn(async () => undefined)
+    const view = render(
+      <SddRequirementsList
+        workspaceRoot="E:\\workspace"
+        threadId="thread-1"
+        onSendRequirementToChat={onSendRequirementToChat}
+      />
+    )
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: /Send doc to chat/ }))
+    await waitFor(() => expect(api.sdd.parseBlocks).toHaveBeenCalled())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+
+    expect(onSendRequirementToChat).not.toHaveBeenCalled()
+  })
+
+  it('does not sync document todos when block parsing fails', async () => {
+    const { api } = installElectronApi('- [ ] ignored plan')
+    ;(api.sdd.parseBlocks as any).mockRejectedValue(new Error('parse unavailable'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: /Sync Todo/ }))
+    await waitFor(() => expect(api.sdd.parseBlocks).toHaveBeenCalled())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+
+    expect(api.todos.syncFromMarkdown).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['plan', /Generate Plan/],
+    ['verify', /Verify/]
+  ] as const)('does not send an assistant %s request when block parsing fails', async (_mode, buttonName) => {
+    const { api } = installElectronApi('- [ ] ignored plan')
+    ;(api.sdd.parseBlocks as any).mockRejectedValue(new Error('parse unavailable'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    fireEvent.click(await view.findByRole('button', { name: buttonName }))
+    await waitFor(() => expect(api.sdd.parseBlocks).toHaveBeenCalled())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+
+    expect(api.ai.quickComplete).not.toHaveBeenCalled()
+  })
+
   it('saves dirty draft content before generating a plan and sends the latest content to AI', async () => {
     const dirtyContent = [
       '# Checkout flow',
@@ -305,7 +576,7 @@ describe('SddRequirementsList closed loop', () => {
     await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
     expect(calls.indexOf('updateDraft')).toBeGreaterThanOrEqual(0)
     expect(calls.indexOf('updateDraft')).toBeLessThan(calls.indexOf('quickComplete'))
-    expect(api.sdd.updateDraft).toHaveBeenCalledWith('E:\\workspace', 'draft-1', dirtyContent)
+    expect(api.sdd.updateDraft).toHaveBeenCalledWith('E:\\workspace', 'draft-1', dirtyContent, undefined)
     expect(api.sdd.parseBlocks).toHaveBeenCalledWith(dirtyContent)
     expect(api.ai.quickComplete.mock.calls[0][0].prompt).toContain('saved card')
     expect(api.ai.quickComplete.mock.calls[0][0].prompt).not.toContain('Users can buy items.\n- [ ] submit payment')
@@ -391,7 +662,8 @@ describe('SddRequirementsList closed loop', () => {
     expect(api.sdd.updateDraft).not.toHaveBeenCalledWith(
       'E:\\workspace',
       'draft-1',
-      expect.stringContaining('- [x] submit payment')
+      expect.stringContaining('- [x] submit payment'),
+      undefined
     )
 
     fireEvent.click(await view.findByRole('button', { name: /Apply passed/ }))
@@ -399,7 +671,8 @@ describe('SddRequirementsList closed loop', () => {
     await waitFor(() => expect(api.sdd.updateDraft).toHaveBeenCalledWith(
       'E:\\workspace',
       'draft-1',
-      expect.stringContaining('- [x] submit payment')
+      expect.stringContaining('- [x] submit payment'),
+      undefined
     ))
     await view.findByText('Applied 1 passing criteria')
   })
@@ -522,7 +795,8 @@ describe('SddRequirementsList closed loop', () => {
     expect(api.sdd.updateDraft).not.toHaveBeenCalledWith(
       'E:\\workspace',
       'draft-1',
-      expect.stringContaining('- [x] submit payment')
+      expect.stringContaining('- [x] submit payment'),
+      undefined
     )
   })
 
@@ -572,7 +846,8 @@ describe('SddRequirementsList closed loop', () => {
     expect(api.sdd.updateDraft).not.toHaveBeenCalledWith(
       'E:\\workspace',
       'draft-1',
-      expect.stringContaining(assistantResponse)
+      expect.stringContaining(assistantResponse),
+      undefined
     )
     await view.findByRole('button', { name: /Apply to document/ })
 
@@ -583,7 +858,8 @@ describe('SddRequirementsList closed loop', () => {
     await waitFor(() => expect(api.sdd.updateDraft).toHaveBeenCalledWith(
       'E:\\workspace',
       'draft-1',
-      expect.stringContaining(assistantResponse)
+      expect.stringContaining(assistantResponse),
+      undefined
     ))
     await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith(
       'thread-1',
@@ -631,7 +907,137 @@ describe('SddRequirementsList closed loop', () => {
     expect(api.sdd.updateDraft).not.toHaveBeenCalledWith(
       'E:\\workspace',
       'draft-1',
-      expect.stringContaining(assistantResponse)
+      expect.stringContaining(assistantResponse),
+      undefined
     )
+  })
+
+  it('does not overwrite an edit made while assistant apply history is saving', async () => {
+    const assistantResponse = 'Add shipping address collection to the checkout requirement.'
+    const historySave = deferred<void>()
+    const { api } = installElectronApi(assistantResponse)
+    const saveHistory = vi.fn(() => historySave.promise)
+    ;(api.sdd as any).saveHistory = saveHistory
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    await waitFor(() => expect(view.container.querySelector('button[title="AI Assistant"]')).toBeTruthy())
+    fireEvent.click(view.container.querySelector('button[title="AI Assistant"]') as HTMLButtonElement)
+    const input = await view.findByPlaceholderText('Ask the assistant...')
+    fireEvent.change(input, { target: { value: 'Please improve the requirement.' } })
+    fireEvent.click(view.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+    await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(await view.findByRole('button', { name: /Apply to document/ }))
+    await waitFor(() => expect(saveHistory).toHaveBeenCalledOnce())
+    act(() => {
+      useSddDraftStore.getState().setContent('# newer edit during history save')
+    })
+    historySave.resolve()
+
+    await view.findByText('Requirement document changed after this AI response. Ask again before applying it.')
+    expect(useSddDraftStore.getState().content).toBe('# newer edit during history save')
+    expect(api.sdd.updateDraft).not.toHaveBeenCalledWith(
+      'E:\\workspace',
+      'draft-1',
+      expect.stringContaining(assistantResponse),
+      undefined
+    )
+  })
+
+  it('does not reuse V1 requirement blocks after assistant apply replaces the document with generic V2 checklist content', async () => {
+    const oldBlocks = useSddDraftStore.getState().requirementBlocks
+    const assistantResponse = [
+      '# Checkout V2',
+      '',
+      '## 验收标准',
+      '',
+      '- [ ] generic current-document task'
+    ].join('\n')
+    const { api } = installElectronApi(assistantResponse, { parseBlocks: [] })
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    await waitFor(() => expect(view.container.querySelector('button[title="AI Assistant"]')).toBeTruthy())
+    act(() => {
+      useSddDraftStore.getState().setRequirementBlocks(oldBlocks)
+    })
+    fireEvent.click(view.container.querySelector('button[title="AI Assistant"]') as HTMLButtonElement)
+    const input = await view.findByPlaceholderText('Ask the assistant...')
+    fireEvent.change(input, { target: { value: 'Replace this with the V2 document.' } })
+    fireEvent.click(view.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+    await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(await view.findByRole('button', { name: /Apply to document/ }))
+
+    await waitFor(() => expect(api.sdd.parseBlocks).toHaveBeenCalledWith(expect.stringContaining('generic current-document task')))
+    await waitFor(() => expect(api.todos.syncFromMarkdown).toHaveBeenCalledWith('thread-1', '', {
+      workspaceRoot: 'E:\\workspace',
+      draftId: 'draft-1',
+      relativePath: '.agenthub/requirements/draft-1/requirement.md'
+    }))
+    expect(api.todos.syncFromMarkdown).not.toHaveBeenCalledWith(
+      'thread-1',
+      expect.stringContaining('R-1'),
+      expect.anything()
+    )
+  })
+
+  it('does not sync or pollute another workspace draft when assistant apply parsing becomes stale', async () => {
+    const assistantResponse = 'Add shipping address collection to the checkout requirement.'
+    const pendingBlocks = deferred<SddTrace['requirementBlocks']>()
+    const parsedWorkspaceABlocks = [{
+      id: 'R-A',
+      title: 'Workspace A checkout',
+      status: 'draft' as const,
+      description: assistantResponse,
+      acceptanceCriteria: [{ text: 'collect shipping address', checked: false }],
+      lineNumber: 3
+    }]
+    const workspaceBBlocks = [{
+      id: 'R-B',
+      title: 'Workspace B checkout',
+      status: 'planned' as const,
+      description: 'Must remain owned by workspace B.',
+      acceptanceCriteria: [{ text: 'keep workspace B intact', checked: false }],
+      lineNumber: 3
+    }]
+    const { api } = installElectronApi(assistantResponse)
+    ;(api.sdd.parseBlocks as any).mockImplementation((content: string) => (
+      content.includes(assistantResponse) ? pendingBlocks.promise : Promise.resolve([])
+    ))
+    const view = render(<SddRequirementsList workspaceRoot="E:\\workspace" threadId="thread-1" />)
+
+    fireEvent.click(await view.findByText('Checkout flow'))
+    await waitFor(() => expect(view.container.querySelector('button[title="AI Assistant"]')).toBeTruthy())
+    fireEvent.click(view.container.querySelector('button[title="AI Assistant"]') as HTMLButtonElement)
+    const input = await view.findByPlaceholderText('Ask the assistant...')
+    fireEvent.change(input, { target: { value: 'Please improve the requirement.' } })
+    fireEvent.click(view.container.querySelector('.sdd-composer-send') as HTMLButtonElement)
+    await waitFor(() => expect(api.ai.quickComplete).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(await view.findByRole('button', { name: /Apply to document/ }))
+    await waitFor(() => expect(api.sdd.parseBlocks).toHaveBeenCalledWith(expect.stringContaining(assistantResponse)))
+    const appliedContent = useSddDraftStore.getState().content
+    act(() => {
+      useSddDraftStore.getState().setActiveDraft({
+        ...draft,
+        workspaceRoot: 'E:\\workspace-b',
+        relativePath: '.agenthub/requirements-b/draft-1/requirement.md',
+        title: 'Workspace B checkout',
+        content: appliedContent
+      })
+      useSddDraftStore.getState().setRequirementBlocks(workspaceBBlocks)
+    })
+
+    await act(async () => {
+      pendingBlocks.resolve(parsedWorkspaceABlocks)
+      await pendingBlocks.promise
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    expect(api.todos.syncFromMarkdown).not.toHaveBeenCalled()
+    expect(useSddDraftStore.getState().activeDraft?.workspaceRoot).toBe('E:\\workspace-b')
+    expect(useSddDraftStore.getState().requirementBlocks).toEqual(workspaceBBlocks)
   })
 })

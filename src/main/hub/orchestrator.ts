@@ -17,6 +17,11 @@ export interface OrchestratePlan {
 }
 
 const KNOWN_AGENTS = ['codex', 'claude', 'hermes', 'openclaw', 'marvis', 'minimax-code']
+export const MAX_ORCHESTRATE_SUBTASKS = 5
+const MAX_PLAN_ID_LENGTH = 64
+const MAX_PLAN_TITLE_LENGTH = 80
+const MAX_PLAN_DETAIL_LENGTH = 4000
+const MAX_PLAN_AGENT_ID_LENGTH = 64
 
 /** lead 分解/汇总时的系统提示 */
 export const ORCHESTRATOR_LEAD_SYSTEM =
@@ -50,16 +55,34 @@ export function parsePlan(raw: string, knownAgents: string[] = KNOWN_AGENTS): Or
   try { obj = JSON.parse(s.slice(start, end + 1)) } catch { return null }
   const arr = Array.isArray(obj?.subtasks) ? obj.subtasks : null
   if (!arr || arr.length === 0) return null
-  const subtasks: PlanSubtask[] = arr.map((x: any, i: number) => {
-    const agentRaw = typeof x?.agent === 'string' ? x.agent : (typeof x?.agentId === 'string' ? x.agentId : '')
-    const detail = typeof x?.detail === 'string' ? x.detail : (typeof x?.title === 'string' ? x.title : '')
-    return {
-      id: String(x?.id ?? i + 1),
-      title: String(x?.title ?? detail ?? ('Subtask ' + (i + 1))).slice(0, 80),
+  const subtasks: PlanSubtask[] = []
+  const seenRawIds = new Set<string>()
+  const usedIds = new Set<string>()
+  for (let i = 0; i < arr.length && subtasks.length < MAX_ORCHESTRATE_SUBTASKS; i++) {
+    const x = arr[i]
+    const rawId = String(x?.id ?? i + 1).trim() || String(i + 1)
+    if (seenRawIds.has(rawId)) continue
+    const agentRaw = (typeof x?.agent === 'string' ? x.agent : (typeof x?.agentId === 'string' ? x.agentId : ''))
+      .trim()
+      .slice(0, MAX_PLAN_AGENT_ID_LENGTH)
+    const detail = (typeof x?.detail === 'string' ? x.detail : (typeof x?.title === 'string' ? x.title : ''))
+      .slice(0, MAX_PLAN_DETAIL_LENGTH)
+    const title = String(x?.title ?? detail ?? ('Subtask ' + (i + 1))).slice(0, MAX_PLAN_TITLE_LENGTH)
+    if (!detail && !title) continue
+    let id = rawId.slice(0, MAX_PLAN_ID_LENGTH)
+    for (let collision = 2; usedIds.has(id); collision++) {
+      const suffix = `~${collision}`
+      id = rawId.slice(0, MAX_PLAN_ID_LENGTH - suffix.length) + suffix
+    }
+    seenRawIds.add(rawId)
+    usedIds.add(id)
+    subtasks.push({
+      id,
+      title,
       detail,
       agentId: knownAgents.includes(agentRaw) ? agentRaw : undefined
-    }
-  }).filter((st: PlanSubtask) => !!(st.detail || st.title))
+    })
+  }
   return subtasks.length ? { subtasks } : null
 }
 

@@ -6,15 +6,15 @@ import { createWorktree, listWorktrees, openWorktree, removeWorktree, syncWorktr
 import { listWorkspaceFiles, searchWorkspaceFiles, readFilePreview } from '../runtime/workspace-files'
 import { getWorkspaceManager, WorkspaceNotFoundError, WorkspacePathInvalidError } from '../hub/workspace'
 import { isPathInsideBase, resolveWorkspaceRelativePath } from './path-guards'
-import { resolvePathInRegisteredWorkspace, resolveRegisteredWorkspaceRoot } from './workspace-root-guard'
+import { isPathRealpathInsideBase, resolvePathInRegisteredWorkspace, resolveRegisteredWorkspaceRoot } from './workspace-root-guard'
 import { isSensitiveTextFilePath } from './sensitive-files'
 import { typedHandle } from './typed-ipc'
 
 /** Validate relative path stays in registered root (logical + realpath ancestor). */
-function validateWorkspacePath(workspaceRoot: string, relativePath: string): string | null {
+function validateWorkspacePath(workspaceRoot: string, relativePath: string, options: { allowRoot?: boolean } = {}): string | null {
   const registeredRoot = resolveRegisteredWorkspaceRoot(workspaceRoot)
   if (!registeredRoot) return null
-  const target = resolveWorkspaceRelativePath(registeredRoot, relativePath)
+  const target = resolveWorkspaceRelativePath(registeredRoot, relativePath, options)
   if (!target) return null
   let rootReal: string
   try {
@@ -73,6 +73,9 @@ export function registerWorkspaceIpc(): void {
     if (!inWorkspace && !inHome) {
       return { ok: false, error: 'Access denied: path outside allowed directories' }
     }
+    if ((inWorkspace && root && !isPathRealpathInsideBase(root, resolved)) || (inHome && !isPathRealpathInsideBase(home, resolved))) {
+      return { ok: false, error: 'Access denied: path outside allowed directories' }
+    }
     if (isSensitiveTextFilePath(resolved)) {
       return { ok: false, error: 'Access denied: sensitive file' }
     }
@@ -127,8 +130,7 @@ export function registerWorkspaceIpc(): void {
   })
 
   typedHandle("workspaceFiles:listDirectory", async (_e, workspaceRoot, relPath) => {
-    const registeredRoot = resolveRegisteredWorkspaceRoot(workspaceRoot)
-    const absPath = registeredRoot ? resolveWorkspaceRelativePath(registeredRoot, relPath, { allowRoot: true }) : null
+    const absPath = validateWorkspacePath(workspaceRoot, relPath, { allowRoot: true })
     if (!absPath) return { ok: false, entries: [], error: 'Invalid path' }
     try {
       const dirents = await fs.readdir(absPath, { withFileTypes: true })

@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { planDispatch } from "../runtime/dispatch-planner"
+import { executeQueuedWorkbenchTurnDispatch, resolveQueuedWorkbenchTurnDispatch } from "../runtime/workbench-turn-execution"
 import type { PromptOptimizerResult } from "../runtime/prompt-optimizer"
 import type { SchedulePreview } from "../runtime/types"
 
@@ -71,12 +72,21 @@ describe("smart five-role custom schedule integration", () => {
     expect(source).toContain("finalAssistantContentForTurn")
   })
 
+  it("does not fabricate a root parent dispatch ID for a workbench schedule", () => {
+    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+
+    expect(source).not.toContain("parentDispatchId: createDispatchId()")
+  })
+
   it("injects only approved long-term memories into dispatcher prompts", () => {
     const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
 
-    expect(source).toContain("new Dispatcher(registry, pipeline, (taskText = \"\") => memory().selectContextEntries(taskText, { limit: 12, tokenBudget: 4_000 }))")
+    expect(source).toContain("new Dispatcher(")
+    expect(source).toContain("requestToolDecision: async ({ task, agentId, request, idempotencyKey, onRequested }) =>")
+    expect(source).toContain("cancelDecisionTurn: turnId => decisionService.cancelTurn(turnId)")
+    expect(source).toContain("cancelDecisionAgent: (turnId, agentId) => decisionService.cancelAgentDecisions(turnId, agentId)")
     expect(source).toContain("memory().selectContextEntries(prompt, { limit: 24, tokenBudget: 8_000 })")
-    expect(source).toContain("memory().selectContextEntries(optimizedDispatchUserPrompt, { limit: 8, tokenBudget: 3_000 })")
+    expect(source).toContain("memory().selectContextEntries(dispatchUserPrompt, { limit: 8, tokenBudget: 3_000 })")
     expect(source).not.toContain("new Dispatcher(registry, pipeline, () => memory().getCatalog().entries")
   })
 
@@ -121,84 +131,136 @@ describe("smart five-role custom schedule integration", () => {
 
     expect(source).toContain("function availableRouteAgents(agentIds?: string[])")
     expect(source).toContain("const allowed = agentIds?.length ? new Set(agentIds) : null")
-    expect(source).toContain("makeRouteDecision(thread.id, turn.id, optimizedDispatchUserPrompt, dispatchPlanBase.routeAgentIds)")
-    expect(source).toContain("makeRouteDecision(thread.id, created.turn.id, retryOptimizedPrompt, retryPlanBase.routeAgentIds)")
+    expect(source).toContain("makeRouteDecision(thread.id, turn.id, promptEnvelope.effectivePrompt, dispatchPlanBase.routeAgentIds)")
     expect(plan.routeAgentIds).toEqual(["codex", "claude"])
     expect(plan.schedule).toBe(customSchedule)
     expect(scheduleHelpers).toContain("function scheduleStepsWithRouteDecision(steps: ScheduleStep[], decision?: RouteDecision): ScheduleStep[]")
     expect(scheduleHelpers).toContain("void decision")
   })
 
-  it("runs any supplied schedule graph instead of only custom and smart five-role modes", () => {
-    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
+  it("runs any supplied schedule graph through the live execution branch", async () => {
+    const schedule: SchedulePreview = {
+      preset: "broadcast",
+      label: "Broadcast schedule",
+      description: "A user supplied broadcast graph",
+      steps: [{ id: "worker", label: "Worker", agentId: "codex", role: "worker", mode: "auto" }]
+    }
+    const routing = resolveQueuedWorkbenchTurnDispatch({
+      payload: { prompt: "Run it", mode: "broadcast", customSchedule: schedule },
+      availableAgentIds: ["codex", "claude"],
+      attachments: [],
+      optimization: optimizer()
+    })
+    const dispatch = vi.fn(async () => ({ id: "task" }))
+    const dispatchProviderDirect = vi.fn(async () => ({ id: "provider-task" }))
+    const runSchedule = vi.fn(async () => ({ status: "completed" }))
 
-    expect(source).toContain(": !directTarget && scheduleForTurn")
-    expect(source).toContain(": !retryTargetAgent && retrySchedule")
-    expect(source).toContain("if (scheduleForTurn && !(\"id\" in task))")
-    expect(source).toContain("if (retrySchedule && !(\"id\" in task))")
-    expect(source).not.toContain('(effectiveMode === "custom" || effectiveMode === "firefly-custom") && !directTarget && scheduleForTurn')
-    expect(source).not.toContain('(turn.mode === "custom" || turn.mode === "firefly-custom") && !retryTargetAgent && retrySchedule')
+    expect(routing.dispatchPlan.schedule).toBe(schedule)
+    await executeQueuedWorkbenchTurnDispatch({
+      routing,
+      plan: routing.dispatchPlan,
+      dispatcher: { dispatch, dispatchProviderDirect } as any,
+      prompt: "Run it",
+      providerOptions: {},
+      dispatchOptions: {},
+      runSchedule
+    })
+
+    expect(runSchedule).toHaveBeenCalledOnce()
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchProviderDirect).not.toHaveBeenCalled()
   })
 
-  it("forces local and provider direct runs out of schedule mode before persisting or retrying", () => {
-    const source = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8")
-    const localDirectPlan = planDispatch({
-      requestedMode: "firefly-custom",
-      directRun: true,
-      directTarget: "codex",
+  it("routes local and provider direct turns around schedules in the live executor", async () => {
+    const customSchedule: SchedulePreview = {
+      preset: "firefly-custom",
+      label: "Five role",
+      description: "Five role schedule",
+      steps: [{ id: "lead", label: "Lead", agentId: "codex", role: "lead", mode: "auto" }]
+    }
+    const providerSelection = { providerId: "deepseek", modelId: "deepseek-chat", source: "provider" as const }
+    const localDirect = resolveQueuedWorkbenchTurnDispatch({
+      payload: { prompt: "Fix it", mode: "firefly-custom", targetAgent: "codex", modelSelection: providerSelection, customSchedule },
       availableAgentIds: ["codex", "claude", "minimax-code"],
+      attachments: [],
       optimization: optimizer()
     })
-    const providerDirectPlan = planDispatch({
-      requestedMode: "custom",
-      directRun: true,
+    const providerDirect = resolveQueuedWorkbenchTurnDispatch({
+      payload: { prompt: "Review it", mode: "custom", modelSelection: providerSelection, customSchedule },
       availableAgentIds: ["codex", "claude"],
+      attachments: [],
       optimization: optimizer()
     })
+    const dispatch = vi.fn(async () => ({ id: "local-task" }))
+    const dispatchProviderDirect = vi.fn(async () => ({ id: "provider-task" }))
+    const runSchedule = vi.fn(async () => ({ status: "completed" }))
 
-    expect(source).toContain("const localDirect = !!directTarget")
-    expect(source).toContain("const directRun = providerDirect || localDirect")
-    expect(source).toContain("const effectiveMode = dispatchPlanBase.effectiveMode")
-    expect(source).toContain("const scheduleForTurn = dispatchPlanBase.schedule")
-    expect(source).toContain("customSchedule: retryPlanBase.schedule")
-    expect(source).toContain("mode: retryPlanBase.effectiveMode")
-    expect(source).toContain("const retryDirectRun = retryProviderDirect || !!retryTargetAgent")
-    expect(source).toContain("const retrySchedule = retryPlan.schedule")
-    expect(localDirectPlan).toMatchObject({
+    expect(localDirect).toMatchObject({
+      directTarget: "codex",
+      providerDirect: false,
+      directRun: true,
+      turnModelSelection: undefined,
+      dispatchPlan: {
       effectiveMode: "auto",
       dispatchMode: "auto",
       strategy: "direct-agent"
+      }
     })
-    expect(localDirectPlan.schedule).toBeUndefined()
-    expect(localDirectPlan.routeAgentIds).toBeUndefined()
-    expect(providerDirectPlan).toMatchObject({
+    expect(localDirect.dispatchPlan.schedule).toBeUndefined()
+    expect(providerDirect).toMatchObject({
+      directTarget: undefined,
+      providerDirect: true,
+      directRun: true,
+      turnModelSelection: providerSelection,
+      dispatchPlan: {
       effectiveMode: "auto",
       dispatchMode: "auto",
       strategy: "direct-provider"
+      }
     })
-    expect(providerDirectPlan.schedule).toBeUndefined()
+    expect(providerDirect.dispatchPlan.schedule).toBeUndefined()
+
+    await executeQueuedWorkbenchTurnDispatch({
+      routing: providerDirect,
+      plan: providerDirect.dispatchPlan,
+      dispatcher: { dispatch, dispatchProviderDirect } as any,
+      prompt: "Review it",
+      providerOptions: { turnId: "turn-provider" },
+      dispatchOptions: { turnId: "turn-provider" },
+      runSchedule
+    })
+    await executeQueuedWorkbenchTurnDispatch({
+      routing: localDirect,
+      plan: localDirect.dispatchPlan,
+      dispatcher: { dispatch, dispatchProviderDirect } as any,
+      prompt: "Fix it",
+      providerOptions: { turnId: "turn-local" },
+      dispatchOptions: { turnId: "turn-local" },
+      runSchedule
+    })
+
+    expect(dispatchProviderDirect).toHaveBeenCalledWith("Review it", providerSelection, { turnId: "turn-provider" })
+    expect(dispatch).toHaveBeenCalledWith("Fix it", "auto", "codex", { turnId: "turn-local" })
+    expect(runSchedule).not.toHaveBeenCalled()
   })
 
   it("scores guard verdicts from agent output instead of guard prompt instructions", () => {
     const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
-    const guardService = readFileSync(join(process.cwd(), "src/main/runtime/guard-approval-service.ts"), "utf8")
 
-    // evaluateGuardVerdict now lives in guard-approval-service.ts
-    expect(guardService).toContain("explicitGuardVerdictFromText(reviewText) || riskVerdictForText(reviewText, role)")
-    expect(scheduleHelpers).toContain("emitGuardVerdict(guardStore, input.threadId, input.turnId, step.agentId, step.role, content)")
+    expect(scheduleHelpers).toContain("explicitGuardVerdictFromText(reviewText) || riskVerdictForText(reviewText, role)")
+    expect(scheduleHelpers).toContain("emitGuardVerdict(input.threadId, input.turnId, step.agentId, step.role, content)")
     expect(scheduleHelpers).not.toContain("[stepContext, content].join")
   })
 
   it("asks before continuing through high-risk guard verdicts", () => {
     const scheduleHelpers = readFileSync(join(process.cwd(), "src/main/runtime/schedule-helpers.ts"), "utf8")
-    const guardService = readFileSync(join(process.cwd(), "src/main/runtime/guard-approval-service.ts"), "utf8")
 
-    expect(scheduleHelpers).toContain("requestGuardApproval")
+    expect(scheduleHelpers).toContain("GuardDecisionAdapter")
+    expect(scheduleHelpers).toContain("requestScheduleGuardDecision")
     expect(scheduleHelpers).toContain("executorVerdictNeedsApproval")
     expect(scheduleHelpers).toContain("guardShouldBlockExecutor(verdict, step.role) || executorVerdictNeedsApproval(verdict, step.role)")
-    // Guard service now lives in guard-approval-service.ts
-    expect(guardService).toContain("needs-confirmation")
-    expect(guardService).toContain("requiresUserDecision")
+    expect(scheduleHelpers).toContain("idempotencyKey: `guard:${input.turnId}:${step.id}`")
+    expect(scheduleHelpers).not.toContain("requiresUserDecision")
     expect(scheduleHelpers).toContain('decision === "approved"')
   })
 

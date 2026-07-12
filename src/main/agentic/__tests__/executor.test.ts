@@ -8,23 +8,155 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const h = vi.hoisted(() => ({
   streamCalls: 0,
   script: [] as Array<(cb: any) => void>,
-  toolCalls: 0
+  requests: [] as any[],
+  toolCalls: 0,
+  toolContexts: [] as any[]
 }))
 
 vi.mock('../../providers/client', () => ({
   buildProviderClient: () => ({
-    stream: (_req: any, cb: any) => { const step = h.script[h.streamCalls]; h.streamCalls++; step?.(cb) }
+    stream: (req: any, cb: any) => { h.requests.push(req); const step = h.script[h.streamCalls]; h.streamCalls++; step?.(cb) }
   })
 }))
 
 vi.mock('../tools', () => ({
-  AGENTIC_TOOLS: [],
-  executeTool: async () => { h.toolCalls++; return { ok: true, output: 'TOOL_OUTPUT' } }
+  AGENTIC_TOOLS: [
+    { type: 'function', function: { name: 'fs_read' } },
+    { type: 'function', function: { name: 'fs_write' } },
+    { type: 'function', function: { name: 'exec' } }
+  ],
+  READ_ONLY_AGENTIC_TOOLS: [
+    { type: 'function', function: { name: 'fs_read' } }
+  ],
+  executeTool: async (_name: string, _args: any, ctx: any) => {
+    h.toolCalls++
+    h.toolContexts.push(ctx)
+    return { ok: true, output: 'TOOL_OUTPUT' }
+  }
 }))
 
-beforeEach(() => { h.streamCalls = 0; h.script = []; h.toolCalls = 0 })
+beforeEach(() => { h.streamCalls = 0; h.script = []; h.requests = []; h.toolCalls = 0; h.toolContexts = [] })
 
 describe('runAgenticHttp', () => {
+  it('hides mutation schemas and executes with a read-only context for read-only branches', async () => {
+    const { runAgenticHttp } = await import('../executor')
+    h.script = [
+      (cb) => cb.onDone({
+        finishReason: 'tool_calls',
+        toolCalls: [{ id: 'read-only-tool', function: { name: 'fs_read', arguments: '{"path":"a.txt"}' } }]
+      }),
+      (cb) => cb.onDone({ finishReason: 'stop' })
+    ]
+
+    await runAgenticHttp({
+      userText: 'inspect', systemPrompt: 's', resolved: {} as any, thinking: {} as any, root: '/ws',
+      capabilityMode: 'read-only',
+      isCancelled: () => false,
+      emit: { delta: () => {}, activity: () => {} }
+    })
+
+    expect(h.requests).toHaveLength(2)
+    expect(h.requests.every(request => request.tools.map((tool: any) => tool.function.name).join(',') === 'fs_read,request_user_decision')).toBe(true)
+    expect(h.toolContexts).toMatchObject([{ root: '/ws', readOnly: true }])
+  })
+
+  it('leaves the root agentic round parentless and chains subsequent rounds to the real dispatch', async () => {
+    const { runAgenticHttp } = await import('../executor')
+    const envelopes: any[] = []
+    h.script = [
+      (cb) => { cb.onDone({ finishReason: 'tool_calls', toolCalls: [{ id: 'lineage-tool', function: { name: 'fs_read', arguments: '{"path":"a.txt"}' } }] }) },
+      (cb) => { cb.onDone({ finishReason: 'stop' }) }
+    ]
+
+    await runAgenticHttp({
+      userText: 'inspect', systemPrompt: 's', resolved: {} as any, thinking: {} as any, root: '/ws',
+      lineage: {
+        origin: 'workbench:create',
+        policy: 'optimize',
+        rootInputId: 'root-input',
+        rootEnvelopeId: 'root-envelope',
+        rootPreparedTextHash: 'root-prepared-hash'
+      },
+      onDispatchEnvelope: envelope => envelopes.push(envelope),
+      isCancelled: () => false,
+      emit: { delta: () => {}, activity: () => {} }
+    })
+
+    expect(h.requests).toHaveLength(2)
+    expect(h.requests[0].dispatchEnvelope).toMatchObject({
+      origin: 'internal:agentic-round',
+      policy: 'internal',
+      rootInputId: 'root-input',
+      rootEnvelopeId: 'root-envelope',
+      rootPreparedTextHash: 'root-prepared-hash'
+    })
+    expect(h.requests[0].dispatchEnvelope.canonicalPayloadHash).not.toBe('root-prepared-hash')
+    expect(h.requests[0].dispatchEnvelope.parentDispatchId).toBeUndefined()
+    expect(h.requests[1].dispatchEnvelope.parentDispatchId).toBe(h.requests[0].dispatchEnvelope.dispatchId)
+    expect(envelopes).toEqual(h.requests.map(request => request.dispatchEnvelope))
+  })
+
+  it('anchors a fusion branch to its loop role while child agentic rounds retain internal provenance', async () => {
+    const { runAgenticHttp } = await import('../executor')
+    const envelopes: any[] = []
+    h.script = [
+      (cb) => cb.onDone({
+        finishReason: 'tool_calls',
+        toolCalls: [{ id: 'loop-read', function: { name: 'fs_read', arguments: '{"path":"a.txt"}' } }]
+      }),
+      (cb) => cb.onDone({ finishReason: 'stop' })
+    ]
+
+    await runAgenticHttp({
+      userText: 'inspect', systemPrompt: 's', resolved: {} as any, thinking: {} as any, root: '/ws',
+      lineage: {
+        origin: 'internal:loop-candidate',
+        policy: 'internal',
+        rootInputId: 'root-input',
+        rootEnvelopeId: 'root-envelope',
+        rootPreparedTextHash: 'root-prepared-hash',
+        parentDispatchId: 'prior-judge-dispatch'
+      },
+      onDispatchEnvelope: envelope => envelopes.push(envelope),
+      isCancelled: () => false,
+      emit: { delta: () => {}, activity: () => {} }
+    })
+
+    expect(h.requests).toHaveLength(2)
+    expect(h.requests[0].dispatchEnvelope).toMatchObject({
+      origin: 'internal:loop-candidate',
+      policy: 'internal',
+      rootInputId: 'root-input',
+      rootEnvelopeId: 'root-envelope',
+      rootPreparedTextHash: 'root-prepared-hash',
+      parentDispatchId: 'prior-judge-dispatch'
+    })
+    expect(h.requests[1].dispatchEnvelope).toMatchObject({
+      origin: 'internal:agentic-round',
+      parentDispatchId: h.requests[0].dispatchEnvelope.dispatchId
+    })
+    expect(envelopes).toEqual([h.requests[0].dispatchEnvelope])
+  })
+
+  it('propagates the shutdown signal into tool execution context', async () => {
+    const { runAgenticHttp } = await import('../executor')
+    const controller = new AbortController()
+    h.script = [
+      (cb) => { cb.onDone({ finishReason: 'tool_calls', toolCalls: [{ id: 'e-abort', function: { name: 'exec', arguments: '{"command":"long-running"}' } }] }) },
+      (cb) => { cb.onDone({ finishReason: 'stop' }) }
+    ]
+
+    await runAgenticHttp({
+      userText: 'run', systemPrompt: 's', resolved: {} as any, thinking: {} as any, root: '/ws',
+      signal: controller.signal,
+      isCancelled: () => false,
+      emit: { delta: () => {}, activity: () => {} }
+    })
+
+    expect(h.toolContexts).toHaveLength(1)
+    expect(h.toolContexts[0].signal).toBe(controller.signal)
+  })
+
   it('tool_calls → 执行工具 → 回灌 → 次轮收尾', async () => {
     const { runAgenticHttp } = await import('../executor')
     h.script = [
@@ -141,5 +273,84 @@ describe('runAgenticHttp', () => {
     })
     expect(h.toolCalls).toBe(0)                                  // fail-closed：工具被拒绝，未执行
     expect(res.content).toBe('done')
+  })
+
+  it('ignores late stream content and tool calls after the AbortSignal is aborted', async () => {
+    const { runAgenticHttp } = await import('../executor')
+    const controller = new AbortController()
+    const activities: any[] = []
+    let content = ''
+    h.script = [
+      (cb) => {
+        controller.abort()
+        cb.onContent('late')
+        cb.onDone({
+          finishReason: 'tool_calls',
+          toolCalls: [{ id: 'late-write', function: { name: 'fs_write', arguments: '{"path":"late.txt","content":"x"}' } }]
+        })
+      }
+    ]
+
+    const res = await runAgenticHttp({
+      userText: 'write late', systemPrompt: 's', resolved: {} as any, thinking: {} as any, root: '/ws',
+      signal: controller.signal,
+      isCancelled: () => false,
+      emit: { delta: (_channel, text) => { content += text }, activity: step => activities.push(step) }
+    })
+
+    expect(res.content).toBe('')
+    expect(content).toBe('')
+    expect(activities).toEqual([])
+    expect(h.toolCalls).toBe(0)
+  })
+
+  it('waits for a typed user choice and resumes the same HTTP tool loop', async () => {
+    const { runAgenticHttp } = await import('../executor')
+    h.script = [
+      (cb) => cb.onDone({
+        finishReason: 'tool_calls',
+        toolCalls: [{
+          id: 'decision-1',
+          function: {
+            name: 'request_user_decision',
+            arguments: JSON.stringify({
+              idempotencyKey: 'scope-step',
+              title: 'Choose scope',
+              options: [
+                { id: 'focused', label: 'Focused repair' },
+                { id: 'full', label: 'Full audit' }
+              ]
+            })
+          }
+        }]
+      }),
+      (cb) => { cb.onContent('continued'); cb.onDone({ finishReason: 'stop' }) }
+    ]
+    const requestUserDecision = vi.fn(async () => ({
+      status: 'selected' as const,
+      selectedOptionIds: ['focused'],
+      resolvedAt: 10
+    }))
+
+    const result = await runAgenticHttp({
+      userText: 'repair it', systemPrompt: 'system', resolved: {} as any, thinking: {} as any, root: 'C:\\workspace',
+      isCancelled: () => false,
+      requestUserDecision,
+      emit: { delta: () => {}, activity: () => {} }
+    })
+
+    expect(requestUserDecision).toHaveBeenCalledTimes(1)
+    expect(h.requests).toHaveLength(2)
+    expect(h.requests[1].messages.at(-1)).toEqual({
+      role: 'tool',
+      tool_call_id: 'decision-1',
+      content: JSON.stringify({
+        status: 'selected',
+        selectedOptionIds: ['focused'],
+        resolvedAt: 10
+      })
+    })
+    expect(h.toolCalls).toBe(0)
+    expect(result.content).toBe('continued')
   })
 })

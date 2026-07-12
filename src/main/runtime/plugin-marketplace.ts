@@ -191,8 +191,8 @@ export async function installMarketplacePlugin(
 
   const entries = imported.plugins || (imported.plugin ? [imported.plugin] : [])
   const path = imported.path || entries[0]?.path
-  let integrity = path ? verifyPluginIntegrity(path) : undefined
-  let signature = path ? verifyPluginSignature(path, loadTrustStore()) : undefined
+  const integrity = path ? verifyPluginIntegrity(path) : undefined
+  const signature = path ? verifyPluginSignature(path, loadTrustStore()) : undefined
 
   if (options.requireSignature && signature && signature.status !== 'ok') {
     return {

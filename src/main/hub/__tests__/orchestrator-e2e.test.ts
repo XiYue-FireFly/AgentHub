@@ -10,11 +10,18 @@ import { HttpAgentAdapter } from '../adapters/base'
 import { ORCHESTRATOR_LEAD_SYSTEM } from '../orchestrator'
 
 type Kind = 'decompose' | 'verify' | 'synthesis' | 'subtask'
-type Reply = string | { content?: string; error?: string }
+type ReplyValue = string | { content?: string; error?: string }
+type Reply = ReplyValue | Promise<ReplyValue>
+
+type TestBinding = {
+  agentId: string
+  providerId?: string
+  protocol?: 'http' | 'stdio-plain' | 'acp'
+}
 
 const h = vi.hoisted(() => {
   const state: {
-    bindings: Array<{ agentId: string }>
+    bindings: TestBinding[]
     responder: (c: { agentId: string; kind: Kind; prompt: string; system?: string }) => Reply
     calls: Array<{ agentId: string; kind: Kind; prompt: string; system?: string; messages?: Array<{ role: string; content: string }> }>
   } = {
@@ -28,8 +35,12 @@ const h = vi.hoisted(() => {
 vi.mock('../../providers/manager', () => ({
   getProviderManager: () => ({
     getBindings: () => h.state.bindings,
-    getBinding: (id: string) =>
-      h.state.bindings.find(b => b.agentId === id) ? { agentId: id, providerId: 'openai', modelId: 'gpt-test' } : undefined,
+    getBinding: (id: string) => {
+      const binding = h.state.bindings.find(b => b.agentId === id)
+      return binding
+        ? { ...binding, providerId: binding.providerId || 'openai', modelId: 'gpt-test' }
+        : undefined
+    },
     resolveBinding: (id: string) =>
       h.state.bindings.find(b => b.agentId === id)
         ? {
@@ -55,12 +66,12 @@ vi.mock('../../providers/client', () => ({
         else if (prompt.includes('Synthesize their outputs')) kind = 'synthesis'
       }
       h.state.calls.push({ agentId, kind, prompt, system, messages: opts.messages })
-      const r = h.state.responder({ agentId, kind, prompt, system })
-      const out = typeof r === 'string' ? { content: r } : r
-      // 同步触发回调（确定性顺序），模拟流式 onContent → onDone / onError
-      if (out.error) { cb.onError?.(new Error(out.error)); return }
-      if (out.content) cb.onContent?.(out.content)
-      cb.onDone?.({ content: out.content ?? '', usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })
+      Promise.resolve(h.state.responder({ agentId, kind, prompt, system })).then(r => {
+        const out = typeof r === 'string' ? { content: r } : r
+        if (out.error) { cb.onError?.(new Error(out.error)); return }
+        if (out.content) cb.onContent?.(out.content)
+        cb.onDone?.({ content: out.content ?? '', usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })
+      }, error => cb.onError?.(error))
     }
   })
 }))
@@ -78,6 +89,143 @@ function makeDispatcher() {
   const events: StreamEvent[] = []
   dispatcher.on('stream', (e: StreamEvent) => events.push(e))
   return { dispatcher, events, registry }
+}
+
+interface LocalCallTracker {
+  active: number
+  maxActive: number
+  calls: Array<{ agentId: string; kind: Kind; prompt: string }>
+}
+
+interface LocalReply {
+  content: string
+  delayMs?: number
+  gate?: Promise<void>
+  onCancel?: () => void
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+class BusyCheckingAcpAdapter {
+  binary = 'fake-acp'
+  protocol = 'acp' as const
+  mode = 'interactive' as const
+  status: 'idle' | 'busy' | 'error' = 'idle'
+  onOutput: ((chunk: string) => void) | null = null
+  onError: ((error: Error) => void) | null = null
+  private active = 0
+  private currentCancel: (() => void) | null = null
+
+  constructor(
+    readonly id: string,
+    readonly name: string,
+    private tracker: LocalCallTracker,
+    private responder: (call: { agentId: string; kind: Kind; prompt: string }) => LocalReply
+  ) {}
+
+  async start(): Promise<void> {}
+  async stop(): Promise<void> {}
+  send(): void {}
+  cancel(): void { this.currentCancel?.() }
+
+  getLifecycle() {
+    return { protocol: this.protocol, mode: this.mode, status: this.status, running: this.active > 0 }
+  }
+
+  async runPrompt(prompt: string, _cwd: string, handlers: { onChunk: (text: string) => void }): Promise<string> {
+    if (this.active > 0) throw new Error(`${this.id} is busy`)
+    let kind: Kind = 'subtask'
+    if (prompt.includes('Break the following task')) kind = 'decompose'
+    else if (prompt.includes('You are a strict reviewer')) kind = 'verify'
+    else if (prompt.includes('Synthesize their outputs')) kind = 'synthesis'
+    const reply = this.responder({ agentId: this.id, kind, prompt })
+    this.active++
+    this.status = 'busy'
+    this.tracker.active++
+    this.tracker.maxActive = Math.max(this.tracker.maxActive, this.tracker.active)
+    this.tracker.calls.push({ agentId: this.id, kind, prompt })
+    this.currentCancel = reply.onCancel || null
+    try {
+      if (reply.delayMs) await new Promise(resolve => setTimeout(resolve, reply.delayMs))
+      if (reply.gate) await reply.gate
+      handlers.onChunk(reply.content)
+      return 'end_turn'
+    } finally {
+      this.currentCancel = null
+      this.active--
+      this.status = 'idle'
+      this.tracker.active--
+    }
+  }
+}
+
+function makeLocalDispatcher(
+  responder: (call: { agentId: string; kind: Kind; prompt: string }) => LocalReply,
+  pipeline: { process: (prompt: string, agentId: string) => Promise<void> } = { process: async () => {} }
+) {
+  const registry = new AgentRegistry()
+  const tracker: LocalCallTracker = { active: 0, maxActive: 0, calls: [] }
+  registry.register(new BusyCheckingAcpAdapter('codex', 'Codex', tracker, responder) as any, ['coding'])
+  registry.register(new BusyCheckingAcpAdapter('claude', 'Claude', tracker, responder) as any, ['analysis'])
+  h.state.bindings = [
+    { agentId: 'codex', providerId: 'local-cli', protocol: 'acp' },
+    { agentId: 'claude', providerId: 'local-cli', protocol: 'acp' }
+  ]
+  const dispatcher = new Dispatcher(registry, pipeline as any)
+  const events: StreamEvent[] = []
+  dispatcher.on('stream', (event: StreamEvent) => events.push(event))
+  return { dispatcher, events, tracker }
+}
+
+class DeferredStartStdioAdapter {
+  binary = 'fake-stdio'
+  protocol = 'stdio-plain' as const
+  mode = 'oneshot' as const
+  status: 'idle' | 'busy' | 'error' = 'idle'
+  onOutput: ((chunk: string) => void) | null = null
+  onError: ((error: Error) => void) | null = null
+  sendCalls = 0
+
+  constructor(
+    readonly id: string,
+    readonly name: string,
+    private startEntered: ReturnType<typeof deferred<void>>,
+    private startGate: ReturnType<typeof deferred<void>>
+  ) {}
+
+  async start(): Promise<void> {
+    this.startEntered.resolve()
+    await this.startGate.promise
+  }
+
+  async stop(): Promise<void> { this.status = 'idle' }
+  send(): void { this.sendCalls++ }
+
+  getLifecycle() {
+    return { protocol: this.protocol, mode: this.mode, status: this.status, running: false }
+  }
+}
+
+function makeDeferredStartStdioDispatcher(
+  startEntered: ReturnType<typeof deferred<void>>,
+  startGate: ReturnType<typeof deferred<void>>
+) {
+  const registry = new AgentRegistry()
+  const adapter = new DeferredStartStdioAdapter('codex', 'Codex', startEntered, startGate)
+  registry.register(adapter as any, ['coding'])
+  h.state.bindings = [{ agentId: 'codex', providerId: 'local-cli', protocol: 'stdio-plain' }]
+  const dispatcher = new Dispatcher(registry, { process: async () => {} } as any)
+  const events: StreamEvent[] = []
+  dispatcher.on('stream', event => events.push(event))
+  return { dispatcher, adapter, events }
 }
 
 const byKind = (events: StreamEvent[], kind: string) => events.filter(e => e.kind === kind)
@@ -223,6 +371,217 @@ describe('runOrchestrate 端到端', () => {
     expect(byKind(events, 'orchestrate:final')).toHaveLength(1)
   })
 
+  it('执行层将同时运行的子任务限制在明确上限内', async () => {
+    const { dispatcher } = makeDispatcher()
+    const fiveTaskPlan = JSON.stringify({
+      subtasks: Array.from({ length: 5 }, (_, index) => ({
+        id: String(index + 1),
+        title: `任务 ${index + 1}`,
+        detail: `执行任务 ${index + 1}`,
+        agent: index % 2 === 0 ? 'codex' : 'claude'
+      }))
+    })
+    let activeWorkers = 0
+    let maxActiveWorkers = 0
+    h.state.responder = async ({ kind }) => {
+      if (kind === 'decompose') return fiveTaskPlan
+      if (kind === 'verify') return 'PASS'
+      if (kind === 'synthesis') return '汇总完成'
+      activeWorkers++
+      maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers)
+      await new Promise(resolve => setTimeout(resolve, 20))
+      activeWorkers--
+      return '子任务输出'
+    }
+
+    const task = await dispatcher.dispatch('执行五个子任务', 'orchestrate')
+
+    expect(task.status).toBe('completed')
+    expect(maxActiveWorkers).toBeGreaterThan(1)
+    expect(maxActiveWorkers).toBeLessThanOrEqual(3)
+  })
+
+  it('校验 agent 报错时保留原错误且不重新运行 worker', async () => {
+    const { dispatcher, events } = makeDispatcher()
+    const verifyError = 'review service unavailable'
+    let workerCalls = 0
+    h.state.responder = ({ kind }) => {
+      if (kind === 'decompose') {
+        return JSON.stringify({ subtasks: [{ id: '1', title: '实现', detail: '完成实现', agent: 'claude' }] })
+      }
+      if (kind === 'verify') return { error: verifyError }
+      if (kind === 'synthesis') return '包含失败说明的汇总'
+      workerCalls++
+      return 'worker 输出'
+    }
+
+    const task = await dispatcher.dispatch('完成一项实现', 'orchestrate')
+
+    expect(workerCalls).toBe(1)
+    expect(task.errors.get('codex')).toBe(verifyError)
+    const workerTerminals = (byKind(events, 'orchestrate:subtask') as any[]).filter(event => (
+      event.subtaskId === '1' && (event.status === 'done' || event.status === 'error')
+    ))
+    expect(workerTerminals.filter(event => event.status === 'done')).toHaveLength(1)
+    expect(workerTerminals.filter(event => event.status === 'error')).toHaveLength(0)
+  })
+
+  it('同一 local agent 的两个子任务串行完成且 verifier 共用该队列', async () => {
+    const sameAgentPlan = JSON.stringify({
+      subtasks: [
+        { id: '1', title: '任务一', detail: '执行一', agent: 'codex' },
+        { id: '2', title: '任务二', detail: '执行二', agent: 'codex' }
+      ]
+    })
+    const { dispatcher, events, tracker } = makeLocalDispatcher(({ kind }) => {
+      if (kind === 'decompose') return { content: sameAgentPlan }
+      if (kind === 'verify') return { content: 'PASS', delayMs: 10 }
+      if (kind === 'synthesis') return { content: '本地汇总' }
+      return { content: '本地子任务输出', delayMs: 15 }
+    })
+
+    const task = await dispatcher.dispatch('让同一个本地 agent 完成两项任务', 'orchestrate')
+
+    const done = (byKind(events, 'orchestrate:subtask') as any[]).filter(event => event.status === 'done')
+    expect(done.map(event => event.subtaskId).sort()).toEqual(['1', '2'])
+    expect(tracker.calls.filter(call => call.kind === 'subtask')).toHaveLength(2)
+    expect(tracker.calls.filter(call => call.kind === 'verify')).toHaveLength(2)
+    expect(tracker.maxActive).toBe(1)
+    expect(task.errors.size).toBe(0)
+  })
+
+  it('不同 local agent 保持并行且并发 verifier 不会收到 busy', async () => {
+    const localPlan = JSON.stringify({
+      subtasks: [
+        { id: '1', title: '任务一', detail: '执行一', agent: 'codex' },
+        { id: '2', title: '任务二', detail: '执行二', agent: 'claude' }
+      ]
+    })
+    const { dispatcher, events, tracker } = makeLocalDispatcher(({ agentId, kind }) => {
+      if (kind === 'decompose') return { content: localPlan }
+      if (kind === 'verify') return { content: 'PASS', delayMs: 50 }
+      if (kind === 'synthesis') return { content: '本地汇总' }
+      return { content: `${agentId} 子任务输出`, delayMs: agentId === 'codex' ? 10 : 25 }
+    })
+
+    const task = await dispatcher.dispatch('让两个本地 agent 并行完成任务', 'orchestrate')
+
+    expect(tracker.maxActive).toBeGreaterThanOrEqual(2)
+    expect(tracker.calls.filter(call => call.kind === 'subtask' && call.agentId === 'codex')).toHaveLength(1)
+    expect(tracker.calls.filter(call => call.kind === 'subtask' && call.agentId === 'claude')).toHaveLength(1)
+    expect(tracker.calls.filter(call => call.kind === 'verify')).toHaveLength(2)
+    expect((byKind(events, 'orchestrate:verdict') as any[]).filter(event => event.pass)).toHaveLength(2)
+    expect(task.errors.size).toBe(0)
+  })
+
+  it('任务取消后不把同一 local agent 队列中的下一子任务交给 adapter', async () => {
+    const firstWorkerGate = deferred<void>()
+    const firstWorkerEntered = deferred<void>()
+    const bothWorkersQueued = deferred<void>()
+    const sameAgentPlan = JSON.stringify({
+      subtasks: [
+        { id: '1', title: '任务一', detail: '执行一', agent: 'codex' },
+        { id: '2', title: '任务二', detail: '执行二', agent: 'codex' }
+      ]
+    })
+    let workerCalls = 0
+    const { dispatcher, tracker, events } = makeLocalDispatcher(({ kind }) => {
+      if (kind === 'decompose') return { content: sameAgentPlan }
+      if (kind === 'verify') return { content: 'PASS' }
+      if (kind === 'synthesis') return { content: '不应汇总' }
+      workerCalls++
+      if (workerCalls === 1) {
+        firstWorkerEntered.resolve()
+        return {
+          content: '第一个输出',
+          gate: firstWorkerGate.promise,
+          onCancel: () => firstWorkerGate.resolve()
+        }
+      }
+      return { content: '第二个输出' }
+    })
+    let taskId = ''
+    let runningWorkers = 0
+    dispatcher.on('task:created', task => { taskId = task.id })
+    dispatcher.on('stream', event => {
+      if (event.kind === 'orchestrate:subtask' && event.status === 'running') {
+        runningWorkers++
+        if (runningWorkers === 2) bothWorkersQueued.resolve()
+      }
+    })
+
+    const dispatchPromise = dispatcher.dispatch('测试取消本地队列', 'orchestrate')
+    await firstWorkerEntered.promise
+    await bothWorkersQueued.promise
+    expect(dispatcher.cancel(taskId)).toBe(true)
+    firstWorkerGate.resolve()
+    const task = await dispatchPromise
+
+    const adapterWorkerCalls = tracker.calls.filter(call => call.kind === 'subtask')
+    expect(task.status).toBe('cancelled')
+    expect(adapterWorkerCalls).toHaveLength(1)
+    expect(events.filter(event => event.taskId === taskId && event.kind === 'error' && event.code === 'AGENT_CANCELLED')).toHaveLength(1)
+    expect(adapterWorkerCalls[0].prompt).toContain('执行一')
+  })
+
+  it('任务在 local pipeline 中取消后不再调用 ACP adapter', async () => {
+    const pipelineEntered = deferred<void>()
+    const pipelineGate = deferred<void>()
+    const workerMarker = 'PIPELINE-CANCEL-WORKER'
+    const plan = JSON.stringify({
+      subtasks: [{ id: '1', title: '等待任务', detail: workerMarker, agent: 'codex' }]
+    })
+    const pipeline = {
+      process: async (prompt: string) => {
+        if (!prompt.includes(workerMarker)) return
+        pipelineEntered.resolve()
+        await pipelineGate.promise
+      }
+    }
+    const { dispatcher, tracker, events } = makeLocalDispatcher(({ kind }) => {
+      if (kind === 'decompose') return { content: plan }
+      if (kind === 'verify') return { content: 'PASS' }
+      if (kind === 'synthesis') return { content: '不应汇总' }
+      return { content: '不应进入 adapter' }
+    }, pipeline)
+    let taskId = ''
+    dispatcher.on('task:created', task => { taskId = task.id })
+
+    const dispatchPromise = dispatcher.dispatch('测试 pipeline 取消竞态', 'orchestrate')
+    await pipelineEntered.promise
+    expect(dispatcher.cancel(taskId)).toBe(true)
+    pipelineGate.resolve()
+    const task = await dispatchPromise
+
+    expect(task.status).toBe('cancelled')
+    expect(tracker.calls.filter(call => call.kind === 'subtask')).toHaveLength(0)
+    expect(events.filter(event => event.taskId === taskId && event.kind === 'error' && event.code === 'AGENT_CANCELLED')).toHaveLength(1)
+  })
+
+  it('stdio adapter start 尚未完成时取消任务不会继续 send', async () => {
+    vi.useFakeTimers()
+    try {
+      const startEntered = deferred<void>()
+      const startGate = deferred<void>()
+      const { dispatcher, adapter, events } = makeDeferredStartStdioDispatcher(startEntered, startGate)
+      let taskId = ''
+      dispatcher.on('task:created', task => { taskId = task.id })
+
+      const dispatchPromise = dispatcher.dispatch('测试 stdio start 取消竞态', 'auto', 'codex')
+      await startEntered.promise
+      expect(dispatcher.cancel(taskId)).toBe(true)
+      startGate.resolve()
+      const task = await dispatchPromise
+      await vi.advanceTimersByTimeAsync(250)
+
+      expect(task.status).toBe('cancelled')
+      expect(adapter.sendCalls).toBe(0)
+      expect(events.filter(event => event.taskId === taskId && event.kind === 'error' && event.code === 'AGENT_CANCELLED')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // ---- 失败外显契约（docs/DESIGN.md §8）----
 
   it('子任务 provider 报错 → 必须发 orchestrate:subtask error（不得伪装成 done 空内容）', async () => {
@@ -264,5 +623,257 @@ describe('runOrchestrate 端到端', () => {
     const errs = byKind(events, 'orchestrate:error') as any[]
     expect(errs.length === 1 || (finals.length === 1 && finals[0].content.length > 0)).toBe(true)
     if (errs.length) expect(task.status).toBe('failed')
+  })
+
+  it('preserves cancellation when orchestrate is cancelled during decomposition', async () => {
+    const decompositionEntered = deferred<void>()
+    const decompositionGate = deferred<ReplyValue>()
+    const { dispatcher, events } = makeDispatcher()
+    h.state.responder = ({ kind }) => {
+      if (kind === 'decompose') {
+        decompositionEntered.resolve()
+        return decompositionGate.promise
+      }
+      return ''
+    }
+    let taskId = ''
+    dispatcher.on('task:created', task => { taskId = task.id })
+
+    const running = dispatcher.dispatch('cancel during decomposition', 'orchestrate')
+    await decompositionEntered.promise
+    expect(dispatcher.cancel(taskId)).toBe(true)
+    decompositionGate.resolve(PLAN)
+    const task = await running
+    await dispatcher.stopAndDrain()
+
+    expect(task.status).toBe('cancelled')
+    expect(events.filter(event => event.taskId === taskId && event.kind === 'error' && event.code === 'AGENT_CANCELLED')).toHaveLength(1)
+  })
+
+  it('keeps scoped agent cancellation tombstoned across queued roles without stopping another agent', async () => {
+    const codexGate = deferred<void>()
+    const codexEntered = deferred<void>()
+    const claudeGate = deferred<void>()
+    const claudeEntered = deferred<void>()
+    const queuedCodexRole = deferred<void>()
+    const plan = JSON.stringify({
+      subtasks: [
+        { id: 'codex-worker', title: 'Codex worker', detail: 'CODEX-FIRST', agent: 'codex' },
+        { id: 'codex-reviewer', title: 'Codex reviewer', detail: 'CODEX-QUEUED', agent: 'codex' },
+        { id: 'claude-worker', title: 'Claude worker', detail: 'CLAUDE-CONTINUES', agent: 'claude' }
+      ]
+    })
+    let codexWorkerCalls = 0
+    const { dispatcher, tracker, events } = makeLocalDispatcher(({ agentId, kind }) => {
+      if (kind === 'decompose') return { content: plan }
+      if (kind === 'verify') return { content: 'PASS' }
+      if (kind === 'synthesis') return { content: 'summary' }
+      if (agentId === 'codex') {
+        codexWorkerCalls++
+        if (codexWorkerCalls === 1) {
+          codexEntered.resolve()
+          return { content: 'first codex output', gate: codexGate.promise, onCancel: () => codexGate.resolve() }
+        }
+        return { content: 'later codex output' }
+      }
+      claudeEntered.resolve()
+      return { content: 'claude output', gate: claudeGate.promise }
+    })
+    let codexRunningRoles = 0
+    dispatcher.on('stream', event => {
+      if (event.kind === 'orchestrate:subtask' && event.agentId === 'codex' && event.status === 'running') {
+        codexRunningRoles++
+        if (codexRunningRoles === 2) queuedCodexRole.resolve()
+      }
+    })
+
+    const turnId = 'turn-scoped-agent-cancel'
+    const running = dispatcher.dispatch(
+      'scoped cancel with queued role',
+      'orchestrate',
+      undefined,
+      { turnId }
+    )
+    await Promise.all([codexEntered.promise, claudeEntered.promise, queuedCodexRole.promise])
+    const eventCountAtCancel = events.length
+    expect(dispatcher.cancelAgentForTurn(turnId, 'codex')).toBe(true)
+    claudeGate.resolve()
+    codexGate.resolve()
+    await running
+
+    expect(codexWorkerCalls).toBe(1)
+    expect(tracker.calls.filter(call => call.kind === 'subtask' && call.agentId === 'codex')).toHaveLength(1)
+    expect(tracker.calls.filter(call => call.kind === 'subtask' && call.agentId === 'claude')).toHaveLength(1)
+    const cancelledSubtaskTerminals = events.slice(eventCountAtCancel).filter((event): event is Extract<StreamEvent, { kind: 'orchestrate:subtask' }> => (
+      event.kind === 'orchestrate:subtask'
+      && event.agentId === 'codex'
+      && event.status === 'error'
+    ))
+    expect(cancelledSubtaskTerminals.map(event => event.subtaskId).sort()).toEqual([
+      'codex-reviewer',
+      'codex-worker'
+    ])
+    expect(cancelledSubtaskTerminals.every(event => event.content === '已暂停该 Agent。')).toBe(true)
+    expect(events.slice(eventCountAtCancel).filter(event => (
+      event.kind === 'orchestrate:subtask'
+      && event.agentId === 'codex'
+      && event.status === 'done'
+    ))).toHaveLength(0)
+    expect(events.slice(eventCountAtCancel).filter(event => (
+      'agentId' in event
+      && event.agentId === 'codex'
+      && ['start', 'delta', 'activity', 'done'].includes(event.kind)
+    ))).toHaveLength(0)
+    expect(events.some(event => (
+      'agentId' in event && event.agentId === 'claude' && event.kind === 'done'
+    ))).toBe(true)
+    expect(events.some(event => (
+      event.kind === 'orchestrate:subtask'
+      && event.agentId === 'claude'
+      && event.status === 'done'
+    ))).toBe(true)
+
+    const future = await dispatcher.dispatch(
+      'future codex task',
+      'auto',
+      'codex',
+      { turnId: 'turn-future-codex' }
+    )
+    expect(future.status).toBe('completed')
+    expect(codexWorkerCalls).toBe(2)
+  })
+
+  it('does not turn a completed sibling worker into error when the lead verifier is cancelled', async () => {
+    const verifierEntered = deferred<void>()
+    const verifierGate = deferred<void>()
+    const plan = JSON.stringify({
+      subtasks: [
+        { id: 'claude-worker', title: 'Claude worker', detail: 'CLAUDE-COMPLETES', agent: 'claude' }
+      ]
+    })
+    const { dispatcher, events } = makeLocalDispatcher(({ agentId, kind }) => {
+      if (kind === 'decompose') return { content: plan }
+      if (kind === 'verify') {
+        verifierEntered.resolve()
+        return { content: 'PASS', gate: verifierGate.promise, onCancel: () => verifierGate.resolve() }
+      }
+      if (kind === 'synthesis') return { content: 'should not synthesize' }
+      return { content: `${agentId} worker output` }
+    })
+    const turnId = 'turn-cancel-lead-during-verify'
+
+    const running = dispatcher.dispatch(
+      'cancel lead after sibling completion',
+      'orchestrate',
+      undefined,
+      { turnId }
+    )
+    await verifierEntered.promise
+    expect(dispatcher.cancelAgentForTurn(turnId, 'codex')).toBe(true)
+    verifierGate.resolve()
+    const task = await running
+
+    const siblingTerminals = events.filter((event): event is Extract<StreamEvent, { kind: 'orchestrate:subtask' }> => (
+      event.kind === 'orchestrate:subtask'
+      && event.subtaskId === 'claude-worker'
+      && (event.status === 'done' || event.status === 'error')
+    ))
+    expect(siblingTerminals.filter(event => event.status === 'done')).toHaveLength(1)
+    expect(siblingTerminals.filter(event => event.status === 'error')).toHaveLength(0)
+    expect(events.filter(event => (
+      event.kind === 'error'
+      && event.agentId === 'codex'
+      && event.code === 'AGENT_CANCELLED'
+    ))).toHaveLength(1)
+    expect(task.errors.get('codex')).toBe('已暂停该 Agent。')
+    expect(task.status).toBe('failed')
+  })
+
+  it('tombstones a cancelled Turn before later tasks can attach to it', async () => {
+    const codexGate = deferred<void>()
+    const codexEntered = deferred<void>()
+    let codexCalls = 0
+    let claudeCalls = 0
+    const { dispatcher } = makeLocalDispatcher(({ agentId }) => {
+      if (agentId === 'codex') {
+        codexCalls++
+        codexEntered.resolve()
+        return {
+          content: 'cancelled codex output',
+          gate: codexGate.promise,
+          onCancel: () => codexGate.resolve()
+        }
+      }
+      claudeCalls++
+      return { content: 'future claude output' }
+    })
+    const turnId = 'turn-cancel-before-attach'
+
+    const first = dispatcher.dispatch('first task', 'auto', 'codex', { turnId })
+    await codexEntered.promise
+    expect(dispatcher.cancelTurn(turnId)).toBe(true)
+    codexGate.resolve()
+    expect((await first).status).toBe('cancelled')
+
+    await expect(dispatcher.dispatch('late task', 'auto', 'claude', { turnId }))
+      .rejects.toMatchObject({ code: 'AGENT_CANCELLED' })
+    expect(codexCalls).toBe(1)
+    expect(claudeCalls).toBe(0)
+
+    const future = await dispatcher.dispatch(
+      'future Turn task',
+      'auto',
+      'claude',
+      { turnId: 'turn-after-cancel' }
+    )
+    expect(future.status).toBe('completed')
+    expect(claudeCalls).toBe(1)
+  })
+
+  it('does not poison another target task when cancelling one Agent for a Turn', async () => {
+    const codexGate = deferred<void>()
+    const codexEntered = deferred<void>()
+    const claudeGate = deferred<void>()
+    const claudeEntered = deferred<void>()
+    const { dispatcher, events } = makeLocalDispatcher(({ agentId }) => {
+      if (agentId === 'codex') {
+        codexEntered.resolve()
+        return {
+          content: 'cancelled codex output',
+          gate: codexGate.promise,
+          onCancel: () => codexGate.resolve()
+        }
+      }
+      claudeEntered.resolve()
+      return { content: 'claude survives', gate: claudeGate.promise }
+    })
+    const turnId = 'turn-scoped-cross-target'
+    const codexTask = dispatcher.dispatch('codex role', 'auto', 'codex', { turnId })
+    const claudeTask = dispatcher.dispatch('claude role', 'auto', 'claude', { turnId })
+    await Promise.all([codexEntered.promise, claudeEntered.promise])
+
+    expect(dispatcher.cancelAgentForTurn(turnId, 'codex')).toBe(true)
+    claudeGate.resolve()
+    codexGate.resolve()
+    const [codex, claude] = await Promise.all([codexTask, claudeTask])
+
+    expect(codex.status).toBe('cancelled')
+    expect(claude.status).toBe('completed')
+    expect(claude.results.get('claude')).toBe('claude survives')
+    expect(claude.errors.has('codex')).toBe(false)
+    expect(events.some(event => (
+      event.taskId === claude.id
+      && 'agentId' in event
+      && event.agentId === 'codex'
+    ))).toBe(false)
+
+    await expect(dispatcher.dispatch('late codex role', 'auto', 'codex', { turnId }))
+      .rejects.toMatchObject({ code: 'AGENT_CANCELLED' })
+    expect((await dispatcher.dispatch(
+      'codex on future Turn',
+      'auto',
+      'codex',
+      { turnId: 'turn-scoped-cross-target-future' }
+    )).status).toBe('completed')
   })
 })

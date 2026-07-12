@@ -17,6 +17,18 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import {
+  analyzePrompt,
+  finalizePromptEnvelope,
+  optimizePromptForHeadlessDispatch,
+  PROMPT_OPTIMIZER_VERSION,
+  shouldGeneratePromptCandidates,
+  startPromptPreparation,
+  withPreparationState
+} from "../../prompt-core/prompt-preparation-core.ts"
+import type { PromptEnvelope, PromptOrigin, PromptPreparationSession } from '../../shared/prompt-contract'
+import { requirePromptIngress } from "./prompt-ingress-registry.ts"
 
 export interface HeadlessRunInput {
   workspace: string
@@ -33,13 +45,15 @@ export interface HeadlessRunInput {
   dryRun?: boolean
   /** High-risk shell capabilities (reserved; denied by default) */
   allowShell?: boolean
+  /** Set by the CLI when stdin cannot safely ask the user for a choice. */
+  nonInteractive?: boolean
   runsDir?: string
 }
 
 export interface HeadlessRunRecord {
   runId: string
   ok: boolean
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'dry-run'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'dry-run' | 'decision_required'
   workspace: string
   promptChars: number
   mode: string
@@ -60,9 +74,25 @@ export interface HeadlessRunResult extends HeadlessRunRecord {
   stderr: string
 }
 
+export type HeadlessPromptPreparation =
+  | { readonly kind: 'ready'; readonly session: PromptPreparationSession; readonly envelope: PromptEnvelope }
+  | { readonly kind: 'decision-required'; readonly session: PromptPreparationSession; readonly candidates: readonly string[] }
+  | { readonly kind: 'cancelled'; readonly session: PromptPreparationSession }
+
+export interface HeadlessRunDependencies {
+  preparePrompt(input: {
+    prompt: string
+    workspace: string
+    nonInteractive: boolean
+  }): Promise<HeadlessPromptPreparation>
+  spawnAgent(prompt: string, input: HeadlessRunInput): Promise<HeadlessRunResult>
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_LOG_CHARS = 512 * 1024
 const MAX_PROMPT_CHARS = 200_000
+// Keep the CLI composition bound to its exact registered root ingress.
+const HEADLESS_PROMPT_ORIGIN: PromptOrigin = 'cli:headless'
 
 export function defaultRunsDir(): string {
   return join(homedir(), '.agenthub', 'cli-runs')
@@ -109,7 +139,10 @@ function validateInput(input: HeadlessRunInput): string | null {
 /**
  * Run a headless agent task. Never logs secrets.
  */
-export async function runHeadlessAgent(input: HeadlessRunInput): Promise<HeadlessRunResult> {
+export async function runHeadlessAgent(
+  input: HeadlessRunInput,
+  dependencies?: HeadlessRunDependencies
+): Promise<HeadlessRunResult> {
   const validationError = validateInput(input)
   const runsDir = input.runsDir || defaultRunsDir()
   ensureDir(runsDir)
@@ -167,6 +200,91 @@ export async function runHeadlessAgent(input: HeadlessRunInput): Promise<Headles
     return record
   }
 
+  let prepared: HeadlessPromptPreparation
+  try {
+    prepared = await (dependencies?.preparePrompt || prepareHeadlessPrompt)({
+      prompt: input.prompt,
+      workspace: input.workspace,
+      nonInteractive: input.nonInteractive === true
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const record: HeadlessRunResult = {
+      runId,
+      ok: false,
+      status: 'failed',
+      workspace: input.workspace,
+      promptChars: input.prompt.trim().length,
+      mode,
+      agent: agentLabel,
+      mock: Boolean(input.mock),
+      dryRun: Boolean(input.dryRun),
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      durationMs: 0,
+      exitCode: 3,
+      error: message,
+      stdout: '',
+      stderr: message
+    }
+    persistRun(runsDir, record)
+    return record
+  }
+
+  if (prepared.kind === 'decision-required') {
+    const decision = JSON.stringify({
+      code: 'PROMPT_DECISION_REQUIRED',
+      sessionId: prepared.session.sessionId,
+      candidates: boundedDecisionCandidates(prepared.candidates)
+    })
+    const record: HeadlessRunResult = {
+      runId: `decision-${prepared.session.sessionId}`,
+      ok: false,
+      status: 'decision_required',
+      workspace: input.workspace,
+      promptChars: input.prompt.trim().length,
+      mode,
+      agent: agentLabel,
+      mock: Boolean(input.mock),
+      dryRun: Boolean(input.dryRun),
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      durationMs: 0,
+      exitCode: 6,
+      error: decision,
+      stdout: '',
+      stderr: ''
+    }
+    persistRun(runsDir, record)
+    return record
+  }
+
+  if (prepared.kind === 'cancelled') {
+    const record: HeadlessRunResult = {
+      runId: `cancelled-${prepared.session.sessionId}`,
+      ok: false,
+      status: 'cancelled',
+      workspace: input.workspace,
+      promptChars: input.prompt.trim().length,
+      mode,
+      agent: agentLabel,
+      mock: Boolean(input.mock),
+      dryRun: Boolean(input.dryRun),
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      durationMs: 0,
+      exitCode: 3,
+      error: 'Prompt preparation was cancelled',
+      stdout: '',
+      stderr: ''
+    }
+    persistRun(runsDir, record)
+    return record
+  }
+
+  if (dependencies) return dependencies.spawnAgent(prepared.envelope.effectivePrompt, input)
+  const effectivePrompt = prepared.envelope.effectivePrompt
+
   const t0 = Date.now()
   const partial: HeadlessRunRecord = {
     runId,
@@ -185,11 +303,11 @@ export async function runHeadlessAgent(input: HeadlessRunInput): Promise<Headles
 
   try {
     const spawned = input.mock
-      ? await spawnMockAgent(input.prompt, input.workspace, input.timeoutMs)
+      ? await spawnMockAgent(effectivePrompt, input.workspace, input.timeoutMs)
       : await spawnLocalAgent({
           binary: String(input.agentBinary || input.agentId),
           args: input.agentArgs || [],
-          prompt: input.prompt,
+          prompt: effectivePrompt,
           cwd: input.workspace,
           timeoutMs: input.timeoutMs || DEFAULT_TIMEOUT_MS
         })
@@ -230,6 +348,98 @@ export async function runHeadlessAgent(input: HeadlessRunInput): Promise<Headles
     persistRun(runsDir, result)
     return result
   }
+}
+
+const HEADLESS_DECISION_CANDIDATE_LIMIT = 3
+const HEADLESS_DECISION_CANDIDATE_MAX_CHARS = 16 * 1024
+
+function boundedDecisionCandidates(candidates: readonly string[]): string[] {
+  return candidates
+    .slice(0, HEADLESS_DECISION_CANDIDATE_LIMIT)
+    .map(candidate => String(candidate).slice(0, HEADLESS_DECISION_CANDIDATE_MAX_CHARS))
+}
+
+export async function prepareHeadlessPrompt(input: {
+  prompt: string
+  workspace: string
+  nonInteractive: boolean
+}): Promise<HeadlessPromptPreparation> {
+  const originalPrompt = input.prompt.trim()
+  const ingress = requirePromptIngress(HEADLESS_PROMPT_ORIGIN)
+  if (ingress.scope !== 'root' || ingress.policy !== 'optimize') {
+    throw new Error('CLI prompt ingress must be an optimize root')
+  }
+  const session = startPromptPreparation({
+    sessionId: `cli-headless-${randomUUID()}`,
+    rootInputId: `cli-input-${randomUUID()}`,
+    origin: HEADLESS_PROMPT_ORIGIN,
+    policy: ingress.policy,
+    prompt: originalPrompt
+  })
+  const optimizedPrompt = optimizePromptForHeadlessDispatch(originalPrompt)
+  if (!shouldGeneratePromptCandidates(analyzePrompt(originalPrompt))) {
+    return finalizeHeadlessPrompt(session, originalPrompt, optimizedPrompt, 'optimized')
+  }
+
+  const awaitingDecision = withPreparationState(session, 'awaiting-decision', 1)
+  const candidates = boundedDecisionCandidates([
+    optimizedPrompt,
+    `${optimizedPrompt}\n\nBefore acting, state the intended scope, constraints, and focused verification.`
+  ])
+  if (input.nonInteractive) return { kind: 'decision-required', session: awaitingDecision, candidates }
+
+  const selection = await selectHeadlessPromptInTty(originalPrompt, candidates)
+  if (selection.kind === 'candidate') {
+    const selected = candidates[selection.index]
+    if (selected) return finalizeHeadlessPrompt(awaitingDecision, originalPrompt, selected, 'candidate-selected')
+  }
+  if (selection.kind === 'custom') return finalizeHeadlessPrompt(awaitingDecision, originalPrompt, selection.text, 'custom-selected')
+  if (selection.kind === 'original') return finalizeHeadlessPrompt(awaitingDecision, originalPrompt, originalPrompt, 'unchanged')
+  if (selection.kind === 'cancelled') {
+    return { kind: 'cancelled', session: withPreparationState(awaitingDecision, 'cancelled') }
+  }
+  return { kind: 'decision-required', session: awaitingDecision, candidates }
+}
+
+function finalizeHeadlessPrompt(
+  session: PromptPreparationSession,
+  originalPrompt: string,
+  effectivePrompt: string,
+  status: PromptEnvelope['status']
+): HeadlessPromptPreparation {
+  const envelope = finalizePromptEnvelope({
+    session,
+    envelopeId: `cli-envelope-${randomUUID()}`,
+    displayOriginalPrompt: originalPrompt,
+    effectivePrompt,
+    status,
+    optimizerVersion: PROMPT_OPTIMIZER_VERSION,
+    finalizedAt: Date.now()
+  })
+  return {
+    kind: 'ready',
+    session: withPreparationState(session, 'finalized'),
+    envelope
+  }
+}
+
+async function selectHeadlessPromptInTty(
+  originalPrompt: string,
+  candidates: readonly string[]
+): Promise<
+  | { kind: 'candidate'; index: number }
+  | { kind: 'custom'; text: string }
+  | { kind: 'original' }
+  | { kind: 'cancelled' }
+  | { kind: 'retry-candidates' }
+  | { kind: 'decision-required' }
+> {
+  // Keep the CLI source-loadable with Node's type stripper: a variable dynamic
+  // import avoids extensionless TypeScript resolution while still sharing the
+  // production TTY adapter rather than maintaining another chooser.
+  const adapterPath = './terminal-prompt-decision-port.ts'
+  const adapter = await import(adapterPath) as typeof import('./terminal-prompt-decision-port')
+  return adapter.pickPromptInTty({ originalPrompt, candidates, retryAllowed: false })
 }
 
 function persistRun(runsDir: string, result: HeadlessRunResult | HeadlessRunRecord): void {
@@ -343,14 +553,23 @@ function spawnProcess(
       cwd,
       env: { ...process.env, AGENTHUB_HEADLESS: '1' },
       windowsHide: true,
-      shell: false
+      shell: false,
+      detached: process.platform !== 'win32'
     })
 
     const timer = setTimeout(() => {
       timedOut = true
-      try { child.kill('SIGTERM') } catch { /* ignore */ }
+      if (process.platform !== 'win32' && child.pid) {
+        try { process.kill(-child.pid, 'SIGTERM') } catch { try { child.kill('SIGTERM') } catch { /* ignore */ } }
+      } else {
+        try { child.kill('SIGTERM') } catch { /* ignore */ }
+      }
       setTimeout(() => {
-        try { child.kill('SIGKILL') } catch { /* ignore */ }
+        if (process.platform !== 'win32' && child.pid) {
+          try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* ignore */ } }
+        } else {
+          try { child.kill('SIGKILL') } catch { /* ignore */ }
+        }
       }, 2000)
     }, timeoutMs)
 

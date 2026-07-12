@@ -54,4 +54,25 @@ describe("agent connection helpers", () => {
     expect(stop).toHaveBeenCalled()
     expect(registry.get("codex")).toBeUndefined()
   })
+
+  it("creates a live structured stdio adapter from a persisted NDJSON routing binding", () => {
+    const registry = new AgentRegistry()
+
+    syncRegistryFromBindings(registry, [{
+      agentId: "structured-cli",
+      providerId: "local-cli",
+      modelId: "local",
+      protocol: "stdio-ndjson",
+      binary: "C:\\Tools\\structured-cli.cmd",
+      args: "serve --workspace C:\\repo",
+      thinkingAllow: ["off", "auto"],
+      thinking
+    }])
+
+    const adapter = registry.get("structured-cli")?.adapter
+    expect(adapter?.protocol).toBe("stdio-ndjson")
+    expect(adapter?.binary).toBe("C:\\Tools\\structured-cli.cmd")
+    expect((adapter as any)?.decisionContinuation).toBe("live")
+    expect((adapter as any)?.execArgs).toEqual(["serve", "--workspace", "C:\\repo"])
+  })
 })

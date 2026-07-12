@@ -24,7 +24,35 @@ export function sanitizeWebviewPreferences(webPreferences: Electron.WebPreferenc
   webPreferences.partition = WEBVIEW_PARTITION
 }
 
-export function installWebviewGuards(contents: WebContents): void {
+export function isAllowedRendererNavigation(url: string, trustedRendererUrl: string): boolean {
+  try {
+    const target = new URL(url)
+    const trusted = new URL(trustedRendererUrl)
+
+    if (trusted.protocol === 'http:' || trusted.protocol === 'https:') {
+      return target.protocol === trusted.protocol && target.origin === trusted.origin
+    }
+    if (trusted.protocol !== 'file:' || target.protocol !== 'file:') return false
+
+    target.search = ''
+    target.hash = ''
+    trusted.search = ''
+    trusted.hash = ''
+    return target.href === trusted.href
+  } catch {
+    return false
+  }
+}
+
+export function installWebviewGuards(contents: WebContents, trustedRendererUrl: string): void {
+  const guardTopLevelNavigation = (event: Electron.Event & { isMainFrame: boolean; url: string }): void => {
+    if (event.isMainFrame && !isAllowedRendererNavigation(event.url, trustedRendererUrl)) {
+      event.preventDefault()
+    }
+  }
+
+  contents.on('will-navigate', guardTopLevelNavigation)
+  contents.on('will-redirect', guardTopLevelNavigation)
   contents.on('will-attach-webview', (event, webPreferences, params) => {
     const src = String(params.src || '')
     if (!safeBrowserUrl(src)) {

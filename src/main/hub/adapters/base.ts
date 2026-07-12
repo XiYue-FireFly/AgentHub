@@ -46,6 +46,7 @@ export class HttpAgentAdapter implements AgentAdapter {
  * Factory: 根据 binding.protocol 决定实例化哪种 adapter。
  * - protocol 缺省或 http        → HttpAgentAdapter (走 Dispatcher → ProviderClient → LLM HTTP)
  * - protocol === stdio-plain    → 对应 agent 的 stdio adapter (spawn 本地 CLI 二进制, oneshot)
+ * - protocol === stdio-ndjson   → 显式配置二进制的 structured stdio adapter (live decision continuation)
  * 四个内置 Agent（codex/claude/hermes/openclaw）均支持 stdio-plain;
  * 未知 agentId 走 stdio 会回退到 http 并在控制台告警。
  * binary / args 来自路由绑定, 缺省时各 adapter 自动探测/用默认参数。
@@ -64,7 +65,7 @@ const STDIO_FACTORIES: Record<string, () => StdioAgentAdapter> = {
 export function createAdapter(
   agentId: string,
   agentName: string,
-  protocol?: "http" | "stdio-plain" | "acp",
+  protocol?: "http" | "stdio-plain" | "stdio-ndjson" | "acp",
   binary?: string,
   args?: string[]
 ): AgentAdapter {
@@ -87,6 +88,17 @@ export function createAdapter(
     }
     // R8: use structured logger instead of raw console
     log.warn("stdio-plain for agent " + agentId + " requires an explicit binary; falling back to http")
+  }
+  if (protocol === "stdio-ndjson") {
+    if (binary && binary.trim()) {
+      const adapter = new StdioAgentAdapter(agentId, agentName, binary.trim(), args && args.length > 0 ? args : [])
+      // This is an opt-in machine protocol. It never promotes ordinary stdout
+      // prose into a decision request, and only supports the live resume frame.
+      adapter.protocol = "stdio-ndjson"
+      adapter.decisionContinuation = "live"
+      return adapter
+    }
+    log.warn("stdio-ndjson for agent " + agentId + " requires an explicit binary; falling back to http")
   }
   return new HttpAgentAdapter(agentId, agentName)
 }

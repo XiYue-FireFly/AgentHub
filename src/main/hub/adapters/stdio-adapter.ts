@@ -4,13 +4,47 @@ import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { createLogger } from '../../logger'
 import type { LocalAgentAdapterLifecycle } from '../../runtime/types'
+import type { AgentDecisionResultEvent } from '../../agentic/user-decision-transport'
 
 const log = createLogger('StdioAdapter')
 const STDOUT_BUFFER_MAX = 256 * 1024
 
-function quoteForCommandShell(value: string): string {
-  if (/^[A-Za-z0-9_./:\\=@%+-]+$/.test(value)) return value
-  return `"${value.replace(/"/g, '\\"')}"`
+function resolveWindowsLaunchBinary(binary: string): string {
+  if (process.platform !== 'win32' || /[\\/]/.test(binary) || /\.[A-Za-z0-9]+$/.test(binary)) return binary
+  try {
+    const candidates = execFileSync('where.exe', [binary], {
+      timeout: 2000,
+      encoding: 'utf-8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim().split(/\r?\n/).map(candidate => candidate.trim()).filter(Boolean)
+    const native = candidates.find(candidate => /\.(exe|com)$/i.test(candidate))
+    const batch = candidates.find(candidate => /\.(cmd|bat)$/i.test(candidate))
+    if (native || batch) return native || batch!
+  } catch {
+    // Fall through to the fail-closed error below.
+  }
+  throw new Error(`No supported Windows executable found for ${binary}`)
+}
+
+function escapeWindowsBatchArgument(value: string): string {
+  return value
+    .replace(/(\\*)"/g, '$1$1\\"')
+    .replace(/(\\+)$/g, '$1$1')
+}
+
+function windowsBatchLaunch(binary: string, args: string[]): { args: string[]; env: Record<string, string> } {
+  const env: Record<string, string> = { AGENTHUB_STDIO_BINARY: binary }
+  const deferredArgs = args.map((arg, index) => {
+    const key = `AGENTHUB_STDIO_ARG_${index}`
+    env[key] = escapeWindowsBatchArgument(arg)
+    // The carets preserve !KEY! through cmd's first parse. The target .cmd/.bat
+    // expands it only after its %* command line has been parsed, so introduced
+    // metacharacters cannot become commands. Backslash quoting above preserves argv.
+    return `"^!${key}^!"`
+  })
+  const command = [`"!AGENTHUB_STDIO_BINARY!"`, ...deferredArgs].join(' ')
+  return { args: ['/d', '/s', '/v:on', '/c', `"${command}"`], env }
 }
 
 /**
@@ -53,13 +87,15 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
   id: string
   name: string
   binary = ''
-  protocol = 'stdio-plain' as const
+  protocol: 'stdio-plain' | 'stdio-ndjson' = 'stdio-plain'
   mode = 'oneshot' as const
+  decisionContinuation: 'none' | 'live' | 'checkpoint' = 'none'
+  onProtocolEvent: ((event: unknown) => void) | null = null
   /** oneshot 参数；可被路由绑定的 args 覆盖 */
   execArgs: string[]
 
   /** 活动解析器（如 claude stream-json）。set 则按行缓冲 stdout、逐行解析为活动步骤/最终内容；
-      null（默认）= 原样把 stdout 透传给 onOutput，行为与历史完全一致（零回归）。 */
+      null（默认）= stdio-plain 原样透传。受控 stdio-ndjson 即使没有 parser 也按行检查协议帧。 */
   activityParser: ((line: string) => { steps?: any[]; content?: string; usage?: any } | null) | null = null
   /** 解析出的活动步骤回调（dispatcher 透传成 {kind:'activity'} 流事件） */
   onActivity: ((step: any) => void) | null = null
@@ -129,7 +165,8 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     this.exitCode = null
     this.lastStderr = ''
     const viaArg = this.execArgs.some(a => a.includes('{prompt}'))
-    const needsCommandShell = process.platform === 'win32' && !/\.exe$/i.test(this.binary)
+    const launchBinary = resolveWindowsLaunchBinary(this.binary)
+    const needsCommandShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(launchBinary)
     // 多行提示词保真：直接 spawn（.exe / 非 Windows）时单个 argv 可含换行，原样保留；
     // 仅经 cmd.exe /c 拼接命令行时才压平换行（否则换行会破坏命令行解析）。
     const promptArg = resolvePromptArg(prompt, needsCommandShell)
@@ -137,10 +174,9 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
       ? this.execArgs.map(a => a.replace('{prompt}', promptArg))
       : this.execArgs
     const effectiveArgs = this.modelOverride ? this.modelArgsForOverride(args, this.modelOverride) : args
-    const cmd = needsCommandShell ? (process.env.ComSpec || 'cmd.exe') : this.binary
-    const spawnArgs = needsCommandShell
-      ? ['/d', '/s', '/c', [this.binary, ...effectiveArgs].map(quoteForCommandShell).join(' ')]
-      : effectiveArgs
+    const batchLaunch = needsCommandShell ? windowsBatchLaunch(launchBinary, effectiveArgs) : null
+    const cmd = batchLaunch ? (process.env.ComSpec || 'cmd.exe') : launchBinary
+    const spawnArgs = batchLaunch?.args || effectiveArgs
 
     // 工作目录解析：opts.cwd 给定 → 预检 → 不存在/不是目录 → 降级 homedir，控制台告警
     // （不写入 errChunks：那是 CLI 进程的真实 stderr，混入会误导用户）
@@ -159,6 +195,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     this.proc = spawn(cmd, spawnArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
+      detached: process.platform !== 'win32',
       windowsVerbatimArguments: needsCommandShell,
       cwd,
       // 本地 CLI 以管道方式 spawn（非真实终端）。显式声明”非交互纯文本管道”：
@@ -168,7 +205,15 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
       //   颜色码污染聊天气泡；
       // - PYTHONUNBUFFERED：Python CLI 实时回流输出（更好的流式体验）；
       // - PYTHONIOENCODING=utf-8：修正 Windows 下 Python 输出的 GBK 乱码。
-      env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', ...this.envOverrides },
+      env: {
+        ...process.env,
+        TERM: 'dumb',
+        NO_COLOR: '1',
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8',
+        ...this.envOverrides,
+        ...batchLaunch?.env
+      },
       windowsHide: true
     })
     this.status = 'busy'
@@ -176,7 +221,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     this.proc.stdout?.on('data', (d: Buffer) => {
       const text = this.outDecoder ? this.outDecoder.decode(d, { stream: true }) : d.toString()
       if (!text) return
-      if (this.activityParser) {
+      if (this.activityParser || this.protocol === 'stdio-ndjson') {
         this.handleActivityChunk(text)
       } else {
         this.buffer = appendBoundedStdoutBuffer(this.buffer, text)
@@ -197,7 +242,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     })
     this.proc.on('exit', (code) => {
       // 活动模式：进程退出前刷掉最后一行（结果行常无尾随换行）
-      if (this.activityParser && this.lineBuf.trim()) {
+      if ((this.activityParser || this.protocol === 'stdio-ndjson') && this.lineBuf.trim()) {
         this.consumeActivityLine(this.lineBuf)
         this.lineBuf = ''
       }
@@ -219,7 +264,9 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
 
     try {
       if (!viaArg) this.proc.stdin?.write(prompt)
-      this.proc.stdin?.end()
+      if (!(this.protocol === 'stdio-ndjson' && this.decisionContinuation === 'live')) {
+        this.proc.stdin?.end()
+      }
     } catch (e: any) {
       // Kill process on stdin write failure to prevent hanging
       try { this.proc?.kill() } catch { /* ignore */ }
@@ -240,8 +287,23 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
 
   /** 单行 → 活动步骤（onActivity）/ 最终内容（handleOutput）。解析器抛错则回退把原行当内容透传。 */
   private consumeActivityLine(line: string): void {
+    if (this.protocol === 'stdio-ndjson') {
+      let frame: unknown
+      try { frame = JSON.parse(line) } catch { frame = undefined }
+      if (
+        frame !== null && typeof frame === 'object' && !Array.isArray(frame) &&
+        (frame as Record<string, unknown>).type === 'decision_request'
+      ) {
+        this.onProtocolEvent?.(frame)
+        return
+      }
+    }
     const parser = this.activityParser
-    if (!parser) return
+    if (!parser) {
+      this.buffer = appendBoundedStdoutBuffer(this.buffer, line + '\n')
+      this.handleOutput(line + '\n')
+      return
+    }
     let parsed: { steps?: any[]; content?: string; usage?: any } | null
     try {
       parsed = parser(line)
@@ -254,6 +316,17 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
     }
     if (parsed.usage && this.onUsage) this.onUsage(parsed.usage)
     if (parsed.content) this.handleOutput(parsed.content)
+  }
+
+  async resumeDecision(result: AgentDecisionResultEvent): Promise<void> {
+    if (
+      this.protocol !== 'stdio-ndjson' ||
+      this.decisionContinuation !== 'live' ||
+      !this.proc?.stdin?.writable
+    ) {
+      throw new Error('Structured live decision continuation is unavailable.')
+    }
+    this.proc.stdin.write(JSON.stringify(result) + '\n')
   }
 
   /** stderr 解码：先 UTF-8，出现替换符则按 GBK 重解（Windows 中文 cmd 错误信息） */
@@ -298,7 +371,7 @@ export class StdioAgentAdapter extends BaseAgentAdapter {
           log.warn(`[${this.name}] taskkill failed for pid ${p.pid}:`, error?.message || String(error))
         }
       } else {
-        try { p.kill('SIGKILL') } catch { /* noop */ }
+        try { process.kill(-p.pid, 'SIGKILL') } catch { try { p.kill('SIGKILL') } catch { /* noop */ } }
       }
     }
     this.status = 'idle'

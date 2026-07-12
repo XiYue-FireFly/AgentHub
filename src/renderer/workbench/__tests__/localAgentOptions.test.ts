@@ -74,7 +74,7 @@ describe("localAgentOptions", () => {
     expect(localAgentOptions([ready, candidate, needsLogin, missingBinary, unsafeManual, ready])).toEqual(["codex", "gemini"])
   })
 
-  it("allows manual agents when ACP or prompt args make them non-interactive", () => {
+  it("allows manual agents when a structured protocol or prompt args make them non-interactive", () => {
     expect(isUsableLocalAgent(agent({
       agentId: "reasonix",
       configured: true,
@@ -94,6 +94,16 @@ describe("localAgentOptions", () => {
       manualOnly: true,
       requiresPromptArg: true,
       args: "--prompt {prompt}"
+    }))).toBe(true)
+
+    expect(isUsableLocalAgent(agent({
+      agentId: "reasonix",
+      configured: true,
+      installed: true,
+      protocol: "stdio-ndjson",
+      binary: "reasonix.exe",
+      manualOnly: true,
+      requiresPromptArg: true
     }))).toBe(true)
   })
 })

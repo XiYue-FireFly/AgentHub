@@ -10,8 +10,8 @@
  *   - 单例：getInstance()
  *   - 删/重命名/路径改动时不动 activeId；若被删的是 active，主动让 UI 重新选择（getActive 返回 null）
  */
-import { statSync, readFileSync } from 'fs'
-import { resolve as resolvePath, join as joinPath, relative as relativePath, isAbsolute, basename } from 'path'
+import { statSync, readFileSync, realpathSync } from 'fs'
+import { resolve as resolvePath, join as joinPath, relative as relativePath, isAbsolute, basename, dirname, sep as pathSep } from 'path'
 import { store } from '../store'
 import { createLogger } from '../logger'
 import { isSensitiveTextFilePath } from '../ipc/sensitive-files'
@@ -40,6 +40,22 @@ interface PersistedShape {
 }
 
 const STORAGE_KEY = 'workspaces.v1'
+
+function isRealPathInsideRoot(rootReal: string, target: string): boolean {
+  let current = target
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = realpathSync(current)
+      const rel = relativePath(rootReal, real)
+      return rel === '' || (rel !== '..' && !rel.startsWith('..' + pathSep) && !rel.startsWith('../') && !isAbsolute(rel))
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return false
+      current = parent
+    }
+  }
+  return false
+}
 
 export class WorkspaceNotFoundError extends Error {
   readonly code = 'WORKSPACE_NOT_FOUND'
@@ -145,6 +161,8 @@ class WorkspaceManager {
     const ws = this.getById(id)
     if (!ws || !Array.isArray(ws.bootstrapFiles) || ws.bootstrapFiles.length === 0) return ''
     const root = resolvePath(ws.rootPath)
+    let rootReal: string
+    try { rootReal = realpathSync(root) } catch { return '' }
     const blocks: string[] = []
     let used = 0
     let omitted = 0
@@ -156,6 +174,7 @@ class WorkspaceManager {
       const abs = resolvePath(joinPath(root, rel))
       if (!isPathInsideBase(abs, root)) { omitted++; continue }            // 拒绝 `..` 逃逸
       if (isSensitiveTextFilePath(abs)) { omitted++; continue }
+      if (!isRealPathInsideRoot(rootReal, abs)) { omitted++; continue }
       let text: string
       try { text = readFileSync(abs, 'utf-8') } catch { omitted++; continue }
       const relLabel = relativePath(root, abs).replace(/\\/g, '/')

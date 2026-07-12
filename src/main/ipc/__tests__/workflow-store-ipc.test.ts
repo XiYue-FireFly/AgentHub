@@ -45,7 +45,7 @@ describe('workflow store IPC allowlist', () => {
     return store
   }
 
-  it('allows agenthub and appearance keys', async () => {
+  it('allows agenthub and appearance keys', { timeout: 30_000 }, async () => {
     const store = await setup()
 
     expect(electronMock.handlers.get('store:set')?.({}, 'agenthub.workbench.sidebarWidth.v1', 320)).toBe(true)

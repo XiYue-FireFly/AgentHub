@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, IC, AgentMark } from '../glass/ui'
 // ActivityTrail reserved for future activity view integration
 
@@ -11,6 +11,7 @@ import { AGENT_META } from '../glass/meta'
 import { tr } from '../glass/i18n'
 import { SetupTab, firstRunActionForError } from '../glass/connection-status'
 import { MarkdownBlock } from './MarkdownBlock'
+import { isTerminalTurnStatus } from '../../shared/turn-status'
 
 const INTERNAL_TIMELINE_AGENT_IDS = new Set(['prompt-optimizer', 'budget-guard', 'dispatch-planner'])
 
@@ -20,7 +21,6 @@ export function ThreadView({
   events,
   onRetry,
   onCancelAgent,
-  onResolveGuard,
   openSetup,
   onCreateProject,
   onCreateThread,
@@ -35,7 +35,6 @@ export function ThreadView({
   events: RuntimeEvent[]
   onRetry: (turnId: string) => void
   onCancelAgent: (turnId: string, agentId: string) => void
-  onResolveGuard: (requestId: string, approved: boolean) => void
   openSetup: (tab?: SetupTab | 'appearance') => void
   onCreateProject: () => void
   onCreateThread: () => void
@@ -75,25 +74,59 @@ export function ThreadView({
   return (
     <section className="wb-thread" ref={scrollRef} onScroll={onScroll}>
       {turns.map(turn => (
-        <article key={turn.id} className="wb-turn">
+        <article key={turn.id} className="wb-turn" data-turn-id={turn.id}>
           <div className="wb-user-message">
             <div>
               <strong>{turn.prompt}</strong>
               <small>{turnLabel(turn)} / {statusLabel(turn.status)}</small>
               {turn.attachments?.length ? <AttachmentStrip attachments={turn.attachments} /> : null}
             </div>
-            {turn.status !== 'running' && (
+            {isTerminalTurnStatus(turn.status) && turn.status !== 'interrupted' && (
               <button onClick={() => onRetry(turn.id)} title={tr('重试', 'Retry')}><Icon d={IC.refresh} size={14} /></button>
             )}
           </div>
-          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} onResolveGuard={onResolveGuard} workspaceRoot={workspaceRoot} threadId={thread?.id} onForkThread={onForkThread} />
+          {turn.status === 'interrupted' && <InterruptedDecisionRecovery turnId={turn.id} />}
+          <AgentOutputs turn={turn} events={byTurn.get(turn.id) ?? []} openSetup={openSetup} onCancelAgent={onCancelAgent} workspaceRoot={workspaceRoot} threadId={thread?.id} onForkThread={onForkThread} />
         </article>
       ))}
     </section>
   )
 }
 
-function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, workspaceRoot, threadId, onForkThread }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; onResolveGuard: (requestId: string, approved: boolean) => void; workspaceRoot?: string | null; threadId?: string; onForkThread?: (threadId: string) => void }) {
+function InterruptedDecisionRecovery({ turnId }: { turnId: string }) {
+  const [rerunning, setRerunning] = useState(false)
+  const [rerunComplete, setRerunComplete] = useState(false)
+  const [rerunError, setRerunError] = useState<string | null>(null)
+  const rerunInFlight = useRef(false)
+
+  const rerunTurn = async () => {
+    if (rerunInFlight.current) return
+    rerunInFlight.current = true
+    setRerunning(true)
+    setRerunError(null)
+    try {
+      await window.electronAPI.turns.rerunInterrupted(turnId)
+      setRerunComplete(true)
+    } catch {
+      setRerunError('Unable to rerun turn. Try again.')
+    } finally {
+      rerunInFlight.current = false
+      setRerunning(false)
+    }
+  }
+
+  return (
+    <div className="wb-decision-recovery" role="status">
+      <span>Turn interrupted by restart</span>
+      <button type="button" disabled={rerunning || rerunComplete} onClick={() => { void rerunTurn() }}>
+        {rerunComplete ? 'Turn rerun' : rerunning ? 'Rerunning Turn…' : 'Rerun Turn'}
+      </button>
+      {rerunError && <span role="alert">{rerunError}</span>}
+    </div>
+  )
+}
+
+function AgentOutputs({ turn, events, openSetup, onCancelAgent, workspaceRoot, threadId, onForkThread }: { turn: WorkbenchTurn; events: RuntimeEvent[]; openSetup: (tab?: SetupTab | 'appearance') => void; onCancelAgent: (turnId: string, agentId: string) => void; workspaceRoot?: string | null; threadId?: string; onForkThread?: (threadId: string) => void }) {
   const grouped = new Map<string, RuntimeEvent[]>()
   const visibleEvents = events.filter(isChatVisibleRuntimeEvent)
   for (const event of visibleEvents) {
@@ -103,7 +136,7 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
     if (bucket) bucket.push(event)
     else grouped.set(key, [event])
   }
-  if (grouped.size === 0 && turn.status === 'running') grouped.set(turn.targetAgent || 'orchestrate', [])
+  if (grouped.size === 0 && !isTerminalTurnStatus(turn.status)) grouped.set(turn.targetAgent || 'orchestrate', [])
 
   return (
     <div className="wb-agent-output-list">
@@ -123,7 +156,7 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
               {AGENT_META[agentId] ? <AgentMark id={agentId} size={26} radius={7} /> : <div className="wb-system-mark"><Icon d={IC.broadcast} size={14} /></div>}
               <span>{agentOutputName(agentId, summary.providerPayload)}{summary.scheduleRole ? ` · ${roleName(summary.scheduleRole)}` : ''}</span>
               <small>{statusLabel(status)}</small>
-              {status === 'running' && agentId !== 'orchestrate' && (
+              {!isTerminalTurnStatus(status) && agentId !== 'orchestrate' && (
                 <button className="wb-agent-stop" onClick={() => onCancelAgent(turn.id, agentId)} title={tr('暂停该 Agent', 'Pause this agent')}>
                   <Icon d={IC.stop} size={12} />
                 </button>
@@ -140,19 +173,19 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
               <div className="wb-tool-call-area">
                 <ToolCallStream
                   calls={stepsToToolCalls(summary.steps, status, terminalEventTime(agentEvents))}
-                  defaultOpen={status === 'running'}
-                  collapseWhenComplete={status !== 'running'}
+                  defaultOpen={!isTerminalTurnStatus(status)}
+                  collapseWhenComplete={isTerminalTurnStatus(status)}
                 />
               </div>
             )}
             {summary.orch.length > 0 && <OrchestrateCompact events={summary.orch} turnStatus={turn.status} workspaceRoot={workspaceRoot} />}
             {(summary.routeEvents.length > 0 || summary.guardEvents.length > 0) && (
-              <RoleEvents routeEvents={summary.routeEvents} guardEvents={summary.guardEvents} onResolveGuard={onResolveGuard} />
+              <RoleEvents routeEvents={summary.routeEvents} guardEvents={summary.guardEvents} />
             )}
-            {text && (status === 'running' ? <pre className="wb-streaming-text">{text}</pre> : <MarkdownBlock content={text} workspaceRoot={workspaceRoot} />)}
+            {text && (!isTerminalTurnStatus(status) ? <pre className="wb-streaming-text">{text}</pre> : <MarkdownBlock content={text} workspaceRoot={workspaceRoot} />)}
             {doneContent && !text && <MarkdownBlock content={doneContent} workspaceRoot={workspaceRoot} />}
             {!text && !doneContent && !summary.error && summary.orch.length === 0 && summary.routeEvents.length === 0 && summary.guardEvents.length === 0 && (
-              turn.status === 'running'
+              !isTerminalTurnStatus(status)
                 ? <ProcessingState events={agentEvents} turn={turn} />
                 : <div className="wb-muted-box">{emptyOutputText(summary)}</div>
             )}
@@ -162,7 +195,7 @@ function AgentOutputs({ turn, events, openSetup, onCancelAgent, onResolveGuard, 
                 {action && <button onClick={() => openSetup(action.tab)}>{tr(action.labelZh, action.labelEn)}</button>}
               </div>
             )}
-            {status !== 'running' && <CompletionSummary agentId={agentId} events={agentEvents} summary={summary} status={status} />}
+            {isTerminalTurnStatus(status) && <CompletionSummary agentId={agentId} events={agentEvents} summary={summary} status={status} />}
             {/* Context Ledger for completed turns */}
             {status === 'completed' && threadId && (
               <ContextLedger threadId={threadId} turnId={turn.id} compact />
@@ -215,10 +248,10 @@ function ProcessDetails({
   status: WorkbenchTurnStatus
   workspaceRoot?: string | null
 }) {
-  const [open, setOpen] = useState(status === 'running')
+  const [open, setOpen] = useState(!isTerminalTurnStatus(status))
   const processRows = buildProcessRows(agentId, events, summary)
   useEffect(() => {
-    setOpen(status === 'running')
+    setOpen(!isTerminalTurnStatus(status))
   }, [status])
   if (processRows.length === 0) return null
   const completed = status === 'completed'
@@ -286,7 +319,7 @@ function CompletionSummary({
     failedTools: visibleFailedTools + failedRunCount + historicalFailedAttempts,
     totalDuration: eventDurationMs(events),
     filesModified: stats.files || [],
-    outcome: status === 'failed' ? 'failed' as const : status === 'cancelled' ? 'cancelled' as const : 'completed' as const
+    outcome: status === 'failed' ? 'failed' as const : status === 'cancelled' || status === 'interrupted' ? 'cancelled' as const : 'completed' as const
   }
 
   return (
@@ -387,7 +420,7 @@ function stepsToToolCalls(steps: any[], runStatus: WorkbenchTurnStatus = 'runnin
       : 'succeeded'
     const status = rawStatus === 'started' && runStatus === 'completed' ? 'succeeded'
       : rawStatus === 'started' && runStatus === 'failed' ? 'failed'
-      : rawStatus === 'started' && runStatus === 'cancelled' ? 'declined'
+      : rawStatus === 'started' && isTerminalTurnStatus(runStatus) ? 'declined'
       : rawStatus
     const startTime = step.createdAt || Date.now()
     const fallbackEndTime = terminalTime && terminalTime >= startTime ? terminalTime : step.updatedAt && step.updatedAt >= startTime ? step.updatedAt : startTime
@@ -480,7 +513,7 @@ function terminalEventTime(events: RuntimeEvent[]): number | undefined {
     .find(event =>
       event.kind === 'agent:done' ||
       event.kind === 'agent:error' ||
-      (event.kind === 'run:status' && event.payload?.status && event.payload.status !== 'running' && event.payload.status !== 'queued') ||
+      (event.kind === 'run:status' && event.payload?.status && isTerminalTurnStatus(event.payload.status)) ||
       event.payload?.kind === 'orchestrate:final' ||
       event.payload?.kind === 'orchestrate:error'
     )?.createdAt
@@ -562,7 +595,7 @@ function summarizeAgentEvents(events: RuntimeEvent[]): AgentEventSummary {
   const terminal = [...events].reverse().find(event =>
     event.kind === 'agent:error' ||
     event.kind === 'agent:done' ||
-    (event.kind === 'run:status' && event.payload?.status && event.payload.status !== 'running' && event.payload.status !== 'queued')
+    (event.kind === 'run:status' && event.payload?.status && isTerminalTurnStatus(event.payload.status))
   )
   if (terminal?.kind === 'agent:error') latestAgentStatus = 'failed'
   else if (terminal?.kind === 'agent:done') latestAgentStatus = 'completed'
@@ -596,22 +629,11 @@ function eventGroupKey(event: RuntimeEvent): string {
 
 function RoleEvents({
   routeEvents,
-  guardEvents,
-  onResolveGuard
+  guardEvents
 }: {
   routeEvents: RuntimeEvent[]
   guardEvents: RuntimeEvent[]
-  onResolveGuard: (requestId: string, approved: boolean) => void
 }) {
-  const resolvedGuardRequests = new Set(guardEvents
-    .filter(event => event.payload?.requestId && event.payload?.decision)
-    .map(event => String(event.payload.requestId)))
-  const visibleGuards = guardEvents.filter(event => {
-    const requestId = event.payload?.requestId
-    if (!requestId) return true
-    if (event.payload?.decision) return true
-    return !resolvedGuardRequests.has(String(requestId))
-  })
   return (
     <div className="wb-role-events">
       {routeEvents.slice(-2).map(event => (
@@ -621,17 +643,11 @@ function RoleEvents({
           {Array.isArray(event.payload?.scores) && <small>{event.payload.scores.slice(0, 3).map((item: any) => `${item.id} ${item.score}`).join(' / ')}</small>}
         </div>
       ))}
-      {visibleGuards.slice(-4).map(event => (
+      {guardEvents.slice(-4).map(event => (
         <div key={event.id} className={'wb-role-event guard ' + (event.payload?.level || 'low') + (event.payload?.requiresUserDecision ? ' pending' : '')}>
           <strong>{event.payload?.role || 'Guard'}</strong>
           <span>{guardStatusText(event.payload)}</span>
           {Array.isArray(event.payload?.reasons) && <small>{event.payload.reasons.join('; ')}</small>}
-          {event.payload?.requiresUserDecision && event.payload?.requestId && (
-            <div className="wb-role-event-actions">
-              <button onClick={() => onResolveGuard(event.payload.requestId, true)}>{tr('继续执行', 'Continue')}</button>
-              <button onClick={() => onResolveGuard(event.payload.requestId, false)}>{tr('停止', 'Stop')}</button>
-            </div>
-          )}
         </div>
       ))}
     </div>
@@ -687,7 +703,7 @@ function OrchestrateCompact({ events, turnStatus, workspaceRoot }: { events: Run
 }
 
 function ProcessingState({ events, turn }: { events: RuntimeEvent[]; turn: WorkbenchTurn }) {
-  const running = outputStatus(turn.status, events, turn.targetAgent || '') === 'running'
+  const running = !isTerminalTurnStatus(outputStatus(turn.status, events, turn.targetAgent || ''))
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (!running) return
@@ -759,6 +775,7 @@ function isChatVisibleRuntimeEvent(event: RuntimeEvent): boolean {
   if (event.kind === 'turn:created' || event.kind === 'turn:status' || event.kind === 'turn:summary' || event.kind === 'memory:candidate') return false
   if (event.agentId && INTERNAL_TIMELINE_AGENT_IDS.has(event.agentId)) return false
   if (event.payload?.visibility === 'run') return false
+  if (event.kind === 'route:decision') return true
   if (event.kind === 'agent:delta' || event.kind === 'agent:done' || event.kind === 'agent:start' || event.kind === 'agent:error' || event.kind === 'agent:activity') return true
   if (event.kind === 'orchestrate' || event.payload?.kind?.startsWith?.('orchestrate:')) return true
   if (event.kind === 'guard:verdict') return true
@@ -805,8 +822,10 @@ function providerOutputName(providerId: string, modelId?: string): string {
 function statusLabel(status: WorkbenchTurnStatus | 'done' | 'running' | 'failed'): string {
   if (status === 'completed' || status === 'done') return tr('完成', 'done')
   if (status === 'running' || status === 'queued') return tr('运行中', 'running')
+  if (status === 'awaiting-decision') return tr('等待决定', 'Waiting for decision')
   if (status === 'failed') return tr('失败', 'failed')
   if (status === 'cancelled') return tr('已取消', 'cancelled')
+  if (status === 'interrupted') return tr('已中断', 'Interrupted')
   return status
 }
 
@@ -821,11 +840,10 @@ function outputStatus(turnStatus: WorkbenchTurnStatus, eventsOrSummary: RuntimeE
     if (eventsOrSummary.hasError || eventsOrSummary.hasOrchestrateError) return 'failed'
     if (eventsOrSummary.hasDone || eventsOrSummary.hasOrchestrateFinal) return 'completed'
     if (eventsOrSummary.routeEvents.length > 0 || eventsOrSummary.guardEvents.length > 0) {
-      const pendingGuard = eventsOrSummary.guardEvents.some(event => event.payload?.requiresUserDecision && !event.payload?.decision)
-      return pendingGuard && (turnStatus === 'running' || turnStatus === 'queued') ? 'running' : 'completed'
+      return turnStatus === 'queued' ? 'running' : turnStatus
     }
   }
-  if (agentId === 'orchestrate' && turnStatus !== 'running' && turnStatus !== 'queued') return turnStatus
+  if (agentId === 'orchestrate' && isTerminalTurnStatus(turnStatus)) return turnStatus
   return turnStatus === 'queued' ? 'running' : turnStatus
 }
 
@@ -882,6 +900,7 @@ function normalizeOutput(value: string): string {
       else if (parsed.type === 'item.completed' && parsed.item?.type === 'agent_message' && typeof parsed.item.text === 'string') cleaned.push(parsed.item.text)
       else if (Array.isArray(parsed.subtasks) || String(parsed.kind || '').startsWith('orchestrate:')) continue
       else if (typeof parsed.pass === 'boolean') cleaned.push(parsed.pass ? tr('校验通过。', 'Verification passed.') : (parsed.note || tr('需要修正。', 'Needs revision.')))
+      else cleaned.push(line)
       continue
     }
     if (/^FAIL:\s*RESULT为空/.test(trimmed)) {

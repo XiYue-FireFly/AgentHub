@@ -14,6 +14,8 @@ import { homedir } from 'os'
 import { buildProviderClient } from '../providers/client'
 import { getProviderManager, isProviderRuntimeUsable } from '../providers/manager'
 import type { ModelDefinition, ProviderDefinition, ThinkingMode } from '../providers/types'
+import { canonicalProviderPayload, createDispatchEnvelope, createDispatchId } from './dispatch-envelope'
+import { appendAppEventLog } from './app-event-log'
 
 const FAVORITES_KEY = 'models.favorites.v1'
 const HIDDEN_KEY = 'models.hidden.v1'
@@ -161,6 +163,33 @@ export async function testModelRoute(input: { providerId: string; modelId: strin
     maxOutputTokens: 32
   }
   const client = buildProviderClient({ provider: routed.provider, model, binding, thinking: binding.thinking })
+  const messages = [{ role: 'user' as const, content: 'Reply with: ok' }]
+  const dispatchEnvelope = createDispatchEnvelope({
+    dispatchId: createDispatchId(),
+    lineage: { origin: 'internal:model-diagnostic', policy: 'internal' },
+    payload: canonicalProviderPayload({
+      providerId: routed.provider.id,
+      modelId: model.id,
+      protocol: routed.provider.capabilities.protocol,
+      systemPrompt: '',
+      messages,
+      tools: [],
+      toolChoice: null,
+      thinking: binding.thinking
+    })
+  })
+  appendAppEventLog('dispatch:prepared', {
+    dispatchId: dispatchEnvelope.dispatchId,
+    providerId: dispatchEnvelope.providerId,
+    modelId: dispatchEnvelope.modelId,
+    canonicalPayloadHash: dispatchEnvelope.canonicalPayloadHash,
+    origin: dispatchEnvelope.origin,
+    policy: dispatchEnvelope.policy,
+    rootInputId: dispatchEnvelope.rootInputId,
+    rootEnvelopeId: dispatchEnvelope.rootEnvelopeId,
+    rootPreparedTextHash: dispatchEnvelope.rootPreparedTextHash,
+    parentDispatchId: dispatchEnvelope.parentDispatchId
+  })
   let content = ''
   let usage: any = undefined
   let timer: NodeJS.Timeout | undefined
@@ -170,7 +199,7 @@ export async function testModelRoute(input: { providerId: string; modelId: strin
     await Promise.race([
       new Promise<void>((resolve, reject) => {
         client.stream(
-          { messages: [{ role: 'user', content: 'Reply with: ok' }], systemPrompt: '', thinkingOverride: binding.thinking, signal: controller.signal },
+          { messages, systemPrompt: '', thinkingOverride: binding.thinking, signal: controller.signal, dispatchEnvelope },
           {
             onContent: delta => { content += delta },
             onDone: final => { usage = final.usage; resolve() },

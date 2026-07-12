@@ -46,7 +46,10 @@ export function InlineEditAffordance({ code, filePath, startLine, endLine, works
       })
 
       // Send the prompt to the active model and get a real replacement.
-      const result = await window.electronAPI.ai.quickComplete({ prompt })
+      const result = await window.electronAPI.ai.quickComplete({
+        origin: 'quick-complete:inline-edit',
+        prompt
+      })
       if (!result?.ok || result.error) {
         setError(result?.error || tr('AI 请求失败', 'AI request failed'))
         return

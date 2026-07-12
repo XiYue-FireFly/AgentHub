@@ -5,9 +5,13 @@ import { getLang, tr } from '../glass/i18n'
 import { AGENT_META } from '../glass/meta'
 import type { AgentUIStatus, BindingDef, ProviderDef } from '../glass/meta'
 import { WorkspaceItem } from './types'
+import { normalizeScheduleForStorage } from './customSchedule'
 import { localAgentLabel, localAgentOptions } from './localAgentOptions'
 import { formatContextWindow } from './contextCapacity'
 import { PromptEnhancer } from './PromptEnhancer'
+import { DecisionBar, type DecisionBarSubmitResult } from './decisions/DecisionBar'
+import type { DecisionItem, DraftDecisionItem } from './decisions/decisionAdapters'
+import type { DecisionSubmission } from '../../shared/decision-contract'
 import { defaultDialogPath, rememberDialogPath } from '../appearance'
 import {
   addPaletteQuery,
@@ -31,14 +35,33 @@ import {
   safeMentionToken,
   type ComposerAddItem
 } from './utils/composerAddItems'
+import {
+  approvalDisplayModeDetail,
+  approvalDisplayModeFromConfig,
+  approvalDisplayModeLabel,
+  approvalPresetForDisplayMode,
+  type ApprovalDisplayMode
+} from './utils/approvalMode'
 
 type ComposerThinkingConfig = { mode: 'off' | 'auto' | 'enabled'; level: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; collapseInUI?: boolean; budgetTokens?: number }
 type PickerAgentRow =
   | { source: 'local-agent'; id: string; label: string; subtitle: string; agentId: string }
   | { source: 'provider-agent'; id: string; label: string; subtitle: string; providerId: string; modelCount: number }
 type PickerModelRow = { source: 'provider-model'; id: string; label: string; subtitle: string; providerId: string; modelId: string; contextWindow?: number }
-type ComposerSendOverrides = { mode?: DispatchPreset; targetAgent?: string | null; customSchedule?: SchedulePreview; modelSelection?: ModelSelection | null }
-type ApprovalMode = 'ask' | 'auto' | 'full'
+export type ComposerSendOverrides = { mode?: DispatchPreset; targetAgent?: string | null; customSchedule?: SchedulePreview | null; modelSelection?: ModelSelection | null; multiModelFusion?: boolean }
+export type ComposerSendFailureReason = 'busy' | 'routing-unavailable' | 'schedule-target-unavailable' | 'schedule-unavailable' | 'create-failed' | 'cancelled' | 'owner-changed' | 'send-failed'
+export type ComposerSendResult = { ok: true } | { ok: false; reason: ComposerSendFailureReason; error?: string }
+type ComposerSubmission = {
+  id: number
+  text: string
+  draftText: string
+  attachments: WorkbenchAttachment[]
+  overrides: ComposerSendOverrides
+  clearDraftOnSuccess: boolean
+  quickRole: 'none' | 'reviewer' | 'executor' | 'gatekeeper'
+  ownerKey: string
+}
+type SelectableApprovalMode = 'ask' | 'auto' | 'full'
 
 type PickerAnchor = { left: number; top: number } | null
 
@@ -53,10 +76,13 @@ export function ComposerBar({
   setThinking,
   schedules,
   scheduleForMode,
+  multiModelFusion = false,
+  setMultiModelFusion,
   sending,
   onSend,
   onCancel,
   workspaceId,
+  threadId,
   workspaces,
   setWorkspaceId,
   onCreateProject,
@@ -68,7 +94,12 @@ export function ComposerBar({
   onRefreshProviders,
   externalAttachments,
   onExternalAttachmentsConsumed,
-  gitBranchNode
+  gitBranchNode,
+  decisionItem = null,
+  decisionPosition = 0,
+  decisionCount = 0,
+  onDecisionSubmit,
+  onDraftDecision
 }: {
   mode: DispatchPreset
   setMode: (mode: DispatchPreset) => void
@@ -80,8 +111,10 @@ export function ComposerBar({
   setThinking: (thinking: ComposerThinkingConfig) => void
   schedules: SchedulePreview[]
   scheduleForMode?: (preset: DispatchPreset) => SchedulePreview | undefined
+  multiModelFusion?: boolean
+  setMultiModelFusion?: (enabled: boolean) => void
   sending: boolean
-  onSend: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: ComposerSendOverrides) => void
+  onSend: (prompt: string, attachments?: WorkbenchAttachment[], overrides?: ComposerSendOverrides) => Promise<ComposerSendResult>
   onCancel: () => void
   workspaceId: string | null
   workspaces: WorkspaceItem[]
@@ -100,8 +133,17 @@ export function ComposerBar({
   threadId?: string | null
   turns?: WorkbenchTurn[]
   events?: RuntimeEvent[]
+  decisionItem?: DecisionItem | null
+  decisionPosition?: number
+  decisionCount?: number
+  onDecisionSubmit?: (item: DecisionItem, submission: DecisionSubmission) => Promise<DecisionBarSubmitResult> | DecisionBarSubmitResult
+  onDraftDecision?: (decision: DraftDecisionItem) => void
 }) {
   const [text, setText] = useState('')
+  const [draftRevision, setDraftRevision] = useState(0)
+  const [draftHash, setDraftHash] = useState<string | null>(null)
+  const [draftHashText, setDraftHashText] = useState<string | null>(null)
+  const [focusAfterDecisionId, setFocusAfterDecisionId] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<WorkbenchAttachment[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
   const [commands, setCommands] = useState<WorkbenchCommand[]>([])
@@ -115,9 +157,15 @@ export function ComposerBar({
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [approvalPickerOpen, setApprovalPickerOpen] = useState(false)
-  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('full')
+  const [approvalMode, setApprovalMode] = useState<ApprovalDisplayMode>('full')
+  const [approvalSaving, setApprovalSaving] = useState(false)
   const [quickRole, setQuickRole] = useState<'none' | 'reviewer' | 'executor' | 'gatekeeper'>('none')
-  const [queue, setQueue] = useState<Array<{ text: string; attachments: WorkbenchAttachment[]; overrides?: any }>>([])
+  const [queue, setQueue] = useState<ComposerSubmission[]>([])
+  const [failedQueueHeadId, setFailedQueueHeadId] = useState<number | null>(null)
+  const [failedQueueReason, setFailedQueueReason] = useState<ComposerSendFailureReason | null>(null)
+  const [queuePaused, setQueuePaused] = useState(false)
+  const [queueWorkerBusy, setQueueWorkerBusy] = useState(false)
+  const [queueWorkerEpoch, setQueueWorkerEpoch] = useState(0)
   const [budgetEstimate, setBudgetEstimate] = useState<BudgetEstimate | null>(null)
   const [budgetEstimateLoading, setBudgetEstimateLoading] = useState(false)
   const [cursorIndex, setCursorIndex] = useState(0)
@@ -127,6 +175,34 @@ export function ComposerBar({
   const modelPickerRef = useRef<HTMLDivElement | null>(null)
   const workspacePickerRef = useRef<HTMLDivElement | null>(null)
   const approvalPickerRef = useRef<HTMLDivElement | null>(null)
+  const approvalSavingRef = useRef(false)
+  const submissionSeqRef = useRef(0)
+  const queueInFlightIdRef = useRef<number | null>(null)
+  const pausedInFlightIdsRef = useRef(new Set<number>())
+  const queuePausedRef = useRef(false)
+  const ownerMoveRouteRebuildSubmissionIdRef = useRef<number | null>(null)
+  const mountedRef = useRef(true)
+  const workerGenerationRef = useRef(0)
+  const ownerKey = `${workspaceId || ''}\u0000${threadId || ''}`
+  const ownerKeyRef = useRef(ownerKey)
+  const textRef = useRef(text)
+  const draftRevisionRef = useRef(draftRevision)
+  const attachmentsRef = useRef(attachments)
+  const quickRoleRef = useRef(quickRole)
+  textRef.current = text
+  draftRevisionRef.current = draftRevision
+  attachmentsRef.current = attachments
+  quickRoleRef.current = quickRole
+  ownerKeyRef.current = ownerKey
+
+  useEffect(() => {
+    mountedRef.current = true
+    const generation = ++workerGenerationRef.current
+    return () => {
+      if (workerGenerationRef.current === generation) workerGenerationRef.current++
+      mountedRef.current = false
+    }
+  }, [])
   const composingRef = useRef(false)
   const compositionEndedAtRef = useRef(0)
   const workspace = workspaces.find(item => item.id === workspaceId) ?? null
@@ -168,7 +244,7 @@ export function ComposerBar({
 
   const refreshApprovalMode = useCallback(async () => {
     const config = await window.electronAPI.agentic.getApprovalConfig()
-    setApprovalMode(modeFromApprovalDefaults(config.default))
+    setApprovalMode(approvalDisplayModeFromConfig(config))
   }, [])
 
   useEffect(() => {
@@ -177,6 +253,32 @@ export function ComposerBar({
     el.style.height = '0px'
     el.style.height = `${Math.min(Math.max(el.scrollHeight, 42), 118)}px`
   }, [text])
+
+  useEffect(() => {
+    let current = true
+    setDraftHash(null)
+    setDraftHashText(null)
+    void sha256Text(text).then(hash => {
+      if (!current) return
+      setDraftHash(hash)
+      setDraftHashText(text)
+    }).catch(() => {
+      // Local decisions fail closed when Web Crypto is unavailable.
+      if (current) setDraftHash(null)
+    })
+    return () => { current = false }
+  }, [text])
+
+  useEffect(() => {
+    if (!focusAfterDecisionId || decisionItem?.id === focusAfterDecisionId) return
+    const timer = window.setTimeout(() => {
+      const nextPrimary = textareaRef.current?.closest('.wb-composer')?.querySelector<HTMLElement>('[data-decision-primary]:not(:disabled)')
+      if (nextPrimary) nextPrimary.focus()
+      else textareaRef.current?.focus()
+      setFocusAfterDecisionId(null)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [decisionItem?.id, focusAfterDecisionId])
 
   useEffect(() => {
     window.electronAPI.commands.list().then(setCommands).catch(() => {})
@@ -203,7 +305,10 @@ export function ComposerBar({
     }
     const timer = window.setTimeout(() => {
       const quickSchedule = quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds) || undefined
-      const selectedSchedule = quickSchedule || (!targetAgent && !(modelSelection?.source === 'provider') ? scheduleForMode?.(mode) : undefined)
+      const selectedSchedule = scheduleSnapshotForSubmission(
+        mode,
+        quickSchedule || (!targetAgent && !(modelSelection?.source === 'provider') ? scheduleForMode?.(mode) : undefined)
+      )
       if (alive) setBudgetEstimateLoading(true)
       window.electronAPI.budget.estimateDispatch({
         workspaceId,
@@ -211,6 +316,12 @@ export function ComposerBar({
         mode,
         targetAgent,
         modelSelection: modelSelection || undefined,
+        multiModelFusion: {
+          enabled: multiModelFusion === true,
+          maxCandidates: 3,
+          maxRounds: 3,
+          allowExecutor: true
+        },
         attachments,
         customSchedule: selectedSchedule
       }).then(result => {
@@ -342,47 +453,130 @@ export function ComposerBar({
     setActiveAddIndex(0)
   }, [addQuery])
 
-  // G2-MH5: stable refs so parent re-renders (new onSend identity) don't cancel the queue timer
+  // Stable callback and queue refs keep the single-head worker immune to parent re-renders.
   const onSendRef = useRef(onSend)
   onSendRef.current = onSend
   const queueRef = useRef(queue)
   queueRef.current = queue
 
-  // Process queue when sending becomes false
+  // Process exactly one immutable queue head at a time. Only explicit success removes it.
   useEffect(() => {
-    if (sending || queue.length === 0) return
-    const next = queueRef.current[0]
-    if (!next) return
-    setText(next.text)
-    setAttachments(next.attachments)
-    // Defer to next tick so state updates propagate
-    const timer = setTimeout(() => {
-      if (next.text.trim()) {
-        onSendRef.current(next.text.trim(), next.attachments, next.overrides)
-      }
-      // Remove from queue after sending to avoid triggering effect re-run
-      setQueue(prev => prev.slice(1))
-    }, 50)
-    return () => clearTimeout(timer)
-  }, [sending, queue.length])
-
-  const send = async () => {
-    const prompt = text.trim() || (attachments.length ? tr('请分析我附加的内容。', 'Please analyze the attached content.') : '')
-    if (!prompt) return
-    // If currently sending, queue the message
-    if (sending) {
-      setQueue(prev => [...prev, { text: prompt, attachments: [...attachments], overrides: quickRoleSendOverrides(quickRole === 'none' ? undefined : quickRoleSchedule(quickRole, readyAgentIds), targetAgent) }])
-      setText('')
-      setAttachments([])
-      setQuickRole('none')
+    const next = queue[0]
+    if (sending || queuePaused || !next || failedQueueHeadId === next.id || queueInFlightIdRef.current !== null) return
+    if (next.ownerKey !== ownerKeyRef.current) {
+      setFailedQueueHeadId(next.id)
+      setFailedQueueReason('owner-changed')
+      setAttachError(tr('会话或工作区已切换，排队消息已暂停。', 'The thread or workspace changed, so the queued message was paused.'))
       return
     }
-    if (shouldRunComposerCommand(prompt, commands) && onRunCommand) {
-      const handled = await onRunCommand({ text: prompt })
-      if (handled) {
-        setText('')
-        setPaletteOpen(false)
+    queueInFlightIdRef.current = next.id
+    setQueueWorkerBusy(true)
+    const generation = workerGenerationRef.current
+    void (async () => {
+      let result: ComposerSendResult | undefined
+      try {
+        result = await onSendRef.current(next.text, next.attachments, next.overrides)
+      } catch (error) {
+        result = { ok: false, reason: 'send-failed', error: error instanceof Error ? error.message : String(error) }
+      }
+      if (!mountedRef.current || workerGenerationRef.current !== generation) return
+      if (queuePausedRef.current || pausedInFlightIdsRef.current.has(next.id)) {
+        setQueuePaused(true)
+        queuePausedRef.current = true
+        setFailedQueueHeadId(next.id)
+        setFailedQueueReason('cancelled')
+      } else if (result?.ok) {
+        if (ownerMoveRouteRebuildSubmissionIdRef.current === next.id) {
+          ownerMoveRouteRebuildSubmissionIdRef.current = null
+        }
+        setQueue(current => current[0]?.id === next.id ? current.slice(1) : current)
+        setFailedQueueHeadId(current => current === next.id ? null : current)
+        setFailedQueueReason(null)
+        if (next.clearDraftOnSuccess
+          && textRef.current === next.draftText
+          && sameAttachments(attachmentsRef.current, next.attachments)) {
+          setText('')
+          setAttachments([])
+          if (quickRoleRef.current === next.quickRole) setQuickRole('none')
+        }
+      } else {
+        setFailedQueueHeadId(next.id)
+        setFailedQueueReason(result?.reason || 'send-failed')
+        setAttachError(result?.error || tr('发送失败，消息已保留，可重试。', 'Failed to send. Your message was kept for retry.'))
+      }
+      queueInFlightIdRef.current = null
+      setQueueWorkerBusy(false)
+      setQueueWorkerEpoch(value => value + 1)
+    })()
+  }, [sending, queue, failedQueueHeadId, queueWorkerEpoch, queuePaused])
+
+  const rebuildSubmissionForCurrentRoute = (submission: ComposerSubmission): ComposerSubmission => createComposerSubmission({
+    id: submission.id,
+    prompt: submission.text,
+    draftText: submission.draftText,
+    attachments: submission.attachments,
+    mode,
+    targetAgent,
+    modelSelection,
+    multiModelFusion: multiModelFusion === true,
+    schedule: scheduleSnapshotForSubmission(
+      mode,
+      !targetAgent && modelSelection?.source !== 'provider' ? scheduleForMode?.(mode) : undefined
+    ),
+    quickRole: 'none',
+    clearDraftOnSuccess: submission.clearDraftOnSuccess,
+    ownerKey: ownerKeyRef.current
+  })
+
+  const send = async () => {
+    const failedHead = failedQueueHeadId === queueRef.current[0]?.id ? queueRef.current[0] : null
+    if (queuePaused) {
+      queuePausedRef.current = false
+      pausedInFlightIdsRef.current.clear()
+      setQueuePaused(false)
+      setFailedQueueHeadId(null)
+      setFailedQueueReason(null)
+      setAttachError(null)
+      return
+    }
+    if (failedHead && isRouteFailure(failedQueueReason)) {
+      if (failedHead.ownerKey !== ownerKeyRef.current) {
+        ownerMoveRouteRebuildSubmissionIdRef.current = failedHead.id
+        setFailedQueueReason('owner-changed')
+        setAttachError(tr('会话或工作区已切换，排队消息已暂停。', 'The thread or workspace changed, so the queued message was paused.'))
         return
+      }
+      if (ownerMoveRouteRebuildSubmissionIdRef.current === failedHead.id) {
+        ownerMoveRouteRebuildSubmissionIdRef.current = null
+      }
+      const rebuilt = rebuildSubmissionForCurrentRoute(failedHead)
+      setQueue(current => current[0]?.id === failedHead.id ? [rebuilt, ...current.slice(1)] : current)
+      setFailedQueueHeadId(null)
+      setFailedQueueReason(null)
+      setAttachError(null)
+      return
+    }
+    const prompt = text.trim() || (attachments.length ? tr('请分析我附加的内容。', 'Please analyze the attached content.') : '')
+    if (!prompt) {
+      if (failedHead) {
+        if (failedHead.ownerKey === ownerKeyRef.current
+          && ownerMoveRouteRebuildSubmissionIdRef.current === failedHead.id) {
+          ownerMoveRouteRebuildSubmissionIdRef.current = null
+        }
+        setAttachError(null)
+        setFailedQueueHeadId(null)
+        setFailedQueueReason(null)
+      }
+      return
+    }
+    if (shouldRunComposerCommand(prompt, commands)) {
+      if (onRunCommand) {
+        const handled = await onRunCommand({ text: prompt })
+        if (handled) {
+          setText('')
+          setPaletteOpen(false)
+          return
+        }
       }
       setAttachError(tr('未识别的指令，请从 / 指令面板选择，或移除开头的 / 或 @ 后再发送。', 'Unknown command. Choose one from the / palette, or remove the leading / or @ before sending.'))
       return
@@ -392,11 +586,66 @@ export function ComposerBar({
       setAttachError(tr('没有可用本地 Agent，无法派发子 Agent。请先在设置里配置 CLI。', 'No usable local agent is available for child-agent dispatch. Configure a CLI in Settings first.'))
       return
     }
-    const nextAttachments = attachments
-    setText('')
-    setAttachments([])
-    setQuickRole('none')
-    onSend(prompt, nextAttachments, quickRoleSendOverrides(quickSchedule, targetAgent))
+    if (failedHead && text === failedHead.draftText && sameAttachments(attachments, failedHead.attachments)) {
+      if (failedHead.ownerKey === ownerKeyRef.current
+        && ownerMoveRouteRebuildSubmissionIdRef.current === failedHead.id) {
+        ownerMoveRouteRebuildSubmissionIdRef.current = null
+      }
+      setAttachError(null)
+      setFailedQueueHeadId(null)
+      return
+    }
+    const submission = createComposerSubmission({
+      id: ++submissionSeqRef.current,
+      prompt,
+      draftText: text,
+      attachments,
+      mode,
+      targetAgent,
+      modelSelection,
+      multiModelFusion: multiModelFusion === true,
+      schedule: scheduleSnapshotForSubmission(
+        mode,
+        quickSchedule || (!targetAgent && modelSelection?.source !== 'provider' ? scheduleForMode?.(mode) : undefined)
+      ),
+      quickRole,
+      clearDraftOnSuccess: !sending && !failedHead,
+      ownerKey: ownerKeyRef.current
+    })
+    setQueue(current => [...current, submission])
+    setAttachError(null)
+    if (sending || failedHead) {
+      setText('')
+      setAttachments([])
+      setQuickRole('none')
+    }
+    if (failedHead) setFailedQueueHeadId(null)
+  }
+
+  const stopQueue = () => {
+    queuePausedRef.current = true
+    setQueuePaused(true)
+    const inFlightId = queueInFlightIdRef.current
+    if (inFlightId !== null) pausedInFlightIdsRef.current.add(inFlightId)
+    onCancel()
+  }
+
+  const moveFailedHeadToCurrentOwner = () => {
+    const failedId = failedQueueHeadId
+    if (failedQueueReason !== 'owner-changed' || failedId === null) return
+    const rebuildRoute = ownerMoveRouteRebuildSubmissionIdRef.current === failedId
+    if (rebuildRoute) ownerMoveRouteRebuildSubmissionIdRef.current = null
+    setQueue(current => current[0]?.id === failedId
+      ? [
+          rebuildRoute
+            ? rebuildSubmissionForCurrentRoute(current[0])
+            : { ...current[0], ownerKey: ownerKeyRef.current },
+          ...current.slice(1)
+        ]
+      : current)
+    setFailedQueueHeadId(null)
+    setFailedQueueReason(null)
+    setAttachError(null)
   }
 
   const isImeConfirming = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -495,15 +744,18 @@ export function ComposerBar({
     }
   }
 
-  const applyApprovalMode = async (nextMode: ApprovalMode) => {
-    const policies = approvalPoliciesForMode(nextMode)
-    setApprovalMode(nextMode)
-    setApprovalPickerOpen(false)
-    await Promise.all([
-      window.electronAPI.agentic.setApprovalDefault('write', policies.write),
-      window.electronAPI.agentic.setApprovalDefault('exec', policies.exec)
-    ])
-    await refreshApprovalMode().catch(() => {})
+  const applyApprovalMode = async (nextMode: SelectableApprovalMode) => {
+    if (approvalSavingRef.current) return
+    approvalSavingRef.current = true
+    setApprovalSaving(true)
+    try {
+      const config = await window.electronAPI.agentic.setApprovalPreset(approvalPresetForDisplayMode(nextMode))
+      setApprovalMode(approvalDisplayModeFromConfig(config))
+      setApprovalPickerOpen(false)
+    } finally {
+      approvalSavingRef.current = false
+      setApprovalSaving(false)
+    }
   }
 
   const selectWorkspace = (nextWorkspaceId: string | null) => {
@@ -612,6 +864,40 @@ export function ComposerBar({
     }
   }
 
+  const updateTextFromUser = (nextText: string) => {
+    setText(nextText)
+    setDraftRevision(current => {
+      const nextRevision = current + 1
+      draftRevisionRef.current = nextRevision
+      return nextRevision
+    })
+  }
+
+  const submitInlineDecision = async (submission: DecisionSubmission): Promise<DecisionBarSubmitResult> => {
+    const item = decisionItem
+    if (!item || !onDecisionSubmit) return { accepted: false }
+
+    const result = await onDecisionSubmit(item, submission)
+    if (!decisionAccepted(result)) return result
+
+    if (item.origin === 'draft') {
+      const currentRevision = draftRevisionRef.current
+      const currentText = textRef.current
+      const currentHash = await sha256Text(currentText).catch(() => null)
+      const draftStillMatches = currentRevision === item.draftRevision && currentHash === item.draftHash
+      const selectedOptionId = submission.selectedOptionIds?.[0]
+      const mappedValue = selectedOptionId ? item.valuesByOptionId[selectedOptionId] : undefined
+      const customText = typeof submission.customText === 'string'
+        ? submission.customText.slice(0, item.request.customInput?.maxChars ?? 8_000)
+        : undefined
+      const nextText = customText ?? mappedValue
+      if (draftStillMatches && typeof nextText === 'string') setText(nextText)
+    }
+
+    setFocusAfterDecisionId(item.id)
+    return result
+  }
+
   return (
     <div
       className={'wb-composer-wrap' + (attachments.length ? ' has-attachments' : '')}
@@ -622,13 +908,21 @@ export function ComposerBar({
       onDrop={handleDrop}
     >
       <div className="wb-composer">
+        {decisionItem && (
+          <DecisionBar
+            item={decisionItem}
+            position={decisionPosition || 1}
+            count={decisionCount || 1}
+            onSubmit={submitInlineDecision}
+          />
+        )}
         <div className="wb-composer-input-layer">
           <textarea
             ref={textareaRef}
             className="wb-composer-input"
             value={text}
             onChange={e => {
-              setText(e.target.value)
+              updateTextFromUser(e.target.value)
               setCursorIndex(e.target.selectionStart ?? e.target.value.length)
             }}
             onClick={syncCursor}
@@ -724,11 +1018,12 @@ export function ComposerBar({
                 type="button"
                 className={'wb-approval-mode-trigger mode-' + approvalMode}
                 onClick={() => setApprovalPickerOpen(open => !open)}
+                disabled={approvalSaving}
                 aria-expanded={approvalPickerOpen}
                 title={tr('审批模式', 'Approval mode')}
               >
                 <Icon d={approvalIconForMode(approvalMode)} size={14} />
-                <span>{approvalModeLabel(approvalMode)}</span>
+                <span>{approvalDisplayModeLabel(approvalMode)}</span>
                 <Icon d={IC.chevDown} size={11} />
               </button>
               {approvalPickerOpen && (
@@ -737,7 +1032,7 @@ export function ComposerBar({
                     <strong>{tr('应该如何批准 Agent 操作？', 'How should AgentHub approve operations?')}</strong>
                   </div>
                   {approvalModes().map(item => (
-                    <button key={item.id} type="button" className={approvalMode === item.id ? 'selected' : ''} onClick={() => applyApprovalMode(item.id).catch(err => setAttachError(err?.message || tr('切换审批模式失败。', 'Failed to switch approval mode.')))}>
+                    <button key={item.id} type="button" disabled={approvalSaving} className={approvalMode === item.id ? 'selected' : ''} onClick={() => applyApprovalMode(item.id).catch(err => setAttachError(err?.message || tr('切换审批模式失败。', 'Failed to switch approval mode.')))}>
                       <Icon d={item.icon} size={16} />
                       <span>
                         <strong>{item.label}</strong>
@@ -802,7 +1097,7 @@ export function ComposerBar({
                   }}
                 >
                   <section className="wb-agent-picker-agents">
-                    <div className="wb-agent-picker-title">Agents</div>
+                    <div className="wb-agent-picker-title">{tr('Agent', 'Agents')}</div>
                     <div className="wb-agent-picker-list">
                       {pickerAgentRows.map(row => (
                         <button
@@ -865,10 +1160,24 @@ export function ComposerBar({
                 , document.body
               )}
             </div>
-            {!sending && text.trim() && (
+            <button
+              type="button"
+              className={'wb-icon-button' + (multiModelFusion ? ' active' : '')}
+              onClick={() => setMultiModelFusion?.(!multiModelFusion)}
+              disabled={sending || !setMultiModelFusion}
+              aria-pressed={multiModelFusion}
+              title={tr('多模型融合', 'Multi-model fusion')}
+              aria-label={tr('多模型融合', 'Multi-model fusion')}
+            >
+              <Icon d={IC.broadcast} size={16} />
+            </button>
+            {!sending && threadId && text.trim() && draftHash && draftHashText === text && onDraftDecision && (
               <PromptEnhancer
                 text={text}
-                onEnhanced={enhanced => setText(enhanced)}
+                threadId={threadId}
+                draftRevision={draftRevision}
+                draftHash={draftHash}
+                onDraftDecision={onDraftDecision}
                 disabled={sending}
               />
             )}
@@ -877,8 +1186,8 @@ export function ComposerBar({
                 {queue.length} {tr('排队', 'queued')}
               </span>
             )}
-            {sending
-              ? <button className="wb-send stop" onClick={onCancel} title={tr('停止', 'Stop')} aria-label={tr('停止', 'Stop')}><Icon d={IC.stop} size={15} /></button>
+            {(sending || queueWorkerBusy) && !queuePaused
+              ? <button className="wb-send stop" onClick={stopQueue} title={tr('停止', 'Stop')} aria-label={tr('停止', 'Stop')}><Icon d={IC.stop} size={15} /></button>
               : <button className="wb-send" disabled={budgetBlocked || (!text.trim() && attachments.length === 0 && queue.length === 0)} onClick={send} title={tr('发送', 'Send')} aria-label={tr('发送', 'Send')}><Icon d={IC.send} size={15} /></button>}
           </div>
         </div>
@@ -956,7 +1265,22 @@ export function ComposerBar({
           </div>
         )}
 
-        {attachError && <div className="wb-voice-error">{attachError}</div>}
+        {attachError && (
+          <div className="wb-voice-error">
+            <span>{attachError}</span>
+            {failedQueueReason === 'owner-changed' && failedQueueHeadId !== null && (
+              <button
+                type="button"
+                className="ah-btn sm"
+                onClick={moveFailedHeadToCurrentOwner}
+                title={tr('将排队消息移至当前会话并重试', 'Move queued message to current thread and retry')}
+                aria-label={tr('将排队消息移至当前会话并重试', 'Move queued message to current thread and retry')}
+              >
+                {tr('移至当前会话并重试', 'Move to current thread and retry')}
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="wb-composer-context wb-composer-context-minimal">
           <div className="wb-composer-context-left">
@@ -1065,12 +1389,12 @@ function BudgetEstimatePill({ estimate, loading }: { estimate: BudgetEstimate | 
   return (
     <span className={className} title={estimate?.check.reason || estimate?.check.warning || undefined}>
       {loading && !estimate
-        ? 'Estimating...'
+        ? tr('估算中...', 'Estimating...')
         : (
           <>
             <strong>{formatBudgetTokens(estimate?.totalTokens || 0)}</strong>
             <em>{estimate?.estimatedRequests || 1}x</em>
-            <small>{estimate?.estimatedCostUsd == null ? 'unpriced' : formatBudgetCost(estimate.estimatedCostUsd)}</small>
+            <small>{estimate?.estimatedCostUsd == null ? tr('未定价', 'unpriced') : formatBudgetCost(estimate.estimatedCostUsd)}</small>
           </>
         )}
     </span>
@@ -1233,6 +1557,74 @@ export function quickRoleSendOverrides(schedule: SchedulePreview | null | undefi
   }
 }
 
+function isBuiltInRoutingPreview(mode: DispatchPreset, schedule: SchedulePreview): boolean {
+  if (schedule.graph || schedule.preset !== mode || schedule.steps.length !== 1) return false
+  const step = schedule.steps[0]
+  if (mode === 'auto') return step.id === 'auto' && step.agentId === 'auto' && step.mode === 'auto'
+  if (mode === 'broadcast') return step.id === 'broadcast' && step.agentId === 'all' && step.mode === 'broadcast'
+  return false
+}
+
+function scheduleSnapshotForSubmission(mode: DispatchPreset, schedule: SchedulePreview | undefined): SchedulePreview | undefined {
+  return schedule && !isBuiltInRoutingPreview(mode, schedule) ? schedule : undefined
+}
+
+function cloneSchedule(schedule: SchedulePreview | undefined): SchedulePreview | null {
+  if (!schedule) return null
+  return normalizeScheduleForStorage(JSON.parse(JSON.stringify(schedule)) as SchedulePreview)
+}
+
+function sameAttachments(current: WorkbenchAttachment[], submitted: WorkbenchAttachment[]): boolean {
+  if (current.length !== submitted.length) return false
+  return current.every((item, index) => (
+    item.id === submitted[index]?.id
+    && item.path === submitted[index]?.path
+    && item.dataUrl === submitted[index]?.dataUrl
+    && item.text === submitted[index]?.text
+  ))
+}
+
+function isRouteFailure(reason: ComposerSendFailureReason | null): boolean {
+  return reason === 'routing-unavailable'
+    || reason === 'schedule-target-unavailable'
+    || reason === 'schedule-unavailable'
+}
+
+function createComposerSubmission(input: {
+  id: number
+  prompt: string
+  draftText: string
+  attachments: WorkbenchAttachment[]
+  mode: DispatchPreset
+  targetAgent: string | null
+  modelSelection: ModelSelection | null
+  multiModelFusion: boolean
+  schedule?: SchedulePreview
+  quickRole: ComposerSubmission['quickRole']
+  clearDraftOnSuccess: boolean
+  ownerKey: string
+}): ComposerSubmission {
+  const quickOverrides = input.quickRole === 'none' ? null : quickRoleSendOverrides(input.schedule, input.targetAgent)
+  return {
+    id: input.id,
+    text: input.prompt,
+    draftText: input.draftText,
+    attachments: input.attachments.map(item => ({ ...item })),
+    overrides: quickOverrides
+      ? { ...quickOverrides, customSchedule: cloneSchedule(input.schedule), multiModelFusion: input.multiModelFusion }
+      : {
+          mode: input.mode,
+          targetAgent: input.targetAgent,
+          modelSelection: input.modelSelection ? { ...input.modelSelection } : null,
+          customSchedule: cloneSchedule(input.schedule),
+          multiModelFusion: input.multiModelFusion
+        },
+    clearDraftOnSuccess: input.clearDraftOnSuccess,
+    quickRole: input.quickRole,
+    ownerKey: input.ownerKey
+  }
+}
+
 export function pickAgentForRole(role: 'reviewer' | 'executor' | 'gatekeeper', readyAgentIds: string[]): string | null {
   const fallback = readyAgentIds[0] || null
   const preferred = role === 'executor'
@@ -1241,46 +1633,32 @@ export function pickAgentForRole(role: 'reviewer' | 'executor' | 'gatekeeper', r
   return preferred.find(id => readyAgentIds.includes(id)) || fallback
 }
 
-function approvalModes(): Array<{ id: ApprovalMode; label: string; detail: string; icon: React.ReactNode }> {
+function approvalModes(): Array<{ id: SelectableApprovalMode; label: string; detail: string; icon: React.ReactNode }> {
   return [
     {
       id: 'ask',
-      label: tr('请求批准', 'Ask for approval'),
-      detail: tr('编辑外部文件和使用互联网时始终询问', 'Ask before writing files or running commands'),
+      label: approvalDisplayModeLabel('ask'),
+      detail: approvalDisplayModeDetail('ask'),
       icon: IC.tasks
     },
     {
       id: 'auto',
-      label: tr('替我审批', 'Auto approve'),
-      detail: tr('仅对检测到的风险操作请求批准', 'Ask only for riskier write operations'),
+      label: approvalDisplayModeLabel('auto'),
+      detail: approvalDisplayModeDetail('auto'),
       icon: IC.broadcast
     },
     {
       id: 'full',
-      label: tr('完全访问权限', 'Full access'),
-      detail: tr('不受限制地访问互联网和电脑文件', 'Allow writes and commands without prompts'),
+      label: approvalDisplayModeLabel('full'),
+      detail: approvalDisplayModeDetail('full'),
       icon: IC.bolt
     }
   ]
 }
 
-function approvalPoliciesForMode(mode: ApprovalMode): { write: 'allow' | 'ask' | 'deny'; exec: 'allow' | 'ask' | 'deny' } {
-  if (mode === 'ask') return { write: 'ask', exec: 'ask' }
-  if (mode === 'auto') return { write: 'ask', exec: 'allow' }
-  return { write: 'allow', exec: 'allow' }
-}
-
-function modeFromApprovalDefaults(defaults: { write?: 'allow' | 'ask' | 'deny'; exec?: 'allow' | 'ask' | 'deny' }): ApprovalMode {
-  if (defaults.write === 'ask' && defaults.exec === 'ask') return 'ask'
-  if (defaults.write === 'ask' && defaults.exec === 'allow') return 'auto'
-  return 'full'
-}
-
-function approvalModeLabel(mode: ApprovalMode): string {
-  return approvalModes().find(item => item.id === mode)?.label || tr('审批', 'Approval')
-}
-
-function approvalIconForMode(mode: ApprovalMode): React.ReactNode {
+function approvalIconForMode(mode: ApprovalDisplayMode): React.ReactNode {
+  if (mode === 'read-only') return IC.file
+  if (mode === 'custom') return IC.gear
   return approvalModes().find(item => item.id === mode)?.icon || IC.tasks
 }
 
@@ -1325,6 +1703,17 @@ function scheduleDisplayLabel(schedule: SchedulePreview): string {
   if (getLang() === 'zh' && schedule.labelZh) return schedule.labelZh
   if (getLang() === 'en' && schedule.labelEn) return schedule.labelEn
   return schedule.label
+}
+
+function decisionAccepted(result: DecisionBarSubmitResult): boolean {
+  return result === true || (typeof result === 'object' && result !== null && result.accepted === true)
+}
+
+export async function sha256Text(value: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle
+  if (!subtle) throw new Error('Web Crypto is unavailable')
+  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function agentDisplayName(agentId: string): string {

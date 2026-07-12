@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 /**
@@ -10,13 +12,30 @@ let store: Record<string, any>
 vi.mock('../../store', () => ({
   store: {
     get: (k: string) => store[k],
-    set: (k: string, v: any) => { store[k] = v }
+    set: (k: string, v: any) => { store[k] = v },
+    commit: async (k: string, v: any) => {
+      if (typeof store.__commit === 'function') return store.__commit(k, v)
+      if (store.__commitError) throw store.__commitError
+      store[k] = v
+      return v
+    }
   }
 }))
 
 beforeEach(() => { store = {}; vi.resetModules() })
 
 describe('ApprovalConfig', () => {
+  it('persists policy configuration without retaining legacy pending approvals', () => {
+    const source = readFileSync(join(process.cwd(), 'src/main/agentic/approval.ts'), 'utf8')
+
+    expect(source).not.toContain('PersistedPendingApproval')
+    expect(source).not.toContain('savePendingApproval')
+    expect(source).not.toContain('removePendingApproval')
+    expect(source).not.toContain('resolvePendingApproval')
+    expect(source).not.toContain('loadPendingApprovals')
+    expect(source).not.toContain('expireStalePendingApprovals')
+  })
+
   it('默认全 allow（与 0.3.0 行为一致）', async () => {
     const { getApprovalConfig } = await import('../approval')
     const cfg = getApprovalConfig()
@@ -24,6 +43,153 @@ describe('ApprovalConfig', () => {
     expect(cfg.policyFor('codex', 'exec')).toBe('allow')
     expect(cfg.getConfig().default).toEqual({ write: 'allow', exec: 'allow' })
     expect(cfg.getConfig().overrides).toEqual({})
+  })
+
+  it('rejects atomic remembered overrides without mutating the cached policy', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    store.__commitError = new Error('disk unavailable')
+
+    await expect(cfg.setOverrideAndFlush('claude', 'exec', 'allow')).rejects.toThrow('disk unavailable')
+    expect(cfg.getConfig().overrides.claude).toBeUndefined()
+  })
+
+  it('serializes concurrent remembered overrides without losing either policy', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+
+    await Promise.all([
+      cfg.setOverrideAndFlush('codex', 'exec', 'allow'),
+      cfg.setOverrideAndFlush('claude', 'write', 'deny')
+    ])
+
+    expect(cfg.getConfig().overrides).toMatchObject({
+      codex: { exec: 'allow' },
+      claude: { write: 'deny' }
+    })
+  })
+
+  it('keeps ask-all authoritative while retaining a remembered override for a later auto preset', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    cfg.setPreset('ask-all')
+    await cfg.setOverrideAndFlush('codex', 'exec', 'allow')
+    expect(cfg.policyFor('codex', 'exec')).toBe('ask')
+    expect(cfg.policyForWithRisk('codex', 'exec', 'medium')).toBe('ask')
+    expect(cfg.policyForWithRisk('claude', 'exec', 'medium')).toBe('ask')
+
+    cfg.setPreset('auto')
+    expect(cfg.policyForWithRisk('codex', 'exec', 'high')).toBe('allow')
+  })
+
+  it('keeps a read-only preset restrictive when it interleaves with a remembered override commit', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    let started = false
+    let releaseCommit!: () => void
+    store.__commit = (_key: string, value: any) => new Promise(resolve => {
+      started = true
+      releaseCommit = () => {
+        store['agentic.approval.v1'] = structuredClone(value)
+        resolve(structuredClone(value))
+      }
+    })
+
+    const remembering = cfg.setOverrideAndFlush('codex', 'exec', 'allow')
+    await vi.waitFor(() => expect(started).toBe(true))
+    cfg.setPreset('read-only')
+    expect(cfg.policyForWithRisk('codex', 'exec', 'high')).toBe('deny')
+    releaseCommit()
+    await remembering
+
+    expect(cfg.getConfig().preset).toBe('read-only')
+    expect(cfg.policyForWithRisk('codex', 'exec', 'high')).toBe('deny')
+  })
+
+  it('rebases a successful remembered override through read-only for a later auto preset', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    let started = false
+    let releaseCommit!: () => void
+    store.__commit = (_key: string, value: any) => new Promise(resolve => {
+      started = true
+      releaseCommit = () => {
+        store['agentic.approval.v1'] = structuredClone(value)
+        resolve(structuredClone(value))
+      }
+    })
+
+    const remembering = cfg.setOverrideAndFlush('codex', 'exec', 'allow')
+    await vi.waitFor(() => expect(started).toBe(true))
+    cfg.setPreset('read-only')
+    releaseCommit()
+    await remembering
+
+    expect(cfg.getConfig()).toMatchObject({
+      preset: 'read-only',
+      overrides: { codex: { exec: 'allow' } }
+    })
+    expect(cfg.policyForWithRisk('codex', 'exec', 'high')).toBe('deny')
+    cfg.setPreset('auto')
+    expect(cfg.policyForWithRisk('codex', 'exec', 'high')).toBe('allow')
+  })
+
+  it('keeps a newer explicit deny when a delayed remembered allow targets the same key', async () => {
+    const { getApprovalConfig } = await import('../approval')
+    const cfg = getApprovalConfig()
+    let started = false
+    let releaseCommit!: () => void
+    store.__commit = (_key: string, value: any) => new Promise(resolve => {
+      started = true
+      releaseCommit = () => {
+        store['agentic.approval.v1'] = structuredClone(value)
+        resolve(structuredClone(value))
+      }
+    })
+
+    const remembering = cfg.setOverrideAndFlush('codex', 'exec', 'allow')
+    await vi.waitFor(() => expect(started).toBe(true))
+    cfg.setOverride('codex', 'exec', 'deny')
+    releaseCommit()
+    await remembering
+
+    expect(cfg.getConfig().overrides.codex?.exec).toBe('deny')
+    expect(cfg.policyForWithRisk('codex', 'exec', 'high')).toBe('deny')
+  })
+
+  it.each([
+    ['deny', 'deny', 'read-only'],
+    ['ask', 'ask', 'ask-all'],
+    ['allow', 'allow', 'full-access'],
+    ['allow', 'ask', 'custom'],
+    ['allow', 'deny', 'custom'],
+    ['ask', 'allow', 'custom'],
+    ['ask', 'deny', 'custom'],
+    ['deny', 'allow', 'custom'],
+    ['deny', 'ask', 'custom']
+  ] as const)('migrates legacy %s/%s defaults to the %s preset', async (write, exec, expectedPreset) => {
+    store['agentic.approval.v1'] = { version: 1, default: { write, exec }, overrides: {} }
+    const { getApprovalConfig } = await import('../approval')
+
+    expect(getApprovalConfig().getConfig().preset).toBe(expectedPreset)
+    expect(store['agentic.approval.v1']).toMatchObject({
+      version: 1,
+      preset: expectedPreset,
+      default: { write, exec },
+      overrides: {}
+    })
+  })
+
+  it('migrates any legacy config with meaningful overrides to custom', async () => {
+    store['agentic.approval.v1'] = {
+      version: 1,
+      default: { write: 'deny', exec: 'deny' },
+      overrides: { claude: { write: 'allow' } }
+    }
+    const { getApprovalConfig } = await import('../approval')
+
+    expect(getApprovalConfig().getConfig().preset).toBe('custom')
+    expect(store['agentic.approval.v1'].preset).toBe('custom')
   })
 
   it('setDefault 改全局默认（不影响另一工具）', async () => {

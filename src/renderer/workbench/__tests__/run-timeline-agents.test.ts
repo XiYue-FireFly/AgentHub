@@ -20,4 +20,11 @@ describe("RunTimeline local agent surface", () => {
     expect(source).not.toContain("依赖 ${step.dependsOn.length} 步")
     expect(source).not.toContain("FireFly five-role")
   })
+
+  it("counts every non-terminal Turn as running", () => {
+    const source = readFileSync(join(process.cwd(), "src/renderer/workbench/RunTimeline.tsx"), "utf8")
+
+    expect(source).toContain("isTerminalTurnStatus")
+    expect(source).toContain("turns.filter(turn => !isTerminalTurnStatus(turn.status)).length")
+  })
 })

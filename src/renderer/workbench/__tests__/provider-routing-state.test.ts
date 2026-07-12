@@ -98,4 +98,17 @@ describe("Workbench provider/local routing state", () => {
     expect(selectAgentChoice).toContain("setMode('auto')")
     expect(selectProviderModel).toContain("setMode('auto')")
   })
+
+  it("persists and passes the multi-model fusion composer control", () => {
+    const layout = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchLayout.tsx"), "utf8")
+    const main = readFileSync(join(process.cwd(), "src/renderer/workbench/WorkbenchMainContent.tsx"), "utf8")
+    const composer = readFileSync(join(process.cwd(), "src/renderer/workbench/ComposerBar.tsx"), "utf8")
+
+    expect(layout).toContain("const MULTI_MODEL_FUSION_STORE_KEY = 'agenthub.multiModelFusion.v1'")
+    expect(layout).toContain('writeMultiModelFusionPreference(localStorage, MULTI_MODEL_FUSION_STORE_KEY, enabled)')
+    expect(layout).toContain('multiModelFusion={multiModelFusion}')
+    expect(main).toContain('multiModelFusion,')
+    expect(main).toContain('setMultiModelFusion,')
+    expect(composer).toContain('aria-pressed={multiModelFusion}')
+  })
 })

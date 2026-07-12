@@ -1,4 +1,9 @@
-export type WorkbenchTurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
+import type { WorkbenchTurnStatus } from "../../shared/turn-status"
+import type { DecisionRequest, DecisionResolution, DecisionState } from "../../shared/decision-contract"
+import type { MultiModelFusionConfig, TurnCreateInputLike } from "../../shared/ipc-contract"
+import type { PromptEnvelope } from "../../shared/prompt-contract"
+
+export type { WorkbenchTurnStatus } from "../../shared/turn-status"
 
 export type DispatchPreset =
   | "auto"
@@ -108,9 +113,15 @@ export interface WorkbenchTurn {
   customSchedule?: SchedulePreview
   targetAgent?: string | null
   modelSelection?: ModelSelection
+  multiModelFusion?: MultiModelFusionConfig
   thinking?: any
   status: WorkbenchTurnStatus
   taskIds: string[]
+  ownerWebContentsId?: number
+  retryOfTurnId?: string
+  displayOriginalPrompt?: string
+  effectivePrompt?: string
+  promptEnvelope?: PromptEnvelope
   createdAt: number
   completedAt?: number
 }
@@ -120,6 +131,8 @@ export interface AgentRunNode {
   turnId: string
   agentId: string
   role: "lead" | "worker" | "reviewer" | "synthesizer" | "target" | "router" | "executor" | "gatekeeper"
+  taskId?: string
+  scheduleStepId?: string
   status: WorkbenchTurnStatus
   parentRunId?: string
   startedAt: number
@@ -148,9 +161,60 @@ export interface RuntimeEvent {
     | "memory:candidate"
     | "schedule:preview"
     | "turn:summary"
+    | "decision:requested"
+    | "decision:resolved"
+    | "prompt:preparation-started"
+    | "prompt:candidate-attempted"
+    | "prompt:prepared"
+    | "prompt:preparation-cancelled"
+    | "prompt:preparation-failed"
+    | "dispatch:prepared"
   agentId?: string
   payload: any
   createdAt: number
+}
+
+export interface DurableDecisionRecord {
+  request: DecisionRequest
+  state: DecisionState
+  activatedAt?: number
+  expiresAt?: number
+  resolution?: DecisionResolution
+}
+
+export interface QueuedThreadSubmission {
+  id: string
+  threadId: string
+  turnId: string
+  ownerWebContentsId: number
+  input: TurnCreateInputLike
+  source: "create" | "retry"
+  retryOfTurnId?: string
+  retryStrategy?: "reuse-selection" | "reoptimize"
+  state: "queued" | "starting"
+  createdAt: number
+  admissionSequence: number
+}
+
+export interface ThreadDeletionGate {
+  threadId: string
+  ownerWebContentsId: number
+  startedAt: number
+}
+
+export interface PersistedRuntime {
+  version: 1
+  threads: WorkbenchThread[]
+  turns: WorkbenchTurn[]
+  runs: AgentRunNode[]
+  events: RuntimeEvent[]
+  hiddenTaskTurnIds: string[]
+  decisions: DurableDecisionRecord[]
+  queuedSubmissions: QueuedThreadSubmission[]
+  deletingThreads: ThreadDeletionGate[]
+  nextSubmissionAdmissionSequence: number
+  activeThreadId: string | null
+  nextSeqByThread: Record<string, number>
 }
 
 export interface WorkbenchSnapshot {

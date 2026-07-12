@@ -1,48 +1,59 @@
 import { describe, expect, it } from 'vitest'
-import { approvalItemFromRuntimeEvent } from '../utils/approvalEvents'
+import {
+  approvalAuditFromRuntimeEvent,
+  reconcileApprovalAuditEvents
+} from '../utils/approvalEvents'
 
-function runtimeApproval(input: Partial<RuntimeEvent> = {}): RuntimeEvent {
+function approvalEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
   return {
     id: 'event-1',
     threadId: 'thread-1',
     turnId: 'turn-1',
-    seq: 1,
     kind: 'agent:approval',
     agentId: 'codex',
     payload: {
+      auditOnly: true,
       taskId: 'task-1',
-      request: {
-        id: 'appr-1',
-        tool: 'exec',
-        toolName: 'exec',
-        label: 'Run command',
-        detail: 'Command: npm test'
-      }
+      request: { id: 'approval-1' },
+      status: 'pending'
     },
+    seq: 1,
     createdAt: 1,
-    ...input
+    ...overrides
   } as RuntimeEvent
 }
 
-describe('approvalItemFromRuntimeEvent', () => {
-  it('maps runtime agent:approval events into approval dialog items', () => {
-    expect(approvalItemFromRuntimeEvent(runtimeApproval())).toEqual({
-      id: 'appr-1',
-      taskId: 'task-1',
+describe('approval audit events', () => {
+  it('parses audit-only approval records without exposing a submission action', () => {
+    expect(approvalAuditFromRuntimeEvent(approvalEvent())).toEqual({
+      id: 'approval-1',
+      turnId: 'turn-1',
       agentId: 'codex',
-      tool: 'exec',
-      toolName: 'exec',
-      label: 'Run command',
-      detail: 'Command: npm test'
+      taskId: 'task-1',
+      status: 'pending'
     })
   })
 
-  it('falls back to turn id for task id and ignores malformed events', () => {
-    expect(approvalItemFromRuntimeEvent(runtimeApproval({ payload: {
-      request: { id: 'appr-2', tool: 'write', toolName: 'fs_write' }
-    } }))).toMatchObject({ id: 'appr-2', taskId: 'turn-1', tool: 'write' })
+  it('ignores interactive legacy approval events', () => {
+    expect(approvalAuditFromRuntimeEvent(approvalEvent({
+      payload: { request: { id: 'approval-1' }, status: 'pending' }
+    }))).toBeNull()
+  })
 
-    expect(approvalItemFromRuntimeEvent(runtimeApproval({ kind: 'agent:activity' }))).toBeNull()
-    expect(approvalItemFromRuntimeEvent(runtimeApproval({ payload: { request: { id: 'x', tool: 'read', toolName: 'fs_read' } } }))).toBeNull()
+  it('keeps only the latest immutable audit record for an approval', () => {
+    expect(reconcileApprovalAuditEvents([
+      approvalEvent(),
+      approvalEvent({
+        id: 'event-2',
+        seq: 2,
+        payload: {
+          auditOnly: true,
+          request: { id: 'approval-1' },
+          status: 'denied'
+        }
+      })
+    ])).toEqual([
+      expect.objectContaining({ id: 'approval-1', status: 'denied' })
+    ])
   })
 })

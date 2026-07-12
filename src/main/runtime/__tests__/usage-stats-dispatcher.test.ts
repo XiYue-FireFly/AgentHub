@@ -12,12 +12,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
  */
 
 const memory: Record<string, any> = {}
-const runtimes: Array<{ dispose?: () => void }> = []
+const runtimes: Array<{ dispose?: () => void | Promise<void> }> = []
+const jsonCanonical = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 
 vi.mock("../../store", () => ({
   store: {
     get: (key: string) => memory[key],
-    set: (key: string, value: any) => { memory[key] = value }
+    set: (key: string, value: any) => { memory[key] = value },
+    commit: async (key: string, value: any) => {
+      const canonical = jsonCanonical(value)
+      memory[key] = structuredClone(canonical)
+      return structuredClone(canonical)
+    }
   }
 }))
 
@@ -112,8 +118,8 @@ describe("usageStats dispatcher integration (isolated)", () => {
     for (const key of Object.keys(memory)) delete memory[key]
   })
 
-  afterEach(() => {
-    for (const runtime of runtimes.splice(0)) runtime.dispose?.()
+  afterEach(async () => {
+    await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose?.()))
     vi.useRealTimers()
   })
 
@@ -125,20 +131,25 @@ describe("usageStats dispatcher integration (isolated)", () => {
     const { Dispatcher } = await import("../../hub/dispatcher")
     const runtime = new WorkbenchRuntimeStore()
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({
+    const { thread, turn } = await runtime.createTurn({
       prompt: "who are you?",
       mode: "auto",
       workspaceId: null,
       modelSelection: { providerId: "deepseek", modelId: "deepseek-v4-flash", source: "provider" }
     })
     const dispatcher = new Dispatcher(new AgentRegistry(), new EventPipeline())
-    dispatcher.on("stream", event => runtime.appendStreamEvent(turn.id, event))
+    const pendingRuntimeWrites: Promise<unknown>[] = []
+    dispatcher.on("stream", event => {
+      pendingRuntimeWrites.push(runtime.appendStreamEvent(turn.id, event))
+    })
 
     await dispatcher.dispatchProviderDirect(
       "who are you?",
       { providerId: "deepseek", modelId: "deepseek-v4-flash", source: "provider" },
       { turnId: turn.id, messages: [{ role: "user", content: "who are you?" }] }
     )
+    await Promise.all(pendingRuntimeWrites)
+    await runtime.whenIdle()
     const stats = usageStats("all", "providers")
     const page = usageRecords({ range: "all", providerId: "deepseek" }, 1, 10)
     const deepseek = stats.providers.find(row => row.providerId === "deepseek")
@@ -166,7 +177,7 @@ describe("usageStats dispatcher integration (isolated)", () => {
     const runtime = getWorkbenchRuntimeStore()
     ;(runtime as any).state = null
     runtimes.push(runtime)
-    const { thread, turn } = runtime.createTurn({
+    const { thread, turn } = await runtime.createTurn({
       prompt: "hello local model",
       mode: "auto",
       workspaceId: null,
@@ -197,9 +208,14 @@ describe("usageStats dispatcher integration (isolated)", () => {
       })
     } as any, ["code"], "openai", "gpt-4o")
     const dispatcher = new Dispatcher(registry, new EventPipeline())
-    dispatcher.on("stream", event => runtime.appendStreamEvent(turn.id, event))
+    const pendingRuntimeWrites: Promise<unknown>[] = []
+    dispatcher.on("stream", event => {
+      pendingRuntimeWrites.push(runtime.appendStreamEvent(turn.id, event))
+    })
 
     await dispatcher.dispatch("hello local model", "auto", "codex", { turnId: turn.id })
+    await Promise.all(pendingRuntimeWrites)
+    await runtime.whenIdle()
 
     const page = usageRecords({ range: "all", providerId: "local-cli" }, 1, 10)
     expect(send).toHaveBeenCalled()

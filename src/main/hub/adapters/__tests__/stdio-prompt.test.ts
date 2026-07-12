@@ -80,6 +80,60 @@ describe('StdioAgentAdapter stdout buffering', () => {
     expect((adapter as any).buffer).toBe('')
   })
 
+  it('emits decision requests only from decoded NDJSON frames and keeps live stdin open for the result', async () => {
+    const stdout = new EventEmitter()
+    const stderr = new EventEmitter()
+    const stdin = { write: vi.fn(), end: vi.fn(), writable: true }
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter
+      stderr: EventEmitter
+      stdin: typeof stdin
+    }
+    proc.stdout = stdout
+    proc.stderr = stderr
+    proc.stdin = stdin
+    childProcessMock.spawn.mockReturnValue(proc as any)
+
+    const adapter = new StdioAgentAdapter('test', 'Test CLI', 'test.exe', []) as any
+    adapter.protocol = 'stdio-ndjson'
+    adapter.decisionContinuation = 'live'
+    adapter.onProtocolEvent = vi.fn()
+
+    adapter.send('prompt')
+    stdout.emit('data', Buffer.from(JSON.stringify({
+      type: 'decision_request',
+      version: 1,
+      requestId: 'request-1'
+    }) + '\n'))
+
+    expect(adapter.onProtocolEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'decision_request',
+      requestId: 'request-1'
+    }))
+    expect(stdin.end).not.toHaveBeenCalled()
+
+    await adapter.resumeDecision({
+      type: 'decision_result',
+      version: 1,
+      requestId: 'request-1',
+      sessionId: 'session-1',
+      resolution: { status: 'selected', selectedOptionIds: ['focused'], resolvedAt: 1 }
+    })
+    expect(stdin.write).toHaveBeenLastCalledWith(expect.stringContaining('"decision_result"'))
+  })
+
+  it('keeps JSON-looking stdio-plain output in the ordinary activity stream', () => {
+    const adapter = new StdioAgentAdapter('test', 'Test CLI', 'test.exe', []) as any
+    const parser = vi.fn(() => null)
+    adapter.activityParser = parser
+    adapter.onProtocolEvent = vi.fn()
+
+    adapter.consumeActivityLine(JSON.stringify({ type: 'decision_request', version: 1 }))
+
+    expect(adapter.onProtocolEvent).not.toHaveBeenCalled()
+    expect(parser).toHaveBeenCalledWith('{"type":"decision_request","version":1}')
+  })
+
   it('resets stale process result state at the start of a new send', () => {
     const stdout = new EventEmitter()
     const stderr = new EventEmitter()

@@ -72,17 +72,6 @@ export interface ApprovalRequest {
   preview: string
 }
 
-/** Persisted pending approval for cross-restart recovery */
-export interface PersistedPendingApproval {
-  id: string
-  request: ApprovalRequest
-  agentId: string
-  createdAt: string
-  /** Set when the request was stale-expired on startup */
-  staleAt?: string
-  status: 'pending' | 'approved' | 'denied' | 'stale'
-}
-
 export interface PersistedApproval {
   version: 1
   /** 审批预设（参考 codex ApprovalPreset） */
@@ -106,6 +95,17 @@ function normPreset(v: unknown, fallback: ApprovalPreset = 'auto'): ApprovalPres
   return v === 'read-only' || v === 'auto' || v === 'full-access' || v === 'ask-all' || v === 'custom' ? v : fallback
 }
 
+function legacyPreset(
+  defaults: Record<GuardedTool, ApprovalPolicy>,
+  overrides: PersistedApproval['overrides']
+): ApprovalPreset {
+  if (Object.keys(overrides).length > 0) return 'custom'
+  if (defaults.write === 'deny' && defaults.exec === 'deny') return 'read-only'
+  if (defaults.write === 'ask' && defaults.exec === 'ask') return 'ask-all'
+  if (defaults.write === 'allow' && defaults.exec === 'allow') return 'full-access'
+  return 'custom'
+}
+
 /** Map preset to default policies (parallels codex builtin_approval_presets). */
 export function presetToPolicies(preset: ApprovalPreset): Record<GuardedTool, ApprovalPolicy> {
   switch (preset) {
@@ -122,12 +122,25 @@ class ApprovalConfig {
    *  so the hot tool-call path avoids re-reading + re-normalizing the store
    *  on every invocation. */
   private cache: PersistedApproval | null = null
+  private mutationTail: Promise<void> = Promise.resolve()
+  private mutationRevision = 0
+  private readonly overrideRevisions = new Map<string, number>()
+
+  private overrideRevisionKey(agentId: string, tool: GuardedTool): string {
+    return `${agentId}\u0000${tool}`
+  }
+
+  private bumpOverrideRevision(agentId: string, tool: GuardedTool): number {
+    const key = this.overrideRevisionKey(agentId, tool)
+    const revision = (this.overrideRevisions.get(key) ?? 0) + 1
+    this.overrideRevisions.set(key, revision)
+    return revision
+  }
 
   private read(): PersistedApproval {
     if (this.cache) return this.cache
     const raw: any = store.get(STORAGE_KEY)
     if (!raw || typeof raw !== 'object') { this.cache = cloneDefault(); return this.cache }
-    const preset = normPreset(raw.preset, 'auto')
     const def: Record<GuardedTool, ApprovalPolicy> = {
       write: normPolicy(raw.default?.write, 'allow'),
       exec: normPolicy(raw.default?.exec, 'allow')
@@ -142,13 +155,41 @@ class ApprovalConfig {
         if (Object.keys(entry).length) overrides[agentId] = entry
       }
     }
+    const needsMigration = raw.preset === undefined
+    const preset = needsMigration ? legacyPreset(def, overrides) : normPreset(raw.preset, 'auto')
     this.cache = { version: 1, preset, default: def, overrides }
+    if (needsMigration) store.set(STORAGE_KEY, this.cache)
     return this.cache
   }
 
-  private write(s: PersistedApproval): void {
-    store.set(STORAGE_KEY, s)
-    this.cache = s
+  private cloneConfig(source: PersistedApproval): PersistedApproval {
+    return {
+      version: 1,
+      preset: source.preset,
+      default: { ...source.default },
+      overrides: Object.fromEntries(
+        Object.entries(source.overrides).map(([agentId, entry]) => [agentId, { ...entry }])
+      )
+    }
+  }
+
+  private queuePersist(revision: number): Promise<PersistedApproval> {
+    const operation = this.mutationTail.then(async () => {
+      const committed = await store.commit(STORAGE_KEY, this.cloneConfig(this.read()))
+      if (this.mutationRevision === revision) this.cache = committed
+      return this.getConfig()
+    })
+    this.mutationTail = operation.then(() => undefined, () => undefined)
+    return operation
+  }
+
+  private mutateOptimistically(mutator: (next: PersistedApproval) => void): PersistedApproval {
+    const next = this.cloneConfig(this.read())
+    mutator(next)
+    this.cache = next
+    const revision = ++this.mutationRevision
+    void this.queuePersist(revision).catch(() => undefined)
+    return this.cloneConfig(next)
   }
 
   getConfig(): PersistedApproval {
@@ -174,10 +215,13 @@ class ApprovalConfig {
     if (s.preset === 'full-access') return 'allow'
     // codex read-only：写/执行全部拒绝
     if (s.preset === 'read-only') return 'deny'
-    // codex unless-trusted：每次都问
+    // codex unless-trusted：每次都问；saved overrides remain durable for a
+    // later policy change, but cannot bypass this preset.
     if (s.preset === 'ask-all') return 'ask'
+    const override = s.overrides[agentId]?.[tool]
+    if (override !== undefined) return override
     // 其余（auto / custom）走 per-agent 覆盖 + default 回落
-    return s.overrides[agentId]?.[tool] ?? s.default[tool]
+    return s.default[tool]
   }
 
   /**
@@ -196,47 +240,95 @@ class ApprovalConfig {
     if (s.preset === 'full-access') return 'allow'
     if (s.preset === 'read-only') return 'deny'
     if (s.preset === 'ask-all') return 'ask'
+    const override = s.overrides[agentId]?.[tool]
+    if (override !== undefined) return override
     // auto 模式：高风险自动升级为 ask
     if (s.preset === 'auto') {
-      const base = s.overrides[agentId]?.[tool] ?? s.default[tool]
+      const base = s.default[tool]
       if (base === 'allow' && (risk === 'high' || risk === 'critical')) return 'ask'
       return base
     }
     // custom：尊重显式配置
-    return s.overrides[agentId]?.[tool] ?? s.default[tool]
+    return s.default[tool]
   }
 
   /** 设置审批预设（参考 codex builtin_approval_presets）。 */
   setPreset(preset: ApprovalPreset): PersistedApproval {
-    const s = this.read()
+    return this.mutateOptimistically(s => {
     s.preset = normPreset(preset, s.preset || 'auto')
     // 同步 default 以便 UI 显示一致（custom 模式下保留原 default）
     if (preset !== 'custom') {
       s.default = presetToPolicies(preset)
     }
-    this.write(s)
-    return s
+    })
   }
 
   setDefault(tool: GuardedTool, policy: ApprovalPolicy): PersistedApproval {
-    const s = this.read()
+    return this.mutateOptimistically(s => {
     s.default[tool] = normPolicy(policy, s.default[tool])
     // 手动改 default 自动切到 custom 模式（避免 preset 与 default 不一致）
     s.preset = 'custom'
-    this.write(s)
-    return s
+    })
   }
 
   /** policy=null → 清除该 agent 在该工具上的覆盖（回落默认）。 */
   setOverride(agentId: string, tool: GuardedTool, policy: ApprovalPolicy | null): PersistedApproval {
-    const s = this.read()
+    this.bumpOverrideRevision(agentId, tool)
+    return this.mutateOptimistically(s => {
     const entry = s.overrides[agentId] || {}
     if (policy === null) delete entry[tool]
     else entry[tool] = normPolicy(policy, s.default[tool])
     if (Object.keys(entry).length) s.overrides[agentId] = entry
     else delete s.overrides[agentId]
-    this.write(s)
-    return s
+    })
+  }
+
+  /**
+   * Durable remembered-tool override. Unlike the legacy debounced setter,
+   * callers receive the persistence failure and the cached policy is changed
+   * only after the store has atomically committed the replacement snapshot.
+   */
+  setOverrideAndFlush(
+    agentId: string,
+    tool: GuardedTool,
+    policy: ApprovalPolicy | null
+  ): Promise<PersistedApproval> {
+    const overrideKey = this.overrideRevisionKey(agentId, tool)
+    const overrideRevision = this.bumpOverrideRevision(agentId, tool)
+    const operation = this.mutationTail.then(async () => {
+      const revision = this.mutationRevision
+      const next = this.cloneConfig(this.read())
+      const entry = next.overrides[agentId] || {}
+      if (policy === null) delete entry[tool]
+      else entry[tool] = normPolicy(policy, next.default[tool])
+      if (Object.keys(entry).length) next.overrides[agentId] = entry
+      else delete next.overrides[agentId]
+
+      const committed = await store.commit(STORAGE_KEY, next)
+      if (
+        this.mutationRevision === revision &&
+        this.overrideRevisions.get(overrideKey) === overrideRevision
+      ) {
+        this.cache = committed
+      } else if (this.overrideRevisions.get(overrideKey) === overrideRevision) {
+        // A newer preset/default mutation changed the hot snapshot while the
+        // remembered write awaited disk. Rebase only this agent/tool override
+        // so the newer restrictive preset remains authoritative.
+        const rebased = this.cloneConfig(this.read())
+        const rebasedEntry = rebased.overrides[agentId] || {}
+        if (policy === null) delete rebasedEntry[tool]
+        else rebasedEntry[tool] = normPolicy(policy, rebased.default[tool])
+        if (Object.keys(rebasedEntry).length) rebased.overrides[agentId] = rebasedEntry
+        else delete rebased.overrides[agentId]
+        this.cache = rebased
+      }
+      return this.getConfig()
+    })
+    this.mutationTail = operation.then(
+      () => undefined,
+      () => undefined
+    )
+    return operation
   }
 }
 
@@ -252,53 +344,6 @@ export function getApprovalConfig(): ApprovalConfig {
 }
 
 export { DEFAULT as APPROVAL_CONFIG_DEFAULT }
-
-// --- Pending approval persistence ---
-
-const PENDING_STORAGE_KEY = 'agentic.pending-approvals.v1'
-
-export function savePendingApproval(pa: PersistedPendingApproval): void {
-  const list = loadPendingApprovals()
-  const idx = list.findIndex(item => item.id === pa.id)
-  if (idx >= 0) list[idx] = pa
-  else list.push(pa)
-  store.set(PENDING_STORAGE_KEY, list)
-}
-
-export function removePendingApproval(id: string): void {
-  const list = loadPendingApprovals().filter(item => item.id !== id)
-  store.set(PENDING_STORAGE_KEY, list)
-}
-
-export function resolvePendingApproval(id: string, status: 'approved' | 'denied'): void {
-  const list = loadPendingApprovals()
-  const item = list.find(p => p.id === id)
-  if (item) {
-    item.status = status
-    store.set(PENDING_STORAGE_KEY, list)
-  }
-}
-
-export function loadPendingApprovals(): PersistedPendingApproval[] {
-  const raw: any = store.get(PENDING_STORAGE_KEY)
-  return Array.isArray(raw) ? raw : []
-}
-
-/** On startup, mark any still-pending requests as stale (task context lost). */
-export function expireStalePendingApprovals(): number {
-  const list = loadPendingApprovals()
-  let expired = 0
-  const now = new Date().toISOString()
-  for (const item of list) {
-    if (item.status === 'pending') {
-      item.status = 'stale'
-      item.staleAt = now
-      expired++
-    }
-  }
-  if (expired > 0) store.set(PENDING_STORAGE_KEY, list)
-  return expired
-}
 
 // --- Risk assessment ---
 

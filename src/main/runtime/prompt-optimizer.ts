@@ -11,13 +11,16 @@ export interface PromptOptimizerInput {
   maxPlugins?: number
 }
 
-export interface PromptOptimizerResult {
+export interface PromptDispatchAnalysis {
   originalPrompt: string
-  optimizedPrompt: string
   intent: PromptIntent
   matchedSkills: OptimizerSkillMatch[]
   matchedPlugins: OptimizerPluginMatch[]
   contextBlock: ContextBlock
+}
+
+export interface PromptOptimizerResult extends PromptDispatchAnalysis {
+  optimizedPrompt: string
 }
 
 export type PromptIntent =
@@ -70,21 +73,26 @@ const INTENT_GUIDANCE: Record<PromptIntent, string> = {
   general: "Answer directly while preserving context, constraints, and verification expectations."
 }
 
-export function optimizePromptForDispatch(input: PromptOptimizerInput): PromptOptimizerResult {
+export function analyzePromptForDispatch(input: PromptOptimizerInput): PromptDispatchAnalysis {
   const originalPrompt = normalizePrompt(input.prompt)
   const terms = queryTerms(originalPrompt)
   const intent = detectIntent(originalPrompt, terms)
   const matchedSkills = matchSkills(originalPrompt, terms, input.maxSkills ?? 4)
   const matchedPlugins = matchPlugins(originalPrompt, terms, input.workspaceRoot, input.maxPlugins ?? 4)
+  const contextBlock = buildOptimizerContextBlock(intent, matchedSkills, matchedPlugins, originalPrompt)
+  return { originalPrompt, intent, matchedSkills, matchedPlugins, contextBlock }
+}
+
+export function optimizePromptForDispatch(input: PromptOptimizerInput): PromptOptimizerResult {
+  const analysis = analyzePromptForDispatch(input)
   const optimizedPrompt = buildOptimizedPrompt({
-    originalPrompt,
-    intent,
-    matchedSkills,
-    matchedPlugins,
+    originalPrompt: analysis.originalPrompt,
+    intent: analysis.intent,
+    matchedSkills: analysis.matchedSkills,
+    matchedPlugins: analysis.matchedPlugins,
     attachments: input.attachments || []
   })
-  const contextBlock = buildOptimizerContextBlock(intent, matchedSkills, matchedPlugins, originalPrompt)
-  return { originalPrompt, optimizedPrompt, intent, matchedSkills, matchedPlugins, contextBlock }
+  return { ...analysis, optimizedPrompt }
 }
 
 function buildOptimizedPrompt(input: {

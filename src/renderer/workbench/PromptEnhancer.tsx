@@ -2,63 +2,125 @@
  * PromptEnhancer: compact "Optimize prompt" button for Composer.
  */
 
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { tr } from '../glass/i18n'
+import { draftDecisionItem, type DraftDecisionItem } from './decisions/decisionAdapters'
 
 interface PromptEnhancerProps {
   text: string
-  onEnhanced: (enhanced: string) => void
+  threadId: string
+  draftRevision: number
+  draftHash: string
+  onDraftDecision: (decision: DraftDecisionItem) => void
   disabled?: boolean
 }
 
-export function PromptEnhancer({ text, onEnhanced, disabled }: PromptEnhancerProps) {
+export function PromptEnhancer({ text, threadId, draftRevision, draftHash, onDraftDecision, disabled }: PromptEnhancerProps) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const latestDraftRef = useRef({ text, threadId, draftRevision, draftHash })
+  const mountedRef = useRef(true)
+  const requestGenerationRef = useRef(0)
+  latestDraftRef.current = { text, threadId, draftRevision, draftHash }
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      requestGenerationRef.current += 1
+    }
+  }, [])
+
+  useEffect(() => {
+    requestGenerationRef.current += 1
+    setLoading(false)
+    setError(null)
+  }, [draftHash, draftRevision, text, threadId])
 
   const enhance = useCallback(async () => {
     if (!text.trim() || loading) return
+    const requestGeneration = ++requestGenerationRef.current
+    const draftAtRequest = { text, threadId, draftRevision, draftHash }
+    const isCurrentRequest = () => {
+      const latestDraft = latestDraftRef.current
+      return (
+        mountedRef.current
+        && requestGenerationRef.current === requestGeneration
+        && latestDraft.text === draftAtRequest.text
+        && latestDraft.threadId === draftAtRequest.threadId
+        && latestDraft.draftRevision === draftAtRequest.draftRevision
+        && latestDraft.draftHash === draftAtRequest.draftHash
+      )
+    }
     setLoading(true)
     setError(null)
 
     try {
-      const metaPrompt = `You are a prompt engineering assistant. Your task is to improve the following user prompt to be clearer, more specific, and more likely to get a good response from an AI coding assistant.
-
-Rules:
-- Keep the original intent and meaning
-- Add specificity where the prompt is vague
-- Structure complex requests into numbered steps
-- Add relevant context cues (file paths, language, framework) when obvious
-- Keep it concise; do not add unnecessary preamble
-- Output ONLY the improved prompt, nothing else
-
-Original prompt:
-${text.trim()}
-
-Improved prompt:`
-
-      const result = await window.electronAPI.ai.quickComplete({
-        prompt: metaPrompt,
-        systemPrompt: 'You are a prompt engineering assistant. Output ONLY the improved prompt.',
-        timeoutMs: 30_000
+      const result = await window.electronAPI.ai.promptCandidates({
+        origin: 'quick-complete:prompt-enhancer',
+        prompt: text,
+        draftHash
       })
-
-      if (!result?.content) {
-        setError(tr('AI 未能返回结果，请重试', 'AI returned no result, please retry'))
+      const candidates = Array.isArray(result?.candidates)
+        ? result.candidates.map(candidate => typeof candidate === 'string' ? candidate.trim() : '')
+        : []
+      if (result?.draftHash !== draftAtRequest.draftHash) return
+      if (result?.error || candidates.length < 2 || candidates.length > 3 || candidates.some(candidate => !candidate)) {
+        if (isCurrentRequest()) {
+          setError(result?.error || tr('AI 未能返回有效候选提示词，请重试', 'AI returned no valid prompt candidates, please retry'))
+        }
         return
       }
+      if (!isCurrentRequest()) return
 
-      let enhanced = result.content.trim()
-      if (enhanced.startsWith('```') && enhanced.endsWith('```')) {
-        enhanced = enhanced.split('\n').slice(1, -1).join('\n').trim()
-      }
-
-      onEnhanced(enhanced)
+      const id = `prompt-optimizer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      onDraftDecision(draftDecisionItem({
+        id,
+        threadId,
+        createdAt: Date.now(),
+        request: {
+          schemaVersion: 1,
+          id,
+          source: 'prompt-optimizer',
+          kind: 'single-select',
+          title: tr('选择提示词版本？', 'Choose a prompt version?'),
+          description: tr('选择保留当前内容、使用候选提示词，或输入自己的版本。', 'Keep the current draft, choose a candidate, or enter your own text.'),
+          options: [
+            { id: 'keep-original', label: tr('保留原文', 'Keep original') },
+            ...candidates.map((candidate, index) => ({
+              id: `candidate-${index + 1}`,
+              label: tr(`候选 ${index + 1}`, `Candidate ${index + 1}`),
+              preview: candidate
+            })),
+            { id: 'use-custom', label: tr('使用自定义文本', 'Use custom text') }
+          ],
+          minSelections: 1,
+          maxSelections: 1,
+          allowCustom: true,
+          customInput: {
+            placeholder: tr('输入自定义提示词', 'Enter custom prompt text'),
+            maxChars: 512 * 1024
+          },
+          allowRemember: false,
+          createdAt: Date.now()
+        },
+        draftRevision,
+        draftHash,
+        valuesByOptionId: {
+          'keep-original': text,
+          ...Object.fromEntries(candidates.map((candidate, index) => [`candidate-${index + 1}`, candidate]))
+        }
+      }))
     } catch (err: any) {
-      setError(err?.message || tr('优化失败', 'Enhancement failed'))
+      if (isCurrentRequest()) {
+        setError(err?.message || tr('优化失败', 'Enhancement failed'))
+      }
     } finally {
-      setLoading(false)
+      if (isCurrentRequest()) {
+        setLoading(false)
+      }
     }
-  }, [text, loading, onEnhanced])
+  }, [draftHash, draftRevision, loading, onDraftDecision, text, threadId])
 
   if (!text.trim()) return null
 
