@@ -139,6 +139,23 @@ describe('headless-run (real execution)', () => {
     expect(prepared.envelope.effectivePrompt).toContain('[AgentHub Prompt Optimizer]')
   })
 
+  it('does not silently truncate long ambiguous CLI prompt candidates', async () => {
+    const longPrompt = 'fix this ' + 'x'.repeat(20_000)
+    const prepared = await prepareHeadlessPrompt({
+      prompt: longPrompt,
+      workspace: tempDir(),
+      nonInteractive: true
+    })
+
+    expect(prepared.kind).toBe('decision-required')
+    if (prepared.kind !== 'decision-required') return
+    // Each candidate must preserve the full optimized prompt, not a 16K-truncated copy.
+    for (const candidate of prepared.candidates) {
+      expect(candidate.length).toBeGreaterThan(16_000)
+      expect(candidate).toContain('x'.repeat(20_000))
+    }
+  })
+
   it('dry-run validates and records without spawning', async () => {
     const ws = tempDir()
     const runsDir = tempDir()

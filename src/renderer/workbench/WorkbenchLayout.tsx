@@ -215,6 +215,20 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
   const terminalWatchAbortRef = useRef<AbortController | null>(null)
   const decisionRefreshGenerationRef = useRef(0)
   const decisionRefreshMountedRef = useRef(true)
+  const decisionNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showDecisionNotice = useCallback((notice: string | null) => {
+    if (decisionNoticeTimerRef.current) {
+      clearTimeout(decisionNoticeTimerRef.current)
+      decisionNoticeTimerRef.current = null
+    }
+    setDecisionNotice(notice)
+    if (notice) {
+      decisionNoticeTimerRef.current = setTimeout(() => {
+        decisionNoticeTimerRef.current = null
+        setDecisionNotice(null)
+      }, 6_000)
+    }
+  }, [])
   const invalidatePendingThreadSelection = useCallback(() => {
     selectThreadGenRef.current += 1
     runtimeSnapshotRefreshGenerationRef.current += 1
@@ -243,6 +257,10 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
       decisionRefreshGenerationRef.current += 1
       terminalWatchAbortRef.current?.abort()
       loadWorkbenchGenRef.current += 1
+      if (decisionNoticeTimerRef.current) {
+        clearTimeout(decisionNoticeTimerRef.current)
+        decisionNoticeTimerRef.current = null
+      }
       if (emptyWorkspaceRetryTimerRef.current) {
         clearTimeout(emptyWorkspaceRetryTimerRef.current)
         emptyWorkspaceRetryTimerRef.current = null
@@ -268,7 +286,7 @@ export function WorkbenchLayout(props: WorkbenchLayoutProps) {
     }
     const result = await window.electronAPI.turns.resolveDecision(submission)
     if (result.accepted) {
-      if (result.warning === 'remember_failed') setDecisionNotice('Choice accepted, but it could not be remembered.')
+      if (result.warning === 'remember_failed') showDecisionNotice(tr('选择已接受，但无法记住此偏好。', 'Choice accepted, but it could not be remembered.'))
       await refreshPendingDecisions()
     }
     return result

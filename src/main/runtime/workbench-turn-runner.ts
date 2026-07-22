@@ -86,9 +86,10 @@ export class WorkbenchTurnRunner<TPreDispatch = void> {
       if (prepared.kind !== 'ready') {
         throw new Error(prepared.kind === 'failed' ? prepared.error : 'Prompt preparation cancelled')
       }
-      const commitRuntimeMutation = this.options.runtimeStore.commitRuntimeMutation
-      if (!commitRuntimeMutation) throw new Error('Prompt preparation requires runtime mutation support')
-      await commitRuntimeMutation(tx => {
+      if (!this.options.runtimeStore.commitRuntimeMutation) {
+        throw new Error('Prompt preparation requires runtime mutation support')
+      }
+      await this.options.runtimeStore.commitRuntimeMutation(tx => {
         tx.attachPromptEnvelope(turn.id, prepared.envelope)
       })
       const persisted = this.options.runtimeStore.getTurn(turn.id)

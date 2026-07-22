@@ -155,11 +155,11 @@ function matchSkills(prompt: string, terms: string[], max: number): OptimizerSki
     .filter(entry => entry.score > 0)
     .sort((a, b) => b.score - a.score)
     .map(entry => entry.skill)
-  const seen = new Set<string>()
+  const registeredSeen = new Set<string>()
   const registered = [...byManager, ...fallback]
     .filter(skill => {
-      if (seen.has(skill.id)) return false
-      seen.add(skill.id)
+      if (registeredSeen.has(skill.id)) return false
+      registeredSeen.add(skill.id)
       return true
     })
     .map(skill => ({
@@ -169,11 +169,15 @@ function matchSkills(prompt: string, terms: string[], max: number): OptimizerSki
       source: skill.source,
       score: scoreText(skillText(skill), terms)
     }))
+  // Dedup the combined registered + builtin list by a single consistent key
+  // (source:name) so a registered skill and a builtin skill sharing the same
+  // source and name cannot both appear in the optimized prompt.
+  const mergedSeen = new Set<string>()
   return [...registered, ...matchBuiltinSkills(terms)]
     .filter(skill => {
       const key = `${skill.source}:${skill.name}`.toLowerCase()
-      if (seen.has(key)) return false
-      seen.add(key)
+      if (mergedSeen.has(key)) return false
+      mergedSeen.add(key)
       return true
     })
     .sort((a, b) => b.score - a.score)

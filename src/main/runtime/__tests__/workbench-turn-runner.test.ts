@@ -273,13 +273,20 @@ describe('WorkbenchTurnRunner', () => {
       return currentRetry
     })
     const execute = vi.fn(async () => undefined)
+    const runtimeStore = {
+      getThread: () => thread,
+      getTurn: (turnId: string) => turnId === retryTurn.id ? retryTurn : currentRetry,
+      listQueuedSubmissions: () => [retrySubmission],
+      async commitRuntimeMutation<T>(
+        this: unknown,
+        mutate: (tx: { attachPromptEnvelope: typeof attachPromptEnvelope }) => T
+      ): Promise<T> {
+        expect(this).toBe(runtimeStore)
+        return mutate({ attachPromptEnvelope })
+      }
+    }
     const runner = new WorkbenchTurnRunner({
-      runtimeStore: {
-        getThread: () => thread,
-        getTurn: (turnId: string) => turnId === retryTurn.id ? retryTurn : currentRetry,
-        listQueuedSubmissions: () => [retrySubmission],
-        commitRuntimeMutation: async <T,>(mutate: (tx: { attachPromptEnvelope: typeof attachPromptEnvelope }) => T): Promise<T> => mutate({ attachPromptEnvelope })
-      },
+      runtimeStore,
       promptPreparation: {
         promptPreparationService: { prepareRoot },
         cacheContext: () => ({

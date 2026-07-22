@@ -177,6 +177,108 @@ describe("missing IPC quick complete handler", () => {
     }), expect.any(Object))
   })
 
+  it("skips disabled models and disabled-model-only providers when selecting the candidate model", async () => {
+    const stream = vi.fn(async (_options: any, callbacks: any) => {
+      callbacks.onDone?.({ content: JSON.stringify({
+        schemaVersion: "prompt-candidates-v1",
+        candidates: [
+          { text: "Clarify the expected behavior and implement the smallest safe change." },
+          { text: "Identify the target module, reproduce the issue, then make and verify a focused fix." }
+        ]
+      }) })
+    })
+    vi.mocked(ProviderClient).mockImplementation(function () {
+      return { stream }
+    } as any)
+    const modelBase = { label: "m", contextWindow: 128000, supportsTools: false, supportsVision: false, supportsThinking: false }
+    const disabledOnlyProvider = {
+      id: "disabled-only",
+      name: "Disabled Only",
+      kind: "openai-compatible",
+      baseUrl: "https://example.com",
+      apiKey: "sk-test",
+      enabled: true,
+      builtIn: false,
+      capabilities: { protocol: "chat_completions", stream: true, nativeThinking: false, budgetTokens: false, toolCalls: false, systemPrompt: true },
+      defaultThinking: { mode: "off", level: "medium" },
+      models: [{ ...modelBase, id: "disabled-model", enabled: false }]
+    }
+    const usableProvider = {
+      ...disabledOnlyProvider,
+      id: "usable",
+      name: "Usable",
+      models: [
+        { ...modelBase, id: "first-disabled", enabled: false },
+        { ...modelBase, id: "second-enabled" }
+      ]
+    }
+    const providerMgr = {
+      getProvider: vi.fn(() => usableProvider),
+      getEnabledProviders: vi.fn(() => [disabledOnlyProvider, usableProvider])
+    }
+    const { registerMissingIpc } = await import("../missing-ipc")
+    registerMissingIpc({
+      dispatcher: null,
+      runtimeStore: null,
+      registry: null,
+      providerMgr,
+      proxy: null,
+      hub: null,
+      getMainWindow: () => null,
+      memory: () => null
+    })
+
+    await expect(electronMock.handlers.get("ai:promptCandidates")?.({}, {
+      origin: "quick-complete:prompt-enhancer",
+      prompt: "Make it better",
+      draftHash: "sha256-draft"
+    })).resolves.toMatchObject({ draftHash: "sha256-draft" })
+
+    expect(vi.mocked(ProviderClient).mock.calls[0]?.[0]?.id).toBe("usable")
+    expect(vi.mocked(ProviderClient).mock.calls[0]?.[1]?.id).toBe("second-enabled")
+  })
+
+  it("returns an explicit error instead of a fabricated model when no enabled model exists", async () => {
+    const provider = {
+      id: "deepseek",
+      name: "DeepSeek",
+      kind: "openai-compatible",
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "sk-test",
+      enabled: true,
+      builtIn: false,
+      capabilities: { protocol: "chat_completions", stream: true, nativeThinking: false, budgetTokens: false, toolCalls: false, systemPrompt: true },
+      defaultThinking: { mode: "off", level: "medium" },
+      models: [{ id: "deepseek-chat", label: "DeepSeek Chat", contextWindow: 128000, supportsTools: false, supportsVision: false, supportsThinking: false, enabled: false }]
+    }
+    const providerMgr = {
+      getProvider: vi.fn(() => provider),
+      getEnabledProviders: vi.fn(() => [provider])
+    }
+    const { registerMissingIpc } = await import("../missing-ipc")
+    registerMissingIpc({
+      dispatcher: null,
+      runtimeStore: null,
+      registry: null,
+      providerMgr,
+      proxy: null,
+      hub: null,
+      getMainWindow: () => null,
+      memory: () => null
+    })
+
+    await expect(electronMock.handlers.get("ai:promptCandidates")?.({}, {
+      origin: "quick-complete:prompt-enhancer",
+      prompt: "Make it better",
+      draftHash: "sha256-draft"
+    })).resolves.toEqual({
+      candidates: [],
+      draftHash: "sha256-draft",
+      error: "No enabled provider model is available for prompt candidates"
+    })
+    expect(ProviderClient).not.toHaveBeenCalled()
+  })
+
   it("injects registered workspace context for requirements AI provider calls", async () => {
     tempRoot = join(tmpdir(), `agenthub-quick-${Date.now()}`)
     mkdirSync(tempRoot, { recursive: true })

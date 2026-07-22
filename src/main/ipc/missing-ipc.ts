@@ -332,17 +332,13 @@ export function registerMissingIpc(deps: MissingIpcDeps): void {
       if (registration.scope !== 'draft' || registration.policy !== 'structured') {
         return { candidates: [], draftHash: input.draftHash, error: 'Prompt candidates require a draft structured origin' }
       }
-      const provider = providerMgr.getEnabledProviders()?.[0]
-      if (!provider) return { candidates: [], draftHash: input.draftHash, error: 'No provider available' }
-      const modelId = provider.models?.[0]?.id || 'gpt-4'
-      const model = provider.models?.find((item: any) => item.id === modelId) || {
-        id: modelId,
-        label: modelId,
-        contextWindow: 258_000,
-        supportsTools: false,
-        supportsVision: false,
-        supportsThinking: false
+      const provider = providerMgr.getEnabledProviders()
+        ?.find((candidate: any) => candidate.models?.some((item: any) => item?.enabled !== false))
+      if (!provider) {
+        return { candidates: [], draftHash: input.draftHash, error: 'No enabled provider model is available for prompt candidates' }
       }
+      const model = provider.models.find((item: any) => item?.enabled !== false)
+      const modelId: string = model.id
       const binding: AgentRouteBinding = {
         agentId: 'prompt-candidate-generator',
         providerId: provider.id,

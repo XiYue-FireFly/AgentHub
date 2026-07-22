@@ -72,8 +72,10 @@ export function buildJudgePrompt(input: {
 
 function stripSingleJsonFence(raw: string): string {
   const text = raw.trim()
-  const match = text.match(/^~~~(?:json)?\s*([\s\S]*?)\s*~~~$/i)
-  return match ? match[1].trim() : text
+  // Accept the Markdown code fences models emit by default (``` / ~~~),
+  // requiring the closing marker to match the opening one.
+  const match = text.match(/^(~~~|```)(?:json)?\s*([\s\S]*?)\s*\1$/i)
+  return match ? match[2].trim() : text
 }
 
 function skipWhitespace(raw: string, index: number): number {

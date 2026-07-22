@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
-import { PromptCandidateGenerator } from "../prompt-candidate-generator"
+import { PromptCandidateGenerator, type PromptCandidateInvocation } from "../prompt-candidate-generator"
 
 describe("PromptCandidateGenerator", () => {
   it("uses exactly one no-tools JSON call and validates before returning", async () => {
-    const invoke = vi.fn(async () => JSON.stringify({
+    const invoke = vi.fn<(input: PromptCandidateInvocation) => Promise<string>>(async () => JSON.stringify({
       schemaVersion: "prompt-candidates-v1",
       candidates: [
         { text: "Fix the login regression and run its focused tests." },
@@ -25,6 +25,9 @@ describe("PromptCandidateGenerator", () => {
       toolChoice: "none",
       responseFormat: "json"
     }))
+    const invocation = invoke.mock.calls[0]?.[0]
+    expect(invocation?.systemPrompt).toContain('{"schemaVersion":"prompt-candidates-v1","candidates":[{"text":"..."},{"text":"..."}]}')
+    expect(invocation?.systemPrompt).toContain('same language as the original request')
     expect(result).toHaveLength(2)
     expect(Object.isFrozen(result)).toBe(true)
   })
@@ -41,6 +44,52 @@ describe("PromptCandidateGenerator", () => {
     }))
       .rejects.toThrow("Prompt candidate model returned invalid JSON")
     expect(invoke).toHaveBeenCalledTimes(1)
+  })
+
+  it("normalizes a model string-array candidate response before validating it", async () => {
+    const invoke = vi.fn(async () => JSON.stringify({
+      schemaVersion: "prompt-candidates-v1",
+      candidates: [
+        "分析项目的目标、范围、约束和输出格式，并给出结构化结论。",
+        "从背景、关键指标、风险和下一步行动四个维度分析项目。"
+      ]
+    }))
+    const generator = new PromptCandidateGenerator({ invoke })
+
+    await expect(generator.generate({
+      originalPrompt: "分析项目",
+      maxPromptChars: 4_000,
+      providerId: "provider-1",
+      modelId: "model-1"
+    })).resolves.toEqual([
+      "分析项目的目标、范围、约束和输出格式,并给出结构化结论。",
+      "从背景、关键指标、风险和下一步行动四个维度分析项目。"
+    ])
+  })
+
+  it("accepts a JSON code fence and common candidate text aliases without weakening validation", async () => {
+    const invoke = vi.fn(async () => [
+      "```json",
+      JSON.stringify({
+        schemaVersion: "prompt-candidates-v1",
+        candidates: [
+          { content: "分析项目的目标、范围、约束和输出格式。" },
+          { prompt: "从背景、风险和下一步行动三个维度分析项目。" }
+        ]
+      }),
+      "```"
+    ].join("\n"))
+    const generator = new PromptCandidateGenerator({ invoke })
+
+    await expect(generator.generate({
+      originalPrompt: "分析项目",
+      maxPromptChars: 4_000,
+      providerId: "provider-1",
+      modelId: "model-1"
+    })).resolves.toEqual([
+      "分析项目的目标、范围、约束和输出格式。",
+      "从背景、风险和下一步行动三个维度分析项目。"
+    ])
   })
 
   it("rejects model candidates that introduce an unrequested side effect", async () => {

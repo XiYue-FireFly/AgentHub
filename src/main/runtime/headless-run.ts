@@ -235,7 +235,7 @@ export async function runHeadlessAgent(
     const decision = JSON.stringify({
       code: 'PROMPT_DECISION_REQUIRED',
       sessionId: prepared.session.sessionId,
-      candidates: boundedDecisionCandidates(prepared.candidates)
+      candidates: limitDecisionCandidates(prepared.candidates)
     })
     const record: HeadlessRunResult = {
       runId: `decision-${prepared.session.sessionId}`,
@@ -351,12 +351,13 @@ export async function runHeadlessAgent(
 }
 
 const HEADLESS_DECISION_CANDIDATE_LIMIT = 3
-const HEADLESS_DECISION_CANDIDATE_MAX_CHARS = 16 * 1024
 
-function boundedDecisionCandidates(candidates: readonly string[]): string[] {
+function limitDecisionCandidates(candidates: readonly string[]): string[] {
+  // Preserve full candidate text; truncating here would silently corrupt the
+  // effective prompt. Display-side truncation is the TTY adapter's responsibility.
   return candidates
     .slice(0, HEADLESS_DECISION_CANDIDATE_LIMIT)
-    .map(candidate => String(candidate).slice(0, HEADLESS_DECISION_CANDIDATE_MAX_CHARS))
+    .map(candidate => String(candidate))
 }
 
 export async function prepareHeadlessPrompt(input: {
@@ -382,7 +383,7 @@ export async function prepareHeadlessPrompt(input: {
   }
 
   const awaitingDecision = withPreparationState(session, 'awaiting-decision', 1)
-  const candidates = boundedDecisionCandidates([
+  const candidates = limitDecisionCandidates([
     optimizedPrompt,
     `${optimizedPrompt}\n\nBefore acting, state the intended scope, constraints, and focused verification.`
   ])

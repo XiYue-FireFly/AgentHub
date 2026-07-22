@@ -1,14 +1,32 @@
 # AgentHub Version Register
 
-Current code version: 2.1.0
+Current code version: 2.1.1
 Current branch baseline: main
-Updated: 2026-07-12
+Updated: 2026-07-22
 
 This file is the release discipline record for AgentHub. Before any release,
 keep `package.json.version`, `package.json.build.buildVersion`, this current
 version, and release notes aligned.
 
 ## Release History
+
+### 2.1.1
+
+Purpose: follow-up bugfix release for the prompt-decision and multi-model fusion feature set.
+
+Main changes:
+- Multi-model fusion Judge parser now accepts standard Markdown code fences (``` / ~~~) so real model output is no longer silently rejected, ending wasteful REVISE rounds and unverified degraded releases.
+- Composer prompt-optimizer (`ai:promptCandidates`) now selects the first provider with an enabled model instead of the first provider's first model, so disabled models and fabricated `gpt-4` fallbacks can no longer be called.
+- The inline DecisionBar no longer allows a draft "Use custom text" choice to be submitted with empty text, which previously swallowed the decision with no effect.
+- The workbench decision-resolution notice is now localized and auto-dismisses after six seconds instead of showing a hardcoded English string indefinitely.
+- DecisionBar prompt-optimizer labels and guidance now localize by structural option id rather than matching exact main-side English wording, and draft prompt-enhancer labels follow live language switches.
+- Headless CLI prompt candidates are no longer silently truncated to 16K; the full optimized prompt is preserved for both the TTY chooser and non-interactive callers.
+- Prompt optimizer skill matching deduplicates registered and builtin skills by a single `source:name` key so duplicate skill lines no longer appear in the optimized prompt.
+
+Verification recorded:
+- `npm run typecheck`
+- `npx vitest run` across runtime, ipc, renderer workbench, and prompt-core test directories
+- `npx eslint` on all changed source files (0 errors)
 
 ### 2.1.0
 

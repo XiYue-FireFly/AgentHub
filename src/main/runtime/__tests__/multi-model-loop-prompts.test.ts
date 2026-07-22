@@ -68,6 +68,30 @@ describe('multi-model loop prompts and Judge parsing', () => {
     })
   })
 
+  it('accepts standard Markdown code fences that real models emit by default', () => {
+    expect(parseJudgeResult(`\`\`\`json\n${JSON.stringify(validJudge)}\n\`\`\``, revisionId)).toEqual({
+      valid: true,
+      ...validJudge
+    })
+    expect(parseJudgeResult(`\`\`\`\n${JSON.stringify(validJudge)}\n\`\`\``, revisionId)).toEqual({
+      valid: true,
+      ...validJudge
+    })
+    expect(parseJudgeResult(`\`\`\`json\r\n${JSON.stringify(validJudge)}\r\n\`\`\``, revisionId)).toEqual({
+      valid: true,
+      ...validJudge
+    })
+  })
+
+  it('fails closed for mismatched fence markers', () => {
+    expect(parseJudgeResult(`\`\`\`json\n${JSON.stringify(validJudge)}\n~~~`, revisionId)).toMatchObject({
+      valid: false,
+      verdict: 'REVISE',
+      score: 0,
+      revisionId
+    })
+  })
+
   it.each([
     ['invalid JSON', 'not json'],
     ['fractional score', JSON.stringify({ ...validJudge, score: 90.5 })],

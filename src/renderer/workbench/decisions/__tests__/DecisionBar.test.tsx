@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import React from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setLang } from '../../../glass/i18n'
 import type { DecisionItem } from '../decisionAdapters'
 import { DecisionBar } from '../DecisionBar'
 
@@ -34,7 +35,40 @@ function runtimeDecision(overrides: Partial<DecisionItem['request']> = {}): Deci
   }
 }
 
+function draftDecision(overrides: Partial<DecisionItem['request']> = {}): DecisionItem {
+  return {
+    origin: 'draft',
+    id: 'draft-1',
+    threadId: 'thread-1',
+    createdAt: 1,
+    state: 'active',
+    draftRevision: 1,
+    draftHash: 'hash-1',
+    valuesByOptionId: {},
+    request: {
+      schemaVersion: 1,
+      id: 'draft-1',
+      source: 'prompt-optimizer',
+      kind: 'single-select',
+      title: 'Use custom text?',
+      options: [{ id: 'use-custom', label: 'Use custom text' }],
+      minSelections: 1,
+      maxSelections: 1,
+      allowCustom: true,
+      customInput: { maxChars: 100 },
+      allowRemember: false,
+      createdAt: 1,
+      ...overrides
+    }
+  }
+}
+
+beforeEach(() => {
+  setLang('en')
+})
+
 afterEach(() => {
+  setLang('en')
   vi.useRealTimers()
   cleanup()
 })
@@ -221,5 +255,93 @@ describe('DecisionBar', () => {
       outcome: 'submitted',
       customText: 'Custom replacement'
     }))
+  })
+
+  it('requires non-empty custom text before submitting a draft Use custom text selection', async () => {
+    const onSubmit = vi.fn()
+    render(<DecisionBar item={draftDecision()} position={1} count={1} onSubmit={onSubmit} />)
+    fireEvent.click(screen.getByLabelText('Use custom text'))
+    expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', true)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Custom response' }), { target: { value: '   ' } })
+    expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', true)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Custom response' }), { target: { value: 'My version' } })
+    await waitFor(() => expect(screen.getByTestId('decision-primary')).toHaveProperty('disabled', false))
+  })
+
+  it('localizes a prepared prompt decision into Chinese without changing its submitted option ID', async () => {
+    setLang('zh')
+    const onSubmit = vi.fn().mockResolvedValue({ accepted: true })
+    const item = runtimeDecision({
+      source: 'prompt-optimizer',
+      title: 'Choose the prepared Prompt',
+      description: 'candidate length is invalid',
+      options: [
+        { id: 'retry-optimization', label: 'Retry optimization', description: 'candidate length is invalid' },
+        { id: 'original', label: 'Keep original', description: '分析项目' }
+      ],
+      allowCustom: true,
+      customInput: { placeholder: 'Write another version', maxChars: 512 }
+    })
+
+    render(<DecisionBar item={item} position={1} count={1} onSubmit={onSubmit} />)
+
+    expect(screen.getByRole('group', { name: '选择优化后的提示词' })).toBeTruthy()
+    expect(screen.getByText('1 / 1')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '显示详情' })).toBeTruthy()
+    expect(screen.getByLabelText('重新优化')).toBeTruthy()
+    expect(screen.getByLabelText('保留原文')).toBeTruthy()
+    expect(screen.getByText('候选生成未通过校验，请重试优化或保留原文。')).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '自定义回复' }).getAttribute('placeholder')).toBe('输入另一版提示词')
+    expect(screen.getByTestId('decision-primary').textContent).toBe('继续')
+
+    fireEvent.click(screen.getByLabelText('重新优化'))
+    fireEvent.click(screen.getByTestId('decision-primary'))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
+      requestId: 'runtime-1',
+      outcome: 'selected',
+      selectedOptionIds: ['retry-optimization']
+    }))
+  })
+
+  it('localizes the broad-or-ambiguous guidance by structure rather than exact wording', async () => {
+    setLang('zh')
+    const item = runtimeDecision({
+      source: 'prompt-optimizer',
+      title: 'Choose the prepared Prompt',
+      description: 'A differently worded reason from the model orchestrator.',
+      options: [
+        { id: 'original', label: 'Keep original', description: '原文' },
+        { id: 'candidate-0', label: 'Candidate 1', description: '候选 A' },
+        { id: 'candidate-1', label: 'Candidate 2', description: '候选 B' }
+      ],
+      allowCustom: true,
+      customInput: { placeholder: 'Write another version', maxChars: 512 }
+    })
+    render(<DecisionBar item={item} position={1} count={1} onSubmit={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '显示详情' }))
+    expect(screen.getByText('原始请求范围过大或存在歧义。')).toBeTruthy()
+    expect(screen.getByLabelText('候选 1')).toBeTruthy()
+    expect(screen.getByLabelText('候选 2')).toBeTruthy()
+  })
+
+  it('localizes draft prompt-enhancer option labels into the current language', async () => {
+    setLang('zh')
+    const item = draftDecision({
+      title: 'Choose a prompt version?',
+      options: [
+        { id: 'keep-original', label: 'Keep original' },
+        { id: 'candidate-1', label: 'Candidate 1' },
+        { id: 'use-custom', label: 'Use custom text' }
+      ]
+    })
+    render(<DecisionBar item={item} position={1} count={1} onSubmit={vi.fn()} />)
+
+    expect(screen.getByRole('group', { name: '选择优化后的提示词' })).toBeTruthy()
+    expect(screen.getByLabelText('保留原文')).toBeTruthy()
+    expect(screen.getByLabelText('候选 2')).toBeTruthy()
+    expect(screen.getByLabelText('使用自定义文本')).toBeTruthy()
   })
 })
